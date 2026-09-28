@@ -5,7 +5,10 @@
 import "./guard.ts";
 import { runWard } from "./main.ts";
 
-const result = runWard(process.argv.slice(2));
+const result = await runWard(process.argv.slice(2));
 process.stdout.write(result.stdout);
 process.stderr.write(result.stderr);
+// A pending native credential-store call can keep the process alive after
+// its bound expired (WCLI-5 review), so those failures exit explicitly.
+if (result.exitExplicitly) process.exit(result.exitCode);
 process.exitCode = result.exitCode;

@@ -2,6 +2,7 @@
 // malformed input and synthetic exceptions never reappear in stdout or stderr.
 // Assertions report a label, never the sentinel, so a failure report cannot
 // itself disclose the value under test.
+import "./support/no-real-keychain.ts";
 import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -67,8 +68,8 @@ const rejectedArgv: [label: string, argv: string[], exitCode: ExitCode][] = [
 
 describe("rejected arguments are not echoed", () => {
   for (const [label, argv, exitCode] of rejectedArgv) {
-    test(`${label} (in process)`, () => {
-      const result = runWard(argv);
+    test(`${label} (in process)`, async () => {
+      const result = await runWard(argv);
       expect(result.exitCode).toBe(exitCode);
       expect(disclosed(result.stdout)).toBe(false);
       expect(disclosed(result.stderr)).toBe(false);
@@ -84,13 +85,13 @@ describe("rejected arguments are not echoed", () => {
 });
 
 describe("unexpected exceptions", () => {
-  test("a thrown error's message never reaches output", () => {
+  test("a thrown error's message never reaches output", async () => {
     const original = handlers.manifest as CommandHandler;
     handlers.manifest = () => {
       throw new Error(`upstream said ${SENTINEL}`);
     };
     try {
-      const result = runWard(["manifest"]);
+      const result = await runWard(["manifest"]);
       expect(result.exitCode).toBe(exitCodes.uncaught);
       expect(disclosed(result.stdout)).toBe(false);
       expect(disclosed(result.stderr)).toBe(false);
@@ -150,8 +151,11 @@ describe("commands that do not unlock the vault never read or write ~/.ward", ()
     writeFileSync(trap, "");
     chmodSync(trap, 0o000);
     try {
+      // setup unlocks the vault by design; its initialization behavior is
+      // pinned in setup.test.ts against an injected directory.
+      expect(commands.some((command) => command.unlocksVault)).toBe(true);
       for (const command of commands) {
-        expect(command.unlocksVault).toBe(false);
+        if (command.unlocksVault) continue;
         for (const example of command.examples) {
           const result = spawnWard(example.split(" ").slice(1), {
             HOME: home,

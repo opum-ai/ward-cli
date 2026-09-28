@@ -1,4 +1,18 @@
-import { handlers, version } from "../application/commands.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import {
+  createKeychainKeyProvider,
+  keychainService,
+} from "../adapters/keychain.ts";
+import { acquireSetupSession } from "../adapters/setup-session.ts";
+import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
+import type { KeyProvider } from "../application/key-provider.ts";
+import { runSetup } from "../application/setup.ts";
+import {
+  handlers,
+  version,
+  type CommandOutput,
+} from "../application/commands.ts";
 import {
   type ExitCode,
   exitCodeForErrorType,
@@ -13,6 +27,20 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: ExitCode;
+  // The process must exit on its own rather than waiting for the event
+  // loop to drain: a native credential-store call can stay pending after
+  // its bound expired and keep the process alive (WCLI-5 review). Only the
+  // entry point acts on this; in-process callers read it.
+  exitExplicitly?: boolean;
+}
+
+export interface RunOptions {
+  // Where the user vault lives. Defaults to ~/.ward; tests and callers
+  // that must never touch the real vault override it.
+  wardDirectory?: string;
+  // The credential store the vault key lives in. Defaults to the platform
+  // provider; tests and qualification probes override it.
+  keyProvider?: KeyProvider;
 }
 
 function failure(error: WardError): RunResult {
@@ -24,25 +52,55 @@ function failure(error: WardError): RunResult {
   };
 }
 
-function dispatch(argv: readonly string[]): RunResult {
+// The composition root for `ward setup`: the real store and provider, and
+// the lock and journal, are only touched when setup actually runs, so
+// --help, instructions and every other command initialize nothing.
+async function setupCommand(options: RunOptions) {
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const session = acquireSetupSession(directory);
+  const store = createSqliteVaultStore({ directory });
+  const keyProvider =
+    options.keyProvider ??
+    createKeychainKeyProvider({ service: keychainService });
+  const result = await runSetup({ session, store, keyProvider });
+  return {
+    kind: "setup.complete" as const,
+    data: result,
+    text: [
+      "Ward is set up on this machine.",
+      `The vault key is in the OS credential store and the encrypted vault is at ${directory}.`,
+      "Do not move or delete either.",
+    ].join("\n"),
+  };
+}
+
+async function dispatch(
+  argv: readonly string[],
+  options: RunOptions,
+): Promise<RunResult> {
   const [first, ...rest] = argv;
   if (first === "--version") {
     if (rest.length > 0) throw new WardError("unexpected_argument", 2);
     return { stdout: `${version}\n`, stderr: "", exitCode: exitCodes.success };
   }
   if (first === undefined || first === "--help" || first === "-h")
-    return dispatch(["help", ...rest]);
+    return dispatch(["help", ...rest], options);
   const command = findCommand(first);
-  const handler = command === undefined ? undefined : handlers[command.name];
-  if (command === undefined || handler === undefined)
-    throw new WardError("unknown_command", 1);
+  if (command === undefined) throw new WardError("unknown_command", 1);
 
   const parsed = parseArguments(command, rest);
   if (parsed.flags.has("--help")) {
     const json = parsed.flags.has("--json") ? ["--json"] : [];
-    return dispatch(["help", command.name, ...json]);
+    return dispatch(["help", command.name, ...json], options);
   }
-  const output = handler(parsed);
+  let output: CommandOutput;
+  if (command.name === "setup") {
+    output = await setupCommand(options);
+  } else {
+    const handler = handlers[command.name];
+    if (handler === undefined) throw new WardError("unknown_command", 1);
+    output = await handler(parsed);
+  }
   const stdout = parsed.flags.has("--json")
     ? JSON.stringify(success(output.kind, output.data))
     : output.text;
@@ -52,12 +110,21 @@ function dispatch(argv: readonly string[]): RunResult {
 // Every path out of Ward goes through here. Anything thrown that is not a
 // WardError becomes a generic internal error: its message and stack could
 // carry argv, file contents or upstream bytes, so none of it is printed.
-export function runWard(argv: readonly string[]): RunResult {
+export async function runWard(
+  argv: readonly string[],
+  options: RunOptions = {},
+): Promise<RunResult> {
   try {
-    return dispatch(argv);
+    return await dispatch(argv, options);
   } catch (error) {
-    return failure(
-      error instanceof WardError ? error : new WardError("uncaught"),
-    );
+    const wardError =
+      error instanceof WardError ? error : new WardError("uncaught");
+    const result = failure(wardError);
+    if (
+      wardError.code === "vault_key_unavailable" ||
+      wardError.code === "vault_key_write_unconfirmed"
+    )
+      result.exitExplicitly = true;
+    return result;
   }
 }

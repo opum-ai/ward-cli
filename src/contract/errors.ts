@@ -124,6 +124,18 @@ export const errorCatalog = {
     message:
       "Ward could not read or write the vault database. If a change was being made, it may not have been saved.",
   },
+  // Setup (spec §6.4). Ward never creates a key outside `ward setup`.
+  setup_in_progress: {
+    type: "conflict",
+    message:
+      "Another Ward setup appears to be running on this machine. Nothing was changed.",
+    hint: "If no other setup is running, delete the setup lock file from the Ward directory and run `ward setup` again.",
+  },
+  setup_state_invalid: {
+    type: "validation",
+    message: "Ward's setup bookkeeping is damaged. Ward will not overwrite it.",
+    hint: "An interrupted setup may be involved. Inspect the Ward directory, then run `ward setup` again.",
+  },
 } as const satisfies Record<
   string,
   { type: ErrorType; message: string; hint?: string }

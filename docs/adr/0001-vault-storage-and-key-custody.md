@@ -117,6 +117,17 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
     outside Ward.
   - A create that fails after its write began reports `vault_key_write_unconfirmed`: the key may
     or may not have been stored. The caller resolves that with a load, never by writing again.
+- **Setup serialization and resume (WCLI-20).** Setup is the only command that ever calls the
+  provider's create (pinned by a source-level test). It takes an exclusive `setup.lock` file in
+  the vault directory (O_EXCL; a crash leaves it, and the next setup removes it when the recorded
+  pid is dead, else reports `setup_in_progress`), and records the pending vault id in a
+  `setup.json` journal, durably, before the key exists. A rerun at any point either completes the
+  same setup — reusing the recorded id, the stored key, or both — or reports the state it finds:
+  a vault whose key loads is an already-completed setup, a vault whose key does not load is a
+  recovery condition, and a damaged journal refuses rather than overwrites. The vault sealed by
+  setup is the minimal self-describing skeleton `{"formatVersion":1}`; the full state schema is
+  the next layer's contract (WCLI-7). A kill test runs each interruption point in a separate
+  process against a file-backed stand-in store.
 - **The bound is on the call, not the process.** Every store call settles within
   `defaultKeyTimeoutMs`, but a native call can outlive its abort and keep the process alive. A
   command that receives `vault_key_unavailable` must exit explicitly (WCLI-20).

@@ -199,9 +199,14 @@ function stripInheritedAcl(path: string): void {
     throw new WardError("vault_store_insecure");
 }
 
-// Created with its final mode, never chmod-ed into it afterwards. A umask
-// that strips the owner's own bits leaves a mode that inspect() refuses.
-function prepare(location: Location, uid: number | undefined): void {
+// Ensures the directory exists with its final mode and no inherited ACLs,
+// and verifies it afterwards. Used by setup (WCLI-20) before the lock and
+// journal exist, and by prepare() before the database is created.
+export function prepareVaultDirectory(
+  directory: string,
+  uid: number | undefined,
+): void {
+  const location = locate(directory);
   const state = inspect(location, uid);
   if (state === "absent") {
     try {
@@ -212,6 +217,15 @@ function prepare(location: Location, uid: number | undefined): void {
     }
     stripInheritedAcl(location.directory);
   }
+  if (inspect(location, uid) === "absent")
+    throw new WardError("vault_store_failed");
+}
+
+// Created with its final mode, never chmod-ed into it afterwards. A umask
+// that strips the owner's own bits leaves a mode that inspect() refuses.
+function prepare(location: Location, uid: number | undefined): void {
+  prepareVaultDirectory(location.directory, uid);
+  const state = inspect(location, uid);
   if (state !== "file") {
     let created = false;
     try {

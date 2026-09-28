@@ -99,6 +99,28 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "setup",
+    summary:
+      "Create the vault key in the OS credential store and the encrypted vault. Run this once, yourself, in a trusted terminal; never on an agent's behalf.",
+    args: [],
+    flags: [jsonFlag],
+    kind: "setup.complete",
+    mutates: true,
+    unlocksVault: true,
+    admin: true,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: ["ward setup", "ward setup --json"],
+  },
+  {
     name: "help",
     summary: "Show usage for Ward or one command.",
     args: [{ name: "command", required: false }],
