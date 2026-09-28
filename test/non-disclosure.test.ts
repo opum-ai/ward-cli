@@ -17,6 +17,7 @@ import { type CommandHandler, handlers } from "../src/application/commands.ts";
 import { runWard } from "../src/cli/main.ts";
 import { type ExitCode, exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
+import { packagedWard } from "./support/packaged.ts";
 
 const SENTINEL = "ward-sentinel-7f3a9c1e";
 const CLI = join(import.meta.dir, "..", "src", "cli");
@@ -27,7 +28,7 @@ function disclosed(output: string): boolean {
 }
 
 function spawnWard(argv: string[], env?: Record<string, string>) {
-  const run = Bun.spawnSync(["bun", ENTRY, ...argv], {
+  const run = Bun.spawnSync([packagedWard, ...argv], {
     env: { ...process.env, ...env },
   });
   return {
@@ -73,7 +74,7 @@ describe("rejected arguments are not echoed", () => {
       expect(disclosed(result.stderr)).toBe(false);
     });
 
-    test(`${label} (entry point)`, () => {
+    test(`${label} (packaged executable)`, () => {
       const result = spawnWard(argv);
       expect(result.exitCode).toBe(exitCode);
       expect(disclosed(result.stdout)).toBe(false);
