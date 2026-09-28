@@ -104,6 +104,7 @@ function spawnWorker(key: Uint8Array, args: string[]) {
     env: {
       ...process.env,
       WARD_TEST_KEY_HEX: Buffer.from(key).toString("hex"),
+      WARD_TEST_VAULT_ID: VAULT_ID,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -404,6 +405,10 @@ describe("T06: transactions", () => {
       const busy = outcomes.reduce((sum, o) => sum + o.busy, 0);
       expect(outcomes.flatMap((o) => o.other)).toEqual([]);
       expect(ok + busy).toBe(writers * each);
+      // A store that only ever reported conflict would satisfy the count
+      // assertions, so at least one update must actually land: writers queue
+      // on the lock with a 5 s bound, so most of the quick appends succeed.
+      expect(ok).toBeGreaterThan(0);
       const snapshot = store.read(key);
       const markers = text(snapshot.plaintext).split(";").filter(Boolean);
       expect(markers.length).toBe(ok);
@@ -411,6 +416,26 @@ describe("T06: transactions", () => {
       expect(snapshot.revision).toBe(1 + ok);
     },
     { timeout: 60_000 },
+  );
+
+  test(
+    "concurrent creates in separate processes serialize: one wins, one refuses",
+    async () => {
+      const { directory, store } = fresh();
+      const key = generateVaultKey();
+      const workers = [1, 2].map(() => spawnWorker(key, ["create", directory]));
+      const outcomes = await Promise.all(
+        workers.map(async (worker) => {
+          const output = await new Response(worker.stdout).text();
+          await worker.exited;
+          return (JSON.parse(output) as { outcome: string }).outcome;
+        }),
+      );
+      expect([...outcomes].sort()).toEqual(["created", "vault_exists"]);
+      expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 1 });
+      expect(text(store.read(key).plaintext) === "seed").toBe(true);
+    },
+    { timeout: 30_000 },
   );
 
   test("a writer that cannot get the lock within the bound reports vault_busy", () => {
@@ -421,9 +446,19 @@ describe("T06: transactions", () => {
     try {
       holder.exec("BEGIN IMMEDIATE");
       const started = performance.now();
-      expect(codeOf(() => store.mutate(key, () => bytes("b")))).toBe(
-        "vault_busy",
-      );
+      // Under an immediate transaction the change never runs: the lock is
+      // taken before it. Under a deferred one it would run before the
+      // update hit the lock wall, so this pins the immediate-ness.
+      let called = false;
+      expect(
+        codeOf(() =>
+          store.mutate(key, () => {
+            called = true;
+            return bytes("b");
+          }),
+        ),
+      ).toBe("vault_busy");
+      expect(called).toBe(false);
       expect(performance.now() - started).toBeLessThan(2_000);
     } finally {
       holder.exec("ROLLBACK");

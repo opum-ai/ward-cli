@@ -11,6 +11,7 @@
 //                                 block until killed
 //   crash-create <dir>            the same against an empty ward.db, part way
 //                                 through laying down a vault
+//   create <dir>                  create the vault once and report the outcome
 import { Database } from "bun:sqlite";
 import { writeSync } from "node:fs";
 import { join } from "node:path";
@@ -75,6 +76,23 @@ if (mode === "append") {
   }
   writeSync(1, "ready\n");
   blockForever();
+} else if (mode === "create") {
+  const store = createSqliteVaultStore({ directory });
+  try {
+    store.create(
+      process.env.WARD_TEST_VAULT_ID ?? "",
+      key,
+      Buffer.from("seed"),
+    );
+    writeSync(1, `${JSON.stringify({ outcome: "created" })}\n`);
+  } catch (error) {
+    writeSync(
+      1,
+      `${JSON.stringify({
+        outcome: error instanceof WardError ? error.code : "not-a-ward-error",
+      })}\n`,
+    );
+  }
 } else {
   throw new Error("unknown mode");
 }

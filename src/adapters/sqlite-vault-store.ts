@@ -1,4 +1,5 @@
 import { Database, constants as sqlite } from "bun:sqlite";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   constants as fileConstants,
@@ -151,17 +152,34 @@ function inspect(
   return "file";
 }
 
+// An inherited ACL (macOS) can grant access beyond the 0700/0600 modes, so
+// entries Ward itself creates get their ACLs stripped. Detecting an ACL on
+// an entry that already exists would need a subprocess read, so pre-existing
+// entries are checked for mode, ownership and links only, and an ACL the
+// user placed there stays (documented in docs/adr/0001). Off macOS this is a
+// no-op: the Linux ACL story belongs to the Linux platform work (WCLI-21).
+function stripInheritedAcl(path: string): void {
+  if (process.platform !== "darwin") return;
+  const result = spawnSync("/bin/chmod", ["-N", path]);
+  if (result.error !== undefined || result.status !== 0)
+    throw new WardError("vault_store_insecure");
+}
+
 // Created with its final mode, never chmod-ed into it afterwards. A umask
 // that strips the owner's own bits leaves a mode that inspect() refuses.
 function prepare(location: Location, uid: number | undefined): void {
   const state = inspect(location, uid);
-  try {
-    if (state === "absent") mkdirSync(location.directory, { mode: 0o700 });
-  } catch (error) {
-    if (errnoCode(error) !== "EEXIST")
-      throw new WardError("vault_store_failed");
+  if (state === "absent") {
+    try {
+      mkdirSync(location.directory, { mode: 0o700 });
+    } catch (error) {
+      if (errnoCode(error) !== "EEXIST")
+        throw new WardError("vault_store_failed");
+    }
+    stripInheritedAcl(location.directory);
   }
   if (state !== "file") {
+    let created = false;
     try {
       closeSync(
         openSync(
@@ -173,10 +191,12 @@ function prepare(location: Location, uid: number | undefined): void {
           0o600,
         ),
       );
+      created = true;
     } catch (error) {
       if (errnoCode(error) !== "EEXIST")
         throw new WardError("vault_store_failed");
     }
+    if (created) stripInheritedAcl(location.file);
   }
   if (inspect(location, uid) !== "file")
     throw new WardError("vault_store_failed");
@@ -220,16 +240,23 @@ function connect(file: string, busyTimeoutMs: number): Database {
     db.exec("PRAGMA trusted_schema = OFF");
     db.exec("PRAGMA temp_store = MEMORY");
     db.exec("PRAGMA synchronous = FULL");
-    const mode = db.query("PRAGMA journal_mode = DELETE").get() as {
-      journal_mode?: unknown;
-    } | null;
-    if (mode?.journal_mode !== "delete")
-      throw new WardError("vault_store_unrecognized");
   } catch (error) {
     db.close();
     throw storeError(error);
   }
   return db;
+}
+
+// The rollback journal is part of Ward's layout: a Ward vault someone
+// converted to WAL is healed back on the first writing connection. Called
+// only after layoutOf() has accepted the file, so a foreign database is
+// refused before any setting that writes is applied.
+function healJournalMode(db: Database): void {
+  const mode = db.query("PRAGMA journal_mode = DELETE").get() as {
+    journal_mode?: unknown;
+  } | null;
+  if (mode?.journal_mode !== "delete")
+    throw new WardError("vault_store_unrecognized");
 }
 
 function pragmaNumber(db: Database, name: string): unknown {
@@ -383,10 +410,14 @@ export function createSqliteVaultStore(options: {
       const sealed = seal(key, { vaultId, revision: 1 }, plaintext);
       const location = locate(options.directory);
       prepare(location, uid);
-      // The schema, the row and the file's identity commit together or not
-      // at all. A second create waits on the lock and then finds the vault.
-      return withConnection(location, (db) =>
-        db
+      // The layout check runs before the journal heal, so a foreign database
+      // is refused untouched. The schema, the row and the file's identity
+      // commit together or not at all, and a second create waits on the lock
+      // and then finds the vault.
+      return withConnection(location, (db) => {
+        if (layoutOf(db) === "ward") throw new WardError("vault_exists");
+        healJournalMode(db);
+        return db
           .transaction(() => {
             if (layoutOf(db) === "ward") throw new WardError("vault_exists");
             db.exec(`PRAGMA application_id = ${applicationId}`);
@@ -397,8 +428,8 @@ export function createSqliteVaultStore(options: {
             ).run(...sealedValues(sealed));
             return { vaultId: sealed.vaultId, revision: sealed.revision };
           })
-          .immediate(),
-      );
+          .immediate();
+      });
     },
 
     read(key) {
@@ -419,8 +450,12 @@ export function createSqliteVaultStore(options: {
     },
 
     mutate(key, change: VaultChange) {
-      return withVault((db) =>
-        db
+      // The layout check and the journal heal run before the immediate
+      // transaction; the transaction itself re-checks the layout.
+      return withVault((db) => {
+        requireVault(db);
+        healJournalMode(db);
+        return db
           .transaction(() => {
             requireVault(db);
             const current = readRecord(db);
@@ -451,8 +486,8 @@ export function createSqliteVaultStore(options: {
             if (result.changes !== 1) throw new WardError("vault_store_failed");
             return { vaultId: sealed.vaultId, revision: sealed.revision };
           })
-          .immediate(),
-      );
+          .immediate();
+      });
     },
   };
 }

@@ -111,7 +111,7 @@ export const errorCatalog = {
   vault_store_insecure: {
     type: "validation",
     message:
-      "The vault location is not a private directory and file owned by this user, or one of them is a link. Ward will not use it.",
+      "The vault location is not a private directory and file owned by this user, one of them is a link, or an inherited access control list could not be removed from it. Ward will not use it.",
     hint: "The vault directory must be mode 0700 and its database files mode 0600, both owned by you, and neither may be a symbolic link.",
   },
   vault_store_unrecognized: {
