@@ -1,0 +1,24 @@
+{
+  "name": "@opum-ai/ward",
+  "version": "0.0.0",
+  "description": "Local-first secret management for agentic engineering.",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint src test scripts biome.json package.json tsconfig.json",
+    "format:check": "biome ci --linter-enabled=false --assist-enabled=false src test scripts biome.json package.json tsconfig.json",
+    "layer:check": "node scripts/check-layers.mjs",
+    "test": "bun test",
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run layer:check && bun run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@types/bun": "1.3.14",
+    "typescript": "7.0.2"
+  }
+}

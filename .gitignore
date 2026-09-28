@@ -1,2 +1,7 @@
 .claude/handovers/
 .claude/settings.local.json
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
