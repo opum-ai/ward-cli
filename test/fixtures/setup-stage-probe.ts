@@ -6,6 +6,7 @@
 //                                        anything is stored
 //   after-write <store-dir> <ward-dir>   store the key, then block before
 //                                        the write confirms
+//   plain <store-dir> <ward-dir>         run setup normally and report
 // The key survives the kill because the store is files on disk.
 import { writeSync } from "node:fs";
 import { createKeychainKeyProvider } from "../../src/adapters/keychain.ts";
@@ -21,27 +22,34 @@ if (
   throw new Error("usage: <mode> <store-dir> <ward-dir>");
 
 const keychain = new FileKeychain(storeDirectory);
-const provider = createKeychainKeyProvider({
-  service: "opum.ward.stage",
-  timeoutMs: 60_000,
-  entry: (service, account) => {
-    const entry = keychain.entry(service, account);
-    return {
-      getSecret: entry.getSecret,
-      setSecret: async (secret) => {
-        if (mode === "before-write") {
-          writeSync(1, "ready\n");
-          blockForever();
-        }
-        await entry.setSecret(secret);
-        if (mode === "after-write") {
-          writeSync(1, "ready\n");
-          blockForever();
-        }
-      },
-    };
-  },
-});
+const provider =
+  mode === "plain"
+    ? createKeychainKeyProvider({
+        service: "opum.ward.stage",
+        timeoutMs: 60_000,
+        entry: keychain.entry,
+      })
+    : createKeychainKeyProvider({
+        service: "opum.ward.stage",
+        timeoutMs: 60_000,
+        entry: (service, account) => {
+          const entry = keychain.entry(service, account);
+          return {
+            getSecret: entry.getSecret,
+            setSecret: async (secret) => {
+              if (mode === "before-write") {
+                writeSync(1, "ready\n");
+                blockForever();
+              }
+              await entry.setSecret(secret);
+              if (mode === "after-write") {
+                writeSync(1, "ready\n");
+                blockForever();
+              }
+            },
+          };
+        },
+      });
 
 function blockForever(): never {
   const cell = new Int32Array(new SharedArrayBuffer(4));

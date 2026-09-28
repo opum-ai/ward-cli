@@ -264,6 +264,53 @@ describe("the interrupted-setup resume model", () => {
     expect(existsSync(join(directory, setupJournalFileName))).toBe(false);
   });
 
+  test("a completed setup whose key no longer opens the vault is a recovery condition", async () => {
+    const { directory, options, keychain, store } = fresh();
+    expect((await setupViaRunWard(options())).exitCode).toBe(exitCodes.success);
+    const id = store.header()?.vaultId ?? "";
+    // Replace the stored key with a different, valid 32-byte key.
+    keychain.items.set(
+      `${TEST_SERVICE}\u0000vault-${id}`,
+      Array.from(new Uint8Array(32).fill(9)),
+    );
+    const session = acquireSetupSession(directory);
+    session.recordVaultId(id);
+    session.release();
+    const result = await setupViaRunWard(options());
+    expect(result.exitCode).toBe(exitCodes.validation);
+    expect(json(result.stderr).code).toBe("vault_authentication_failed");
+    expect(existsSync(join(directory, setupJournalFileName))).toBe(true);
+  });
+
+  test("a deleted vault with a surviving journal resumes the same identity", async () => {
+    // The documented limit (docs/adr/0001): deleting the vault is not a
+    // fresh start while the journal and key survive; the old id and key
+    // are resumed, and an older copy of the vault still authenticates.
+    const { directory, options, keychain, store } = fresh();
+    expect((await setupViaRunWard(options())).exitCode).toBe(exitCodes.success);
+    const id = store.header()?.vaultId ?? "";
+    const session = acquireSetupSession(directory);
+    session.recordVaultId(id);
+    session.release();
+    rmSync(join(directory, vaultFileName));
+    const writesBefore = keychain.writeAttempts;
+    const result = await setupViaRunWard(options());
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect((json(result.stdout).data as { vaultId: string }).vaultId).toBe(id);
+    expect(keychain.writeAttempts).toBe(writesBefore);
+  });
+
+  test("a damaged journal beside a healthy vault is cleared, not refused", async () => {
+    const { directory, options, store } = fresh();
+    expect((await setupViaRunWard(options())).exitCode).toBe(exitCodes.success);
+    writeFileSync(join(directory, setupJournalFileName), "{oops", {
+      mode: 0o600,
+    });
+    const result = await setupViaRunWard(options());
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(existsSync(join(directory, setupJournalFileName))).toBe(false);
+  });
+
   test("a damaged journal refuses and is not overwritten", async () => {
     const { options, directory } = await interrupted({ withKey: false });
     writeFileSync(join(directory, setupJournalFileName), "{not json", {
@@ -287,6 +334,10 @@ describe("write-unconfirmed resolution", () => {
     expect(result.exitCode).toBe(exitCodes.success);
     expect(f.keychain.writeAttempts).toBe(1);
     expect(f.store.header()?.revision).toBe(1);
+    // The confirmation call was abandoned at its bound even though the
+    // write landed: a pending native call may still be running, so the
+    // process must exit explicitly even on success.
+    expect(result.exitExplicitly).toBe(true);
   });
 
   test("a hanging confirmation reports unconfirmed and demands an explicit exit", async () => {
@@ -331,6 +382,16 @@ describe("the setup lock", () => {
     expect(existsSync(join(directory, vaultFileName))).toBe(false);
   });
 
+  test("an empty lock fails closed: a live holder may be mid-write", async () => {
+    const { directory, options } = fresh();
+    mkdirSync(directory, { mode: 0o700 });
+    writeFileSync(join(directory, setupLockFileName), "", { mode: 0o600 });
+    const result = await setupViaRunWard(options());
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(json(result.stderr).code).toBe("setup_in_progress");
+    expect(existsSync(join(directory, vaultFileName))).toBe(false);
+  });
+
   test("a stale lock is cleared and setup proceeds", async () => {
     const { directory, options } = fresh();
     mkdirSync(directory, { mode: 0o700 });
@@ -342,6 +403,35 @@ describe("the setup lock", () => {
     expect(result.exitCode).toBe(exitCodes.success);
     expect(existsSync(join(directory, setupLockFileName))).toBe(false);
   });
+});
+
+describe("mutual exclusion under concurrency", () => {
+  test(
+    "concurrent setups serialize: one winner, one key ever written, one vault",
+    async () => {
+      const f = fresh();
+      const storeDirectory = mkdtempSync(join(root, "keys-"));
+      const workers = [1, 2, 3, 4].map(() =>
+        spawnProbe(STAGE_PROBE, ["plain", storeDirectory, f.directory]),
+      );
+      const outcomes = await Promise.all(
+        workers.map(async (worker) => {
+          await new Response(worker.stdout).text();
+          await new Response(worker.stderr).text();
+          await worker.exited;
+          return worker.exitCode;
+        }),
+      );
+      expect(outcomes.filter((code) => code === exitCodes.success).length).toBe(
+        1,
+      );
+      for (const code of outcomes)
+        if (code !== exitCodes.success) expect(code).toBe(exitCodes.conflict);
+      expect(readdirSync(storeDirectory).length).toBe(1);
+      expect(f.store.header()?.revision).toBe(1);
+    },
+    { timeout: 60_000 },
+  );
 });
 
 describe("interruption by kill", () => {
@@ -362,10 +452,19 @@ describe("interruption by kill", () => {
       expect(existsSync(join(f.directory, vaultFileName))).toBe(false);
       expect(readdirSync(storeDirectory)).toEqual([]);
 
-      const rerun = await setupViaRunWard(f.options());
+      // Rerun against the same surviving store, so "one key total" is
+      // measured on the store the interrupted run wrote to.
+      const keyProvider = createKeychainKeyProvider({
+        service: "opum.ward.stage",
+        timeoutMs: 2_000,
+        entry: new FileKeychain(storeDirectory).entry,
+      });
+      const rerun = await runWard(["setup", "--json"], {
+        wardDirectory: f.directory,
+        keyProvider,
+      });
       expect(rerun.exitCode).toBe(exitCodes.success);
-      expect(readdirSync(storeDirectory)).toEqual([]); // the rerun uses its own keychain
-      expect(f.keychain.writeAttempts).toBe(1);
+      expect(readdirSync(storeDirectory).length).toBe(1);
       expect(f.store.header()?.revision).toBe(1);
     },
     { timeout: 30_000 },

@@ -55,7 +55,10 @@ function failure(error: WardError): RunResult {
 // The composition root for `ward setup`: the real store and provider, and
 // the lock and journal, are only touched when setup actually runs, so
 // --help, instructions and every other command initialize nothing.
-async function setupCommand(options: RunOptions) {
+async function setupCommand(options: RunOptions): Promise<{
+  output: { kind: "setup.complete"; data: unknown; text: string };
+  exitExplicitly: boolean;
+}> {
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const session = acquireSetupSession(directory);
   const store = createSqliteVaultStore({ directory });
@@ -64,13 +67,19 @@ async function setupCommand(options: RunOptions) {
     createKeychainKeyProvider({ service: keychainService });
   const result = await runSetup({ session, store, keyProvider });
   return {
-    kind: "setup.complete" as const,
-    data: result,
-    text: [
-      "Ward is set up on this machine.",
-      `The vault key is in the OS credential store and the encrypted vault is at ${directory}.`,
-      "Do not move or delete either.",
-    ].join("\n"),
+    output: {
+      kind: "setup.complete" as const,
+      data: result,
+      text: [
+        "Ward is set up on this machine.",
+        `The vault key is in the OS credential store and the encrypted vault is at ${directory}.`,
+        "Do not move or delete either.",
+      ].join("\n"),
+    },
+    // A bounded call may have been abandoned even when setup ultimately
+    // succeeded (an unconfirmed write resolved by load), and the pending
+    // native call can keep the process alive.
+    exitExplicitly: keyProvider.abandonedCall?.() ?? false,
   };
 }
 
@@ -94,8 +103,11 @@ async function dispatch(
     return dispatch(["help", command.name, ...json], options);
   }
   let output: CommandOutput;
+  let exitExplicitly = false;
   if (command.name === "setup") {
-    output = await setupCommand(options);
+    const run = await setupCommand(options);
+    output = run.output;
+    exitExplicitly = run.exitExplicitly;
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);
@@ -104,7 +116,12 @@ async function dispatch(
   const stdout = parsed.flags.has("--json")
     ? JSON.stringify(success(output.kind, output.data))
     : output.text;
-  return { stdout: `${stdout}\n`, stderr: "", exitCode: exitCodes.success };
+  return {
+    stdout: `${stdout}\n`,
+    stderr: "",
+    exitCode: exitCodes.success,
+    ...(exitExplicitly ? { exitExplicitly: true } : {}),
+  };
 }
 
 // Every path out of Ward goes through here. Anything thrown that is not a

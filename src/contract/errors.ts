@@ -134,7 +134,7 @@ export const errorCatalog = {
   setup_state_invalid: {
     type: "validation",
     message: "Ward's setup bookkeeping is damaged. Ward will not overwrite it.",
-    hint: "An interrupted setup may be involved. Inspect the Ward directory, then run `ward setup` again.",
+    hint: "The setup record is the setup.json file in the Ward directory. Inspect it, remove it if it is damaged, then run `ward setup` again.",
   },
 } as const satisfies Record<
   string,

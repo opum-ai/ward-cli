@@ -48,12 +48,31 @@ export async function runSetup(options: {
   try {
     const header = store.header();
     if (header !== undefined) {
-      // A vault exists. Its key must load; anything else is a recovery
-      // condition and nothing is created or replaced.
+      // A vault exists. Its key must load and open the vault; anything else
+      // is a recovery condition and nothing is created or replaced.
       const existing = await keyProvider.load(header.vaultId);
+      store.read(existing);
       existing.fill(0);
-      if (session.journalVaultId() === undefined)
-        throw new WardError("vault_exists");
+      // A damaged journal beside a healthy vault is cleared, not refused:
+      // the setup completed, and only its bookkeeping failed.
+      let journalId: string | undefined;
+      try {
+        journalId = session.journalVaultId();
+      } catch (error) {
+        if (
+          !(error instanceof WardError) ||
+          error.code !== "setup_state_invalid"
+        )
+          throw error;
+        session.complete();
+        completed = true;
+        return {
+          vaultId: header.vaultId,
+          revision: header.revision,
+          resumed: true,
+        };
+      }
+      if (journalId === undefined) throw new WardError("vault_exists");
       // The previous run finished the vault but died before removing the
       // journal: finish the cleanup and report the completed setup.
       session.complete();

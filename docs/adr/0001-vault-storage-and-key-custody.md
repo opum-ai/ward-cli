@@ -127,7 +127,10 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   recovery condition, and a damaged journal refuses rather than overwrites. The vault sealed by
   setup is the minimal self-describing skeleton `{"formatVersion":1}`; the full state schema is
   the next layer's contract (WCLI-7). A kill test runs each interruption point in a separate
-  process against a file-backed stand-in store.
+  process against a file-backed stand-in store. One stated limit: deleting the vault is not a
+  fresh start while the journal and the keychain item survive — a rerun resumes the old vault
+  id and the old key, so an older copy of that vault (a backup or snapshot) still authenticates.
+  A genuinely fresh installation requires removing the journal and the keychain item first.
 - **The bound is on the call, not the process.** Every store call settles within
   `defaultKeyTimeoutMs`, but a native call can outlive its abort and keep the process alive. A
   command that receives `vault_key_unavailable` must exit explicitly (WCLI-20).

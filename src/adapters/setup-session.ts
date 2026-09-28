@@ -8,9 +8,13 @@
 // or reports the state it finds.
 //
 // The lock is the file's existence, taken with O_EXCL. A crash leaves the
-// file behind; the next setup removes it when the recorded pid is dead and
-// reports setup_in_progress otherwise. The journal is removed only when the
-// vault exists, so it survives every failure short of success.
+// file behind; the next setup removes it only when the recorded pid is
+// provably dead, and reports setup_in_progress otherwise — including for a
+// lock that is empty or unreadable, because an empty lock is also the state
+// a live holder occupies between creating the file and writing its pid, and
+// deleting that would let two setups proceed at once. The journal is
+// removed only when the vault exists, so it survives every failure short of
+// success.
 import {
   closeSync,
   constants as fileConstants,
@@ -47,10 +51,10 @@ function isAlive(pid: number): boolean {
   }
 }
 
-// Removes a lock whose holder is gone: the recorded pid is dead, or the
-// content is unreadable (a crash between creating the file and writing it).
-// A readable pid that is alive, or a lock that fails the privacy checks, is
-// never touched.
+// Removes a lock only when its recorded pid is provably dead. Anything else
+// — a live pid, an empty or unreadable file (which is also the state a live
+// holder occupies between creating the file and writing its pid), or a lock
+// that fails the privacy checks — fails closed as setup_in_progress.
 function clearStaleLock(lockPath: string, uid: number | undefined): void {
   let stats: Stats;
   try {
@@ -64,13 +68,42 @@ function clearStaleLock(lockPath: string, uid: number | undefined): void {
   if (stats.size > maxJournalBytes) throw new WardError("setup_in_progress");
   const content = readFileSync(lockPath, "utf8").trim();
   const pid = /^\d+$/.test(content) ? Number(content) : undefined;
-  if (pid !== undefined && isAlive(pid))
+  if (pid === undefined || isAlive(pid))
     throw new WardError("setup_in_progress");
   try {
     rmSync(lockPath);
   } catch (error) {
     if (errnoCode(error) !== "ENOENT")
       throw new WardError("vault_store_failed");
+  }
+}
+
+// fsync on a directory persists the entry changes inside it, so a power
+// loss cannot drop a journal whose bytes were fsynced (the journal's
+// purpose is exactly to survive the key write that follows it).
+function fsyncDirectory(path: string): void {
+  let fd: number;
+  try {
+    fd = openSync(path, fileConstants.O_RDONLY);
+  } catch {
+    throw new WardError("vault_store_failed");
+  }
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Reads the lock's recorded pid, or undefined when the lock is absent or
+// unreadable. Used so a defeated holder never deletes a lock the winner
+// took: only a lock recording this process's pid is removed by it.
+function lockPid(lockPath: string): number | undefined {
+  try {
+    const content = readFileSync(lockPath, "utf8").trim();
+    return /^\d+$/.test(content) ? Number(content) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -104,6 +137,13 @@ export function acquireSetupSession(directory: string): SetupSession {
     }
   }
 
+  // Compare-and-delete: the lock goes only if it still records this pid. A
+  // lock that was removed and re-taken by another setup is left alone.
+  function removeOwnLock(): void {
+    if (lockPid(lockPath) !== process.pid) return;
+    remove(lockPath);
+  }
+
   for (let attempt = 0; held; attempt++) {
     let fd: number;
     try {
@@ -123,8 +163,12 @@ export function acquireSetupSession(directory: string): SetupSession {
       continue;
     }
     try {
-      writeSync(fd, `${process.pid}\n`);
-      fsyncSync(fd);
+      try {
+        writeSync(fd, `${process.pid}\n`);
+        fsyncSync(fd);
+      } catch {
+        throw new WardError("vault_store_failed");
+      }
     } finally {
       closeSync(fd);
     }
@@ -177,22 +221,28 @@ export function acquireSetupSession(directory: string): SetupSession {
         throw new WardError("vault_store_failed");
       }
       try {
-        writeSync(fd, JSON.stringify({ schemaVersion: 1, vaultId }));
-        fsyncSync(fd);
+        try {
+          writeSync(fd, JSON.stringify({ schemaVersion: 1, vaultId }));
+          fsyncSync(fd);
+        } catch {
+          throw new WardError("vault_store_failed");
+        }
       } finally {
         closeSync(fd);
       }
+      fsyncDirectory(directory);
     },
 
     release() {
       held = false;
-      remove(lockPath);
+      removeOwnLock();
     },
 
     complete() {
       held = false;
       remove(journalPath);
-      remove(lockPath);
+      removeOwnLock();
+      fsyncDirectory(directory);
     },
   };
 }
