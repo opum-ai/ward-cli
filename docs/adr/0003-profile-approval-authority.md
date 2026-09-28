@@ -17,7 +17,7 @@ generated:
 
 ## Status
 
-Accepted by the orchestrator (opum-agent) on 2026-09-28. It binds once opum-doc records the decision, as record ODOC-PENDING. That id must be filled in before this ADR lands.
+Accepted. This ADR restates decisions spec §2, §4.3, §7.2 and §9.2 already make, and rules nothing new, so it needs no opum-doc record (opum-agent, 2026-09-28).
 
 ## Context
 

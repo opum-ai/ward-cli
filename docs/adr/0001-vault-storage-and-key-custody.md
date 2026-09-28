@@ -76,7 +76,7 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   This is consistent with [the threat model](0002-p0-threat-model-and-non-guarantees.md).
 - **Developer ID signing is deferred past P0.** With it, the designated requirement would be team
   identifier plus bundle identifier. That is an operator account and release decision, held on
-  the operator's list rather than decided here. It is the precondition for any claim that the
+  the operator's list as opum-agent OPAG-672 rather than decided here. It is the precondition for any claim that the
   Keychain ACL protects anything, and until it exists no Ward document may make that claim.
 - **WCLI-19 is accepted as a stated P0 limitation.** `BUN_OPTIONS` and `BUN_BE_BUN` reaching the
   packaged executable will be revisited together with signing.

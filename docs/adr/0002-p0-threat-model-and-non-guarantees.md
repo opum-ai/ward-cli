@@ -55,7 +55,8 @@ defects to fix in P0:
 - **The launcher.** The shipped executable ignores the working directory's `bunfig.toml` and
   `.env` (WCLI-16). The inherited `BUN_OPTIONS` and `BUN_BE_BUN` still reach it (WCLI-19), which
   is arbitrary code with equivalent authority.
-- **The keychain.** The Keychain ACL is per-build and ad-hoc signed. See
+- **The keychain.** The Keychain ACL is per-build and ad-hoc signed. Developer ID signing, the
+  precondition for any ACL claim, is an operator decision held as opum-agent OPAG-672. See
   [vault storage and key custody](0001-vault-storage-and-key-custody.md).
 
 ## Consequences
