@@ -23,24 +23,30 @@ export const hardeningFlags = [
   "--no-compile-autoload-package-json",
 ] as const;
 
-// Tests build a probe entry through this same function, so the flags they
-// measure are the flags that ship.
+// The argv buildExecutable runs, exposed so a test can assert what is
+// actually passed to `bun build` rather than what the list above declares.
+export function buildCommand(options: {
+  entry: string;
+  outfile: string;
+}): string[] {
+  return [
+    process.execPath,
+    "build",
+    "--compile",
+    ...hardeningFlags,
+    options.entry,
+    "--outfile",
+    options.outfile,
+  ];
+}
+
+// Tests build their executables and a probe entry through this same
+// function, so the flags they measure are the flags that ship.
 export function buildExecutable(options: {
   entry: string;
   outfile: string;
 }): string {
-  const run = Bun.spawnSync(
-    [
-      process.execPath,
-      "build",
-      "--compile",
-      ...hardeningFlags,
-      options.entry,
-      "--outfile",
-      options.outfile,
-    ],
-    { cwd: root },
-  );
+  const run = Bun.spawnSync(buildCommand(options), { cwd: root });
   if (run.exitCode !== 0)
     throw new Error(
       `bun build exited ${run.exitCode}\n${run.stderr.toString()}`,

@@ -15,12 +15,13 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  buildCommand,
   buildExecutable,
   entry,
-  hardeningFlags,
   outfile,
 } from "../scripts/build.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
+import { buildRoot, packagedWard } from "./support/packaged.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const PROBE_ENTRY = join(import.meta.dir, "fixtures", "env-probe.ts");
@@ -28,14 +29,15 @@ const ARGV_SENTINEL = "ward-argv-sentinel-5d0e";
 const PRELOAD_SENTINEL = "ward-preload-sentinel-3c81";
 const DOTENV_KEY = "WARD_DOTENV_PROBE";
 const DOTENV_SENTINEL = "ward-dotenv-sentinel-b52e";
+const TOML_SENTINEL = "ward-toml-sentinel-e19a";
 
+// Registered before anything is built, so a failed build still cleans up.
+const work = mkdtempSync(join(tmpdir(), "ward-launcher-"));
 // Built at module load rather than in a hook, so the compile is not subject
 // to a per-hook timeout.
-const work = mkdtempSync(join(tmpdir(), "ward-launcher-"));
-const packagedWard = buildExecutable({ entry, outfile: join(work, "ward") });
 const packagedProbe = buildExecutable({
   entry: PROBE_ENTRY,
-  outfile: join(work, "env-probe"),
+  outfile: join(buildRoot, "env-probe"),
 });
 
 // A repository an agent could have edited: a preload that records that it
@@ -61,6 +63,14 @@ writeFileSync(join(hostile, ".env"), `${DOTENV_KEY}=${DOTENV_SENTINEL}\n`);
 const dotenvOnly = join(work, "dotenv-only");
 mkdirSync(dotenvOnly);
 writeFileSync(join(dotenvOnly, ".env"), `${DOTENV_KEY}=${DOTENV_SENTINEL}\n`);
+
+// A bunfig.toml that does not parse: Bun's parse error quotes the line.
+const malformed = join(work, "malformed-bunfig");
+mkdirSync(malformed);
+writeFileSync(
+  join(malformed, "bunfig.toml"),
+  `preload = [ "${TOML_SENTINEL}\n= = [\n`,
+);
 
 // Neither variable is closed by the build flags (WCLI-19); an inherited one
 // would make these results about the caller's shell, not the executable.
@@ -122,6 +132,28 @@ describe("packaged executable in a hostile working directory", () => {
   });
 });
 
+describe("malformed bunfig.toml", () => {
+  function launch(command: string[]) {
+    const run = Bun.spawnSync([...command, "--version"], {
+      cwd: malformed,
+      env,
+    });
+    return { exitCode: run.exitCode, stderr: run.stderr.toString() };
+  }
+
+  test("packaged executable neither parses nor echoes it", () => {
+    const run = launch([packagedWard]);
+    expect(run.exitCode).toBe(exitCodes.success);
+    expect(run.stderr).toBe("");
+  });
+
+  test("control: `bun src/cli/ward.ts` echoes it", () => {
+    expect(
+      launch([process.execPath, entry]).stderr.includes(TOML_SENTINEL),
+    ).toBe(true);
+  });
+});
+
 describe(".env is not loaded into process.env", () => {
   test("packaged build, beside bunfig.toml and .env", () => {
     expect(dotenvKeysSeen([packagedProbe], hostile)).toEqual([]);
@@ -148,12 +180,15 @@ describe("packaging", () => {
     expect(outfile.endsWith(".ts")).toBe(false);
   });
 
-  test("every runtime autoload is disabled", () => {
-    expect([...hardeningFlags].sort()).toEqual([
+  test("the build command disables every runtime autoload", () => {
+    const command = buildCommand({ entry, outfile });
+    for (const flag of [
+      "--compile",
       "--no-compile-autoload-bunfig",
       "--no-compile-autoload-dotenv",
       "--no-compile-autoload-package-json",
       "--no-compile-autoload-tsconfig",
-    ]);
+    ])
+      expect(command).toContain(flag);
   });
 });
