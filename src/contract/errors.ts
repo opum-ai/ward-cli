@@ -158,8 +158,8 @@ export const errorCatalog = {
   project_path_unsafe: {
     type: "conflict",
     message:
-      "A file or directory Ward manages in this project is a symbolic link, leaves the repository, or is not a regular file or directory. Ward did not change it.",
-    hint: "Replace the link with a real file or directory inside the repository, or resolve it, then run the command again.",
+      "A path Ward would use is unsafe: a symbolic link that leaves the repository, a file or directory of the wrong kind, or a vault directory that overlaps the repository. Ward did not change it.",
+    hint: "Replace a link that leaves the repository with a real file or directory inside it, and keep the vault directory outside the repository. Then run the command again.",
   },
   project_file_unwritable: {
     type: "denied",
@@ -176,8 +176,8 @@ export const errorCatalog = {
   binding_conflict: {
     type: "conflict",
     message:
-      "This checkout is registered to a different project, so Ward did not change the binding.",
-    hint: "The vault records another project for this path. Restore that project's manifest, or have the developer review the binding, before registering this one.",
+      "This checkout's project manifest and its vault binding name different projects, so Ward stopped.",
+    hint: "The binding is the authority for a checkout. Restore the bound project's manifest, or remove .ward/project.json and run `ward init` again to have the vault's project id written back. If the binding itself is wrong, a developer must review it.",
   },
   binding_requires_terminal: {
     type: "denied",

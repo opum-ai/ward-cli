@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { locateCheckout } from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
@@ -385,6 +385,77 @@ describe("T10: no checkout inherits a binding", () => {
     expect(h.store.header()?.revision).toBe(revision);
   });
 
+  test("a bound checkout whose manifest was deleted gets the bound id back", async () => {
+    const h = harness();
+    const checkout = worktree("restore-manifest");
+    await h.setUp(checkout);
+    const registered = json((await h.init(checkout)).stdout).data;
+    const revision = h.store.header()?.revision;
+    const asks = h.approver.asks;
+
+    // The manifest is a claim and the binding is the authority: a bound
+    // checkout that lost its manifest is restored from the vault rather than
+    // handed a fresh id it would then disagree with forever.
+    rmSync(manifestPath(checkout));
+    const restored = await h.init(checkout);
+    expect(restored.exitCode).toBe(exitCodes.success);
+    const data = json(restored.stdout).data;
+    expect(data.manifest).toBe("restored");
+    expect(data.projectId).toBe(registered.projectId);
+    expect(data.registration).toBe("already-registered");
+    expect(
+      (
+        JSON.parse(readFileSync(manifestPath(checkout), "utf8")) as {
+          projectId: string;
+        }
+      ).projectId,
+    ).toBe(registered.projectId);
+    // Restoring asks nothing and writes nothing to the vault.
+    expect(h.store.header()?.revision).toBe(revision);
+    expect(h.approver.asks).toBe(asks);
+  });
+
+  test("a manifest replaced while the run registers is reported, not ignored", async () => {
+    const h = harness();
+    const checkout = worktree("racing-manifest");
+    await h.setUp(checkout);
+    const concurrentId = randomUUID();
+
+    // The documented pairing: `ward init --no-register --claude --codex`
+    // beside `ward init` in a terminal. The agent-side run writes its own
+    // manifest while this one is at the prompt.
+    class Racing extends FakeTerminal {
+      override ask(request: RegistrationRequest): RegistrationAnswer {
+        const answer = super.ask(request);
+        mkdirSync(dirname(manifestPath(checkout)), { recursive: true });
+        writeFileSync(
+          manifestPath(checkout),
+          JSON.stringify({ schemaVersion: 1, projectId: concurrentId }),
+        );
+        return answer;
+      }
+    }
+    const result = await h.init(checkout, [], { approver: new Racing() });
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("binding_conflict");
+    // The registration the developer approved did happen; the run refuses to
+    // report success for a checkout whose manifest no longer matches it.
+    const [binding] = h.state()?.localBindings ?? [];
+    const boundId = binding?.projectId ?? "";
+    expect(boundId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(readFileSync(manifestPath(checkout), "utf8")).toContain(
+      concurrentId,
+    );
+
+    // Removing the claim is the recovery the hint names, and the bound id
+    // comes back.
+    rmSync(manifestPath(checkout));
+    const reconciled = json((await h.init(checkout)).stdout).data;
+    expect(reconciled.manifest).toBe("restored");
+    expect(reconciled.projectId).toBe(boundId);
+    expect(reconciled.registration).toBe("already-registered");
+  });
+
   test("a checkout registered to another project is a conflict", async () => {
     const h = harness();
     const checkout = worktree("conflict");
@@ -392,20 +463,22 @@ describe("T10: no checkout inherits a binding", () => {
     json((await h.init(checkout)).stdout);
     const before = h.state();
 
-    // Someone replaced the manifest of a registered checkout.
+    // Someone replaced the manifest of a registered checkout, and a bridge
+    // target was selected: the conflict is decided before any repository
+    // write, so neither the manifest nor the bridge file is touched.
     mkdirSync(join(checkout, ".ward"), { recursive: true });
-    writeFileSync(
-      manifestPath(checkout),
-      JSON.stringify({
-        schemaVersion: 1,
-        projectId: "8b0d1ff6-6f2f-4d5c-9c33-0f5a0f1c7d21",
-      }),
-    );
-    const result = await h.init(checkout);
+    const text = `${JSON.stringify({
+      schemaVersion: 1,
+      projectId: "8b0d1ff6-6f2f-4d5c-9c33-0f5a0f1c7d21",
+    })}\n`;
+    writeFileSync(manifestPath(checkout), text);
+    const result = await h.init(checkout, ["--claude"]);
     expect(result.exitCode).toBe(exitCodes.conflict);
     expect(errorCode(result.stderr)).toBe("binding_conflict");
     expect(h.state()).toEqual(before);
     expect(h.approver.asks).toBe(1);
+    expect(readFileSync(manifestPath(checkout), "utf8")).toBe(text);
+    expect(existsSync(join(checkout, "CLAUDE.md"))).toBe(false);
   });
 
   test("without a terminal, registration is refused before the vault is read", async () => {
@@ -482,6 +555,22 @@ describe("T10: no checkout inherits a binding", () => {
     });
     expect(result.exitCode).toBe(exitCodes.conflict);
     expect(errorCode(result.stderr)).toBe("project_path_unsafe");
+  });
+
+  test("a repository rooted inside the vault directory is refused", async () => {
+    const h = harness();
+    const home = mkdtempSync(join(root, `home-${++cases}-`));
+    const directory = join(home, ".ward");
+    const checkout = join(directory, "repo");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+
+    const result = await runWard(["init", "--json"], {
+      ...h.options(checkout),
+      wardDirectory: directory,
+    });
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("project_path_unsafe");
+    expect(existsSync(join(checkout, ".ward"))).toBe(false);
   });
 });
 
@@ -618,6 +707,69 @@ describe("T22: init preserves every file it does not own", () => {
     expect(result.exitCode).toBe(exitCodes.conflict);
     expect(errorCode(result.stderr)).toBe("project_path_unsafe");
     expect(readdirSync(outside)).toEqual([]);
+  });
+
+  test("a link above the manifest is checked too, not only the manifest itself", async () => {
+    const h = harness();
+    const checkout = worktree("link-above-manifest");
+    const outside = join(root, `outside-ward-${++cases}`);
+    mkdirSync(outside);
+    const stranger = "9f2c1b7a-6f1e-4b0d-9a55-1c2d3e4f5a6b";
+    const text = `${JSON.stringify({ schemaVersion: 1, projectId: stranger })}\n`;
+    writeFileSync(join(outside, "project.json"), text);
+    symlinkSync(outside, join(checkout, ".ward"));
+
+    // Only the last component used to be checked, so a manifest one level
+    // down a link out of the repository was read from outside it (exit 0,
+    // manifest present) rather than refused.
+    const result = await h.init(checkout, ["--no-register"]);
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("project_path_unsafe");
+    expect(readdirSync(outside)).toEqual(["project.json"]);
+    expect(readFileSync(join(outside, "project.json"), "utf8")).toBe(text);
+  });
+
+  test("a project directory that is a link inside the repository is followed", async () => {
+    const h = harness();
+    const checkout = worktree("linked-inside-dotward");
+    const real = join(checkout, ".ward-real");
+    mkdirSync(real);
+    symlinkSync(real, join(checkout, ".ward"));
+
+    // The same rule decides every component: a link is followed exactly when
+    // its target is inside the repository, whether it is the document itself
+    // or a directory above it.
+    const result = await h.init(checkout, ["--no-register"]);
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(lstatSync(join(checkout, ".ward")).isSymbolicLink()).toBe(true);
+    const manifest = JSON.parse(
+      readFileSync(join(real, "project.json"), "utf8"),
+    ) as {
+      projectId: string;
+    };
+    expect(manifest.projectId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  test("a conflict on a later target leaves every file untouched", async () => {
+    const h = harness();
+    const checkout = worktree("preflight");
+    const claude = "# Project\n\nUser prose.\n";
+    writeFileSync(join(checkout, "CLAUDE.md"), claude);
+    const codex = "<!-- ward:begin -->\nbody\n";
+    writeFileSync(join(checkout, "AGENTS.md"), codex);
+
+    const result = await h.init(checkout, [
+      "--no-register",
+      "--claude",
+      "--codex",
+    ]);
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("instructions_markers_conflict");
+    // Every target is read and decided before any is written, so the clean
+    // first target is not rewritten and the manifest is not created.
+    expect(readFileSync(join(checkout, "CLAUDE.md"), "utf8")).toBe(claude);
+    expect(readFileSync(join(checkout, "AGENTS.md"), "utf8")).toBe(codex);
+    expect(existsSync(manifestPath(checkout))).toBe(false);
   });
 
   test("a malformed manifest is refused rather than replaced", async () => {

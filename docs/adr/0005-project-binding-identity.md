@@ -72,15 +72,33 @@ registration the developer confirms.**
   so a developer works in a worktree without giving up the main checkout. Each
   root is approved on its own; none is inferred from another.
 - **A bound path, another project, is a conflict.** A directory already bound
-  to a different project is never silently rebound. The command refuses and
-  the resolution is the developer's: restore that project's manifest, or have
-  the binding reviewed.
+  to a different project is never silently rebound, and a manifest naming
+  another project is refused before anything is written. In the other
+  direction the vault is the authority: a bound directory whose manifest is
+  missing has that project's id written back into it rather than being handed
+  a fresh one, so a deleted manifest is a restorable condition rather than a
+  directory wedged against its own binding. The resolution of a refused
+  conflict is the developer's: restore that project's manifest, or remove the
+  manifest and let the next `ward init` write the bound id back, or have the
+  binding reviewed.
 - **Instruction files are managed, not owned.** Ward rewrites only the bytes
   between `<!-- ward:begin -->` and `<!-- ward:end -->` in CLAUDE.md and
   AGENTS.md, preserving every other byte, including the blocks Lore and Quest
-  manage. A missing half-pair, a duplicate, or a pair in the wrong order is a
-  conflict that changes nothing; a link whose target leaves the repository, or
-  that cannot be resolved at all, is refused rather than followed.
+  manage. Every selected target is read and decided before any of them is
+  written, so a missing half-pair, a duplicate, or a pair in the wrong order
+  on any of them is a conflict that changes nothing. Links are resolved at
+  every path component, the directories above the document included: a link
+  anywhere on the path must land inside the repository to be followed, and one
+  that leaves it, or that cannot be resolved at all, is refused. A link whose
+  target is inside the repository is followed wherever it stands — including a
+  target Ward is about to create — so the answer never depends on the order
+  the targets happen to be written in. **Corrected 2026-09-28 (WCLI-7):** the
+  independent review over this change measured both halves. Targets were
+  written one at a time, so a conflict on the second left the first already
+  rewritten while this sentence and the error text both reported that nothing
+  had changed; and only the document's own component was checked, so a `.ward`
+  directory linked out of the repository had its manifest read from outside
+  it. Both are now covered by tests in `test/project-binding.test.ts`.
 
 ## Consequences
 

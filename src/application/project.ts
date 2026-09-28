@@ -84,10 +84,15 @@ export interface BridgeOutcome {
   readonly status: "created" | "updated" | "unchanged";
 }
 
+// "restored" is a bound checkout whose manifest was missing: the vault's
+// binding is the authority, so its project id is written back rather than a
+// fresh one being minted beside it.
+export type ManifestStatus = "created" | "present" | "restored";
+
 export interface InitResult {
   readonly projectId: string;
   readonly root: string;
-  readonly manifest: "created" | "present";
+  readonly manifest: ManifestStatus;
   readonly bridges: readonly BridgeOutcome[];
   readonly registration: RegistrationOutcome;
   readonly text: string;
@@ -182,59 +187,130 @@ export async function initProject(options: InitOptions): Promise<InitResult> {
   const { checkout, files, targets } = options;
 
   // The user vault must never live inside the repository whose manifest is
-  // being written, and the manifest must never land in the vault directory
-  // (they coincide when the repository root is the home directory).
-  if (isWithin(options.vaultDirectory, checkout.root))
+  // being written, the manifest must never land in the vault directory (they
+  // coincide when the repository root is the home directory), and a
+  // repository rooted inside the vault directory is refused from the other
+  // side of the same rule.
+  if (
+    isWithin(options.vaultDirectory, checkout.root) ||
+    isWithin(checkout.root, options.vaultDirectory)
+  )
     throw new WardError("project_path_unsafe");
 
   const stored = files.read("manifest");
-  let manifest: ProjectManifest;
-  let manifestStatus: "created" | "present";
-  if (stored === undefined) {
+  const existing =
+    stored === undefined ? undefined : parseProjectManifest(stored);
+
+  const freshManifest = (): ProjectManifest => {
     const projectId = options.newProjectId();
     if (!isOpaqueId(projectId)) throw new WardError("uncaught");
-    manifest = newProjectManifest(projectId);
-    files.write("manifest", serializeProjectManifest(manifest));
-    manifestStatus = "created";
-  } else {
-    manifest = parseProjectManifest(stored);
-    manifestStatus = "present";
-  }
+    return newProjectManifest(projectId);
+  };
 
-  const bridges: BridgeOutcome[] = [];
-  for (const target of targets) {
-    const document: ProjectDocument = agentTargetDocuments[target];
-    const current = files.read(document);
-    const update = upsertManagedBlock(current ?? "", wardBlockBody);
-    if (update.status !== "unchanged") files.write(document, update.text);
-    bridges.push({
-      target,
-      document: projectDocumentPaths[document],
-      status: update.status,
+  // Decides every write before making any of them: the manifest and every
+  // bridge target are read and transformed first, and only then written in
+  // that order. A conflict therefore changes nothing — a malformed marker in
+  // the second target must not leave the first target, or the manifest,
+  // already rewritten.
+  const prepare = (
+    write: { manifest: ProjectManifest; status: ManifestStatus } | undefined,
+  ): {
+    manifest: ProjectManifest;
+    status: ManifestStatus;
+    bridges: BridgeOutcome[];
+  } => {
+    const manifest = write?.manifest ?? existing;
+    if (manifest === undefined) throw new WardError("uncaught");
+    const planned = targets.map((target) => {
+      const document: ProjectDocument = agentTargetDocuments[target];
+      const current = files.read(document);
+      const update = upsertManagedBlock(current ?? "", wardBlockBody);
+      return { target, document, status: update.status, text: update.text };
     });
-  }
+    if (write !== undefined)
+      files.write("manifest", serializeProjectManifest(write.manifest));
+    for (const plan of planned)
+      if (plan.status !== "unchanged") files.write(plan.document, plan.text);
+    return {
+      manifest,
+      status: write?.status ?? "present",
+      bridges: planned.map((plan) => ({
+        target: plan.target,
+        document: projectDocumentPaths[plan.document],
+        status: plan.status,
+      })),
+    };
+  };
 
+  let prepared: {
+    manifest: ProjectManifest;
+    status: ManifestStatus;
+    bridges: BridgeOutcome[];
+  };
   let registration: RegistrationOutcome = "skipped";
-  if (options.register) {
+  let binding: BindingRecord | undefined;
+
+  if (!options.register) {
+    prepared = prepare(
+      existing === undefined
+        ? { manifest: freshManifest(), status: "created" }
+        : undefined,
+    );
+  } else {
     const header = options.store.header();
-    if (header === undefined) throw new WardError("vault_not_found");
-    if (!options.approver.available())
+    if (header === undefined) {
+      // No vault exists, so no binding can exist for this checkout either:
+      // the files are prepared and setup is named, as before.
+      prepare(
+        existing === undefined
+          ? { manifest: freshManifest(), status: "created" }
+          : undefined,
+      );
+      throw new WardError("vault_not_found");
+    }
+    if (!options.approver.available()) {
+      // Refused before the vault key is read, so this path cannot consult
+      // the binding: it prepares the files without authority, and a later
+      // interactive run reconciles them.
+      prepare(
+        existing === undefined
+          ? { manifest: freshManifest(), status: "created" }
+          : undefined,
+      );
       throw new WardError("binding_requires_terminal");
+    }
 
     const key = await options.keyProvider.load(header.vaultId);
     try {
       const snapshot = options.store.read(key);
-      const stored = findBinding(stateOf(snapshot.plaintext), checkout);
-      // A binding at this exact directory is either this project's — a
-      // repeat run, answered without asking anything — or another
-      // project's, which is a conflict rather than a silent rebind.
-      if (stored !== undefined && stored.projectId !== manifest.projectId)
-        throw new WardError("binding_conflict");
-      if (stored !== undefined) {
+      binding = findBinding(stateOf(snapshot.plaintext), checkout);
+      if (binding !== undefined) {
+        // A binding at this exact directory is either this project's — a
+        // repeat run, answered without asking anything — or another
+        // project's, which is a conflict rather than a silent rebind. The
+        // decision is taken before any repository write, and a bound
+        // checkout whose manifest is missing is restored from the vault:
+        // minting a fresh id there would leave the manifest and the binding
+        // permanently disagreeing.
+        if (existing !== undefined && existing.projectId !== binding.projectId)
+          throw new WardError("binding_conflict");
+        prepared = prepare(
+          existing === undefined
+            ? {
+                manifest: newProjectManifest(binding.projectId),
+                status: "restored",
+              }
+            : undefined,
+        );
         registration = "already-registered";
       } else {
+        prepared = prepare(
+          existing === undefined
+            ? { manifest: freshManifest(), status: "created" }
+            : undefined,
+        );
         const answer = options.approver.ask({
-          projectId: manifest.projectId,
+          projectId: prepared.manifest.projectId,
           root: checkout.root,
         });
         if (answer === "unavailable")
@@ -244,7 +320,7 @@ export async function initProject(options: InitOptions): Promise<InitResult> {
             ? registerForProject({
                 store: options.store,
                 key,
-                projectId: manifest.projectId,
+                projectId: prepared.manifest.projectId,
                 checkout,
                 registeredAt: options.now().toISOString(),
               })
@@ -253,21 +329,47 @@ export async function initProject(options: InitOptions): Promise<InitResult> {
     } finally {
       key.fill(0);
     }
+
+    // The manifest was read before the prompt and written before it too, and
+    // a concurrent run — the documented `--no-register` beside an
+    // interactive one — can replace it in between. A manifest that no longer
+    // names the project this run bound the checkout to is reported rather
+    // than answered as a success; nothing is written here, and the next run
+    // reconciles the checkout.
+    const settled =
+      binding?.projectId ??
+      (registration === "registered" || registration === "already-registered"
+        ? prepared.manifest.projectId
+        : undefined);
+    if (settled !== undefined) {
+      const current = files.read("manifest");
+      if (
+        current !== undefined &&
+        parseProjectManifest(current).projectId !== settled
+      )
+        throw new WardError("binding_conflict");
+    }
   }
 
   const lines = [
     "Ward project initialized.",
     "",
-    `  project:  ${manifest.projectId}`,
+    `  project:  ${prepared.manifest.projectId}`,
     `  checkout: ${checkout.root}`,
-    `  manifest: ${projectDocumentPaths.manifest} (${manifestStatus})`,
-    ...bridges.map(
+    `  manifest: ${projectDocumentPaths.manifest} (${prepared.status})`,
+    ...prepared.bridges.map(
       (bridge) =>
         `  ${`${bridge.target}:`.padEnd(10)}${bridge.document} (${bridge.status})`,
     ),
     "",
     registrationText(registration),
-    ...(bridges.length === 0
+    ...(prepared.status === "restored"
+      ? [
+          "",
+          "The manifest was missing, so its project id was written back from the vault's binding for this checkout.",
+        ]
+      : []),
+    ...(prepared.bridges.length === 0
       ? [
           "",
           "Add Ward's guidance block to CLAUDE.md and AGENTS.md: `ward init --claude --codex`.",
@@ -276,10 +378,10 @@ export async function initProject(options: InitOptions): Promise<InitResult> {
   ];
 
   return {
-    projectId: manifest.projectId,
+    projectId: prepared.manifest.projectId,
     root: checkout.root,
-    manifest: manifestStatus,
-    bridges,
+    manifest: prepared.status,
+    bridges: prepared.bridges,
     registration,
     text: lines.join("\n"),
   };
