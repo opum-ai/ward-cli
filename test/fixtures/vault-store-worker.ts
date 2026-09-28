@@ -113,7 +113,8 @@ if (mode === "append") {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA wal_autocheckpoint = 0");
   db.exec("CREATE TABLE notes (body TEXT)");
-  for (let i = 0; i < 100; i++) db.exec(`INSERT INTO notes VALUES ('row-${i}')`);
+  for (let i = 0; i < 100; i++)
+    db.exec(`INSERT INTO notes VALUES ('row-${i}')`);
   writeSync(1, "ready\n");
   blockForever();
 } else {
