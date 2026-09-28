@@ -1,0 +1,14 @@
+schema_version = 1
+name = "verification"
+description = "Retrieves the platform qualification rules, the measured non-guarantees, and the vault and key-custody contract, so a verification pass measures Ward behaviour against what its own documents permit it to claim."
+kind = "specialist"
+max_tokens = 10000
+pinned = [
+  "adr/0004-committed-platform-target",
+  "adr/0002-p0-threat-model-and-non-guarantees",
+]
+sources = [
+  "adr/0001-vault-storage-and-key-custody",
+  "adr/0003-profile-approval-authority",
+  "index",
+]
