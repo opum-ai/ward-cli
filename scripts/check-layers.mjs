@@ -39,13 +39,14 @@ function relativeImportTargets(source) {
   ].map(([, target]) => target);
 }
 
-// Native bindings reach the OS directly, so only adapters may import them.
-const nativePackages = new Set(["@napi-rs/keyring"]);
+// Native bindings reach the OS directly, so only adapters may name them,
+// and only by the package root, which is what the test mock replaces. Any
+// quoted or template-literal occurrence counts, so import, export, require
+// and import() are all caught.
+const nativeSpecifier = /["'`](@napi-rs\/keyring(?:[-/][^"'`]*)?)["'`]/g;
 
-function packageImportTargets(source) {
-  return [
-    ...source.matchAll(/(?:from\s*|import\s*\(?\s*)["']([^."'][^"']*)["']/g),
-  ].map(([, target]) => target);
+function nativeTargets(source) {
+  return [...source.matchAll(nativeSpecifier)].map(([, target]) => target);
 }
 
 const files = await collectTypeScriptFiles(sourceRoot);
@@ -62,11 +63,14 @@ for (const file of files) {
     continue;
   }
   const source = await readFile(file, "utf8");
-  for (const target of packageImportTargets(source))
-    if (nativePackages.has(target) && sourceLayer !== "adapters")
+  for (const target of nativeTargets(source)) {
+    if (sourceLayer !== "adapters")
+      violations.push(`${file}: only adapters may import ${target}`);
+    else if (target !== "@napi-rs/keyring")
       violations.push(
-        `${file}: only adapters may import the native binding ${target}`,
+        `${file}: import the native binding by its package root, not ${target}`,
       );
+  }
   for (const target of relativeImportTargets(source)) {
     const targetPath = relative(sourceRoot, join(dirname(file), target));
     if (targetPath.startsWith("..")) continue;

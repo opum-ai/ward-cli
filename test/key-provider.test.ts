@@ -3,10 +3,15 @@
 // compiled probe that makes no store call. Nothing reads or writes a real
 // keychain item. Assertions compare keys as booleans, so a failure report
 // never prints key bytes.
+//
+// The mock is imported first, whatever the working directory: bunfig.toml's
+// preload only applies from the repository root (test-isolation.test.ts).
+import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AsyncEntry } from "@napi-rs/keyring";
 import { buildExecutable } from "../scripts/build.ts";
 import {
   createKeychainKeyProvider,
@@ -201,6 +206,77 @@ describe("an unconfirmed create is indeterminate, not a failure to write", () =>
   });
 });
 
+describe("a failure after the write began is unconfirmed, never unavailable", () => {
+  for (const mode of ["fail-after-write", "hang-after-write"] as const)
+    test(`a read-back that ${mode === "fail-after-write" ? "rejects" : "hangs"}`, async () => {
+      const { store, provider } = setup(50);
+      store.mode = mode;
+      await rejectsWith("vault_key_write_unconfirmed", () =>
+        provider.create(VAULT_ID, generateVaultKey()),
+      );
+      expect(store.writeAttempts).toBe(1);
+    });
+
+  test("a malformed read-back", async () => {
+    const { store, provider } = setup();
+    const entry = store.entry;
+    store.entry = (service, account) => {
+      const inner = entry(service, account);
+      return {
+        getSecret: async (signal) =>
+          store.writeAttempts > 0 ? [1, 2, 3] : inner.getSecret(signal),
+        setSecret: (secret, signal) => inner.setSecret(secret, signal),
+      };
+    };
+    const wrapped = createKeychainKeyProvider({
+      service: TEST_SERVICE,
+      timeoutMs: 200,
+      entry: (service, account) => store.entry(service, account),
+    });
+    void provider;
+    await rejectsWith("vault_key_write_unconfirmed", () =>
+      wrapped.create(VAULT_ID, generateVaultKey()),
+    );
+  });
+
+  test("a rejected write is unconfirmed, and its message is not passed on", async () => {
+    const { store, provider } = setup();
+    store.mode = "writes-fail";
+    const error = await caught(() =>
+      provider.create(VAULT_ID, generateVaultKey()),
+    );
+    expect((error as WardError).code).toBe("vault_key_write_unconfirmed");
+    expect((error as WardError).message).not.toContain("interaction");
+  });
+});
+
+describe("best-effort zeroing of what the store hands back", () => {
+  test("the array a load received is overwritten", async () => {
+    const { store, provider } = setup();
+    await provider.create(VAULT_ID, generateVaultKey());
+    store.handedOut.length = 0;
+    await provider.load(VAULT_ID);
+    expect(store.handedOut.length).toBe(1);
+    expect((store.handedOut[0] as number[]).every((byte) => byte === 0)).toBe(
+      true,
+    );
+  });
+
+  test("a key that arrives after the bound is overwritten", async () => {
+    const { store, provider } = setup(30);
+    await provider.create(VAULT_ID, generateVaultKey());
+    store.handedOut.length = 0;
+    store.mode = "late-read";
+    store.lateMs = 90;
+    await rejectsWith("vault_key_unavailable", () => provider.load(VAULT_ID));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(store.handedOut.length).toBe(1);
+    expect((store.handedOut[0] as number[]).every((byte) => byte === 0)).toBe(
+      true,
+    );
+  });
+});
+
 describe("every store call settles within its bound", () => {
   for (const operation of ["load", "create"] as const)
     test(`${operation} gives up at the bound`, async () => {
@@ -286,7 +362,18 @@ describe("the native credential store", () => {
     );
   });
 
-  test("in a test process, the preloaded mock refuses the real binding", async () => {
+  test("the default platform is the running one", async () => {
+    const provider = createKeychainKeyProvider({ service: TEST_SERVICE });
+    const error = await caught(() => provider.load(VAULT_ID));
+    if (process.platform === "darwin")
+      expect((error as Error).message).toBe(realKeychainRefusal);
+    else expect((error as WardError).code).toBe("vault_key_store_unsupported");
+  });
+
+  test("in a test process, the mocked binding refuses construction", async () => {
+    // Checked before anything is constructed, so a missing mock fails here
+    // rather than reaching the real store.
+    expect(AsyncEntry.name).toBe("Refused");
     const provider = createKeychainKeyProvider({
       service: TEST_SERVICE,
       platform: "darwin",
@@ -336,17 +423,28 @@ describe("the binding in a compiled executable", () => {
     });
   }, 30_000);
 
-  test("the guard stops NAPI_RS_NATIVE_LIBRARY_PATH replacing the binding", () => {
-    const result = run(relocated("keychain-probe"), {
-      NAPI_RS_NATIVE_LIBRARY_PATH: override,
-    });
-    expect(result.stdout.includes("override-loaded")).toBe(false);
-  }, 30_000);
+  const loaderVariables: [label: string, env: Record<string, string>][] = [
+    ["NAPI_RS_NATIVE_LIBRARY_PATH", { NAPI_RS_NATIVE_LIBRARY_PATH: override }],
+    ["NAPI_RS_FORCE_WASI=error", { NAPI_RS_FORCE_WASI: "error" }],
+    ["NAPI_RS_WASI_FLAVOR", { NAPI_RS_WASI_FLAVOR: "unsupported" }],
+  ];
 
-  test("control: without the guard, the override loads", () => {
-    const result = run(relocated("keychain-probe-unguarded"), {
-      NAPI_RS_NATIVE_LIBRARY_PATH: override,
-    });
-    expect(result.stdout.includes("override-loaded")).toBe(true);
-  }, 30_000);
+  for (const [label, env] of loaderVariables) {
+    test(`the guard neutralizes ${label}`, () => {
+      const result = run(relocated("keychain-probe"), env);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.includes("override-loaded")).toBe(false);
+      expect(JSON.parse(result.stdout)).toEqual({
+        service: "opum.ward",
+        load: "function",
+      });
+    }, 30_000);
+
+    test(`control: without the guard, ${label} takes effect`, () => {
+      const result = run(relocated("keychain-probe-unguarded"), env);
+      const tookEffect =
+        result.stdout.includes("override-loaded") || result.exitCode !== 0;
+      expect(tookEffect).toBe(true);
+    }, 30_000);
+  }
 });

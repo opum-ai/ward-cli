@@ -103,8 +103,9 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
     adapter normalizes and validates both. A `number[]` cannot be zeroed reliably, so that
     zeroing is best effort.
 - **The adapter round trip was measured in a compiled executable.** The developer authorised
-  it. One executable built by `scripts/build.ts` used a fresh `opum.ward.probe-*` service and
-  deleted the item afterwards. The results:
+  it. One executable built by `scripts/build.ts` from the WCLI-5 adapter source at commit
+  45f5795 (bun 1.3.14) used a fresh `opum.ward.probe-*` service and deleted the item
+  afterwards. The results:
   - A load before create reported `vault_key_missing`.
   - Create succeeded in 17 ms, and a load returned the same 32 bytes in 3 ms.
   - A second create was refused with `vault_key_exists`, and the original key was intact.
@@ -123,8 +124,14 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   `vault_key_store_unsupported` before constructing an entry. The reason: off macOS the binding
   silently falls back to the Linux kernel keyutils keyring, which does not survive a reboot,
   and spec §6.4 forbids that substitution. Linux and Windows follow WCLI-21 and WCLI-22.
-- **Tests cannot reach a real keychain item.** `bunfig.toml` preloads a mock that makes
-  constructing a real binding entry throw in every test process, whatever `NODE_ENV` is. The
-  adapter has no default service name.
+- **Tests are kept away from real keychain items.** A mock makes constructing a real binding
+  entry throw. `bunfig.toml` preloads it when `bun test` runs from the repository root.
+  Because Bun reads `bunfig.toml` from the working directory only, every test that can reach
+  the adapter also imports the mock first, and `test/test-isolation.test.ts` enforces that.
+  The adapter has no default service name.
+- **The round trip is reproducible.** `test/qualification/keychain-roundtrip.ts` is the probe
+  that produced the measurement above. `bun test` never runs it, and it refuses to run without
+  an explicit opt-in. It writes to the real keychain, so it runs only with the developer's
+  authorisation.
 - One key opens the whole vault. Compromise of that key exposes every project's secrets
   (spec §2).

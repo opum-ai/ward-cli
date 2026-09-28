@@ -12,12 +12,14 @@ function emitUncaughtAndExit(): never {
   process.exit(exitCodes.uncaught);
 }
 
-// @napi-rs/keyring loads whatever module this variable names in place of its
-// native binding, and it reads the variable only when the binding is first
-// imported, after this module has run. Deleting it here closes that path;
-// measured under WCLI-5. BUN_OPTIONS and BUN_BE_BUN act before any Ward code
-// and cannot be closed this way (WCLI-19).
-delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
+// @napi-rs/keyring's loader reads NAPI_RS_* variables when the binding is
+// first imported, after this module has run. NAPI_RS_NATIVE_LIBRARY_PATH
+// loads any module in place of the binding; NAPI_RS_FORCE_WASI=error and
+// NAPI_RS_WASI_FLAVOR make the import throw. All measured under WCLI-5.
+// Deleting every NAPI_RS_ key here closes them. BUN_OPTIONS and BUN_BE_BUN
+// act before any Ward code and cannot be closed this way (WCLI-19).
+for (const name of Object.keys(process.env))
+  if (name.startsWith("NAPI_RS_")) delete process.env[name];
 
 process.on("uncaughtException", emitUncaughtAndExit);
 process.on("unhandledRejection", emitUncaughtAndExit);
