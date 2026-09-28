@@ -1,7 +1,7 @@
 // The process entry point. Import order is load-bearing: guard.ts must
-// evaluate before anything else. This file is not a hardened launcher; run
-// through `bun`, it inherits the working directory's bunfig.toml and .env
-// (WCLI-16).
+// evaluate before anything else. Ship it only as the executable
+// scripts/build.ts compiles: run through `bun`, it inherits the working
+// directory's bunfig.toml and .env (WCLI-16).
 import "./guard.ts";
 import { runWard } from "./main.ts";
 
