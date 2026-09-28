@@ -13,6 +13,7 @@
 // and never by writing again (WCLI-5 review).
 import { WardError } from "../contract/errors.ts";
 import { generateVaultKey, isVaultId } from "../domain/envelope.ts";
+import { emptyVaultState, serializeVaultState } from "../domain/vault-state.ts";
 import type { KeyProvider } from "./key-provider.ts";
 import type { VaultStore } from "./vault-store.ts";
 
@@ -31,10 +32,12 @@ export interface SetupResult {
   resumed: boolean;
 }
 
-// The minimal self-describing vault document. The full state schema is the
-// next layer's contract (WCLI-7): setup seals only this skeleton.
+// The self-describing vault document with no collections yet (spec §6.2).
+// Setup seals it; projects and local bindings are added by `ward init`, and
+// a document that predates them is read as empty collections rather than
+// refused (domain/vault-state.ts).
 export function initialVaultSnapshot(): Uint8Array {
-  return new TextEncoder().encode('{"formatVersion":1}');
+  return serializeVaultState(emptyVaultState());
 }
 
 export async function runSetup(options: {

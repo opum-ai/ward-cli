@@ -21,3 +21,4 @@ entry point and the only one that carries `okf_version`.
 - [P0 threat model and non-guarantees](adr/0002-p0-threat-model-and-non-guarantees.md)
 - [Profile approval authority](adr/0003-profile-approval-authority.md)
 - [Committed platform target](adr/0004-committed-platform-target.md)
+- [Project binding identity](adr/0005-project-binding-identity.md)

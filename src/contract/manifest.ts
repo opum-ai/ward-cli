@@ -15,6 +15,9 @@ export interface FlagSpec {
 // these; no command's output class is "secret", because none returns a value.
 export type OutputSensitivity = "public" | "metadata" | "status";
 
+// The agent hosts Ward writes a guidance block for (spec §11.2).
+export type AgentTarget = "claude" | "codex";
+
 export interface CommandSpec {
   name: string;
   summary: string;
@@ -119,6 +122,55 @@ export const commands: CommandSpec[] = [
       exitCodes.indeterminate,
     ],
     examples: ["ward setup", "ward setup --json"],
+  },
+  {
+    name: "init",
+    summary:
+      "Create this repository's Ward project manifest, add Ward's guidance block to CLAUDE.md and/or AGENTS.md, and register this checkout with the developer's vault. Registration is confirmed by the developer in an interactive terminal; --no-register prepares the project files without granting access.",
+    args: [],
+    flags: [
+      {
+        name: "--no-register",
+        takesValue: false,
+        summary:
+          "Prepare the project files without registering this checkout, so it gains no access to the project's secrets. Safe for agent-driven preparation.",
+      },
+      {
+        name: "--claude",
+        takesValue: false,
+        summary: "Add or refresh Ward's block in CLAUDE.md.",
+      },
+      {
+        name: "--codex",
+        takesValue: false,
+        summary: "Add or refresh Ward's block in AGENTS.md.",
+      },
+      jsonFlag,
+    ],
+    kind: "init.complete",
+    mutates: true,
+    // Registration reads the encrypted vault; --no-register does not, but
+    // the declaration covers what the command can do.
+    unlocksVault: true,
+    // Not marked admin: spec §8 names `ward init --no-register --claude
+    // --codex` as agent-driven preparation. What holds the line is the
+    // interactive terminal a registration needs, not a label here.
+    admin: false,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: [
+      "ward init --no-register",
+      "ward init --no-register --claude --codex",
+    ],
   },
   {
     name: "help",

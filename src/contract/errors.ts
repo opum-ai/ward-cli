@@ -136,6 +136,60 @@ export const errorCatalog = {
     message: "Ward's setup bookkeeping is damaged. Ward will not overwrite it.",
     hint: "The setup record is the setup.json file in the Ward directory. Inspect it, remove it if it is damaged, then run `ward setup` again.",
   },
+  // Project binding (spec §7.1). None of these names a path or a project.
+  worktree_not_found: {
+    type: "not_found",
+    message:
+      "The current directory is not inside a Git worktree. Ward binds a project to a repository root, and found none here.",
+    hint: "Run `ward init` from inside a Git repository whose `.git` entry is a directory or a worktree file.",
+  },
+  project_manifest_malformed: {
+    type: "validation",
+    message:
+      "The project manifest is not a valid Ward project document. Ward did not change it.",
+    hint: "The manifest is .ward/project.json in the repository root. Repair or remove it, then run `ward init` again.",
+  },
+  project_manifest_unsupported: {
+    type: "validation",
+    message:
+      "The project manifest uses a schema this version of Ward cannot read, so Ward did not act on it.",
+    hint: "It may have been written by a newer Ward, or hold fields this build does not implement yet. Do not delete it without checking what it holds.",
+  },
+  project_path_unsafe: {
+    type: "conflict",
+    message:
+      "A file or directory Ward manages in this project is a symbolic link, leaves the repository, or is not a regular file or directory. Ward did not change it.",
+    hint: "Replace the link with a real file or directory inside the repository, or resolve it, then run the command again.",
+  },
+  project_file_unwritable: {
+    type: "denied",
+    message:
+      "Ward could not read or write a project file. Nothing was changed.",
+    hint: "Check that the repository directory is writable by you and not read-only.",
+  },
+  instructions_markers_conflict: {
+    type: "conflict",
+    message:
+      "An instruction file's Ward block markers are incomplete, duplicated, or out of order. Ward did not change the file.",
+    hint: "A file may hold one `<!-- ward:begin -->` and one `<!-- ward:end -->`, in that order. Repair or remove the extra markers, then run the command again.",
+  },
+  binding_conflict: {
+    type: "conflict",
+    message:
+      "This checkout is registered to a different project, so Ward did not change the binding.",
+    hint: "The vault records another project for this path. Restore that project's manifest, or have the developer review the binding, before registering this one.",
+  },
+  binding_requires_terminal: {
+    type: "denied",
+    message:
+      "Registering a checkout needs an interactive terminal, and this run has none to ask on.",
+    hint: "Run `ward init` yourself in a terminal to register this checkout, or run `ward init --no-register` to prepare the project files without granting access.",
+  },
+  vault_state_malformed: {
+    type: "validation",
+    message:
+      "The vault's contents are not a state document this Ward can read.",
+  },
 } as const satisfies Record<
   string,
   { type: ErrorType; message: string; hint?: string }

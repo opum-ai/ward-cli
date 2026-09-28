@@ -2,7 +2,7 @@
 // bunfig.toml's preload alone would not cover a run from another cwd.
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
@@ -24,6 +24,14 @@ function json(stdout: string): Record<string, unknown> {
 const root = mkdtempSync(join(tmpdir(), "ward-contract-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
+// A throwaway checkout, so a command that resolves a project (`ward init`)
+// has a worktree root to find and never writes into this repository.
+function checkout(): string {
+  const directory = mkdtempSync(join(root, "repo-"));
+  mkdirSync(join(directory, ".git"));
+  return directory;
+}
+
 function options(): RunOptions {
   const keychain = new MemoryKeychain();
   return {
@@ -33,6 +41,7 @@ function options(): RunOptions {
       service: "opum.ward.contract",
       entry: keychain.entry,
     }),
+    cwd: checkout(),
   };
 }
 
@@ -54,11 +63,12 @@ describe("manifest", () => {
   });
 
   test("lists exactly the commands that have handlers", () => {
-    // `setup` is the one command dispatched by the composition root in
-    // main.ts rather than the synchronous handler table, because it needs
-    // the injected store and provider.
+    // `setup` and `init` are dispatched by the composition root in main.ts
+    // rather than by the synchronous handler table, because they need the
+    // injected store, provider, checkout and consent.
+    const compositionRoot = ["setup", "init"];
     expect(commands.map((command) => command.name).sort()).toEqual(
-      [...Object.keys(handlers), "setup"].sort(),
+      [...Object.keys(handlers), ...compositionRoot].sort(),
     );
   });
 
