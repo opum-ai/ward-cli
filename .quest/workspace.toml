@@ -1,0 +1,6 @@
+schemaVersion = 1
+name = "ward-cli"
+taskIdPrefix = "WCLI"
+
+[agents]
+skill_source = "plugin"

@@ -1,0 +1,6 @@
+{
+  "env": {
+    "OPUM_HOOK_ACTOR": "ward-cli-worker",
+    "OPUM_HOOK_ACCOUNTABLE_HUMAN": "jdnewhouse"
+  }
+}
