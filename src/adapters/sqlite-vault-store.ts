@@ -152,7 +152,7 @@ function headerVersions(
   try {
     const header = new Uint8Array(20);
     if ((readSync(fd, header, 0, 20, 0) ?? 0) < 20) return undefined;
-    return { read: header[18], write: header[19] };
+    return { read: header[18] ?? 0, write: header[19] ?? 0 };
   } finally {
     closeSync(fd);
   }
