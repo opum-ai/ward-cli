@@ -103,9 +103,11 @@ describe("T01: setup and non-initialization", () => {
     expect(keychain.items.size).toBe(1);
     expect(mode(directory)).toBe(0o700);
     expect(mode(join(directory, vaultFileName))).toBe(0o600);
-    // The lock file persists (flock lives in the kernel; the file content
-    // is advisory); only the journal disappears.
-    expect(existsSync(join(directory, setupLockFileName))).toBe(true);
+    // On macOS the flock file persists (the kernel holds the lock; the
+    // content is advisory); the O_EXCL fallback removes its file. Either
+    // way only the journal is setup bookkeeping that must disappear.
+    if (process.platform === "darwin")
+      expect(existsSync(join(directory, setupLockFileName))).toBe(true);
     expect(existsSync(join(directory, setupJournalFileName))).toBe(false);
     // The sealed snapshot is the minimal skeleton document.
     const key = keychain.items.values().next().value as number[];
@@ -372,7 +374,7 @@ describe("write-unconfirmed resolution", () => {
 });
 
 describe("the setup lock", () => {
-  test(
+  test.skipIf(process.platform !== "darwin")(
     "a live flock holder refuses a second setup, and release admits it",
     async () => {
       const { directory, options } = fresh();
@@ -402,16 +404,18 @@ describe("the setup lock", () => {
   test("an unlocked lock file does not block setup", async () => {
     const { directory, options } = fresh();
     mkdirSync(directory, { mode: 0o700 });
-    // Content is advisory on macOS, where flock(2) arbitrates: a pid of a
-    // dead process must not block a new setup.
+    // A pid of a dead process must not block a new setup. On macOS flock(2)
+    // arbitrates and the content is advisory; the O_EXCL fallback reaps the
+    // dead pid's file.
     writeFileSync(join(directory, setupLockFileName), "999999\n", {
       mode: 0o600,
     });
     const result = await setupViaRunWard(options());
     expect(result.exitCode).toBe(exitCodes.success);
-    expect(readFileSync(join(directory, setupLockFileName), "utf8")).toBe(
-      `${process.pid}\n`,
-    );
+    if (process.platform === "darwin")
+      expect(readFileSync(join(directory, setupLockFileName), "utf8")).toBe(
+        `${process.pid}\n`,
+      );
   });
 });
 
