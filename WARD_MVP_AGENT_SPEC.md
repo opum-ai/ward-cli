@@ -35,7 +35,7 @@ This specification is a proposed design, not a description of an existing Ward i
 | First consumption adapter | Built-in HTTPS operations with secret-bearing authentication headers and status-only results. No general shell execution in P0. |
 | Environment variables | Never deliver Ward-managed secrets through environment variables. Environment-only consumers are unsupported in P0. |
 | Marketplace | Keep the authoritative skill and plugin in `ward-cli`; add a pinned federated entry to `opum-marketplace` after the release artifact exists. |
-| Portability | Qualify macOS first. Qualify Linux only with a verified persistent, protected native credential backend. Do not advertise untested platforms. |
+| Portability | The committed target is macOS, Linux and Windows, and the first developer preview is macOS-only. Qualify macOS first. Qualify Linux only with a verified persistent, protected native credential backend, and Windows against Windows Credential Manager, each through its own T26 run. Do not advertise untested platforms. (Amended 2026-09-28 by operator ruling, opum-doc ODOC-316; see `docs/adr/0004-committed-platform-target.md`.) |
 
 The one-key, one-snapshot design is intentional for the MVP: few moving parts and atomic changes across secrets, bindings, grants, and approvals. Compromise of that key exposes the entire vault. Per-project data keys and stronger isolation are future designs, not properties of this release.
 
