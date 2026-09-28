@@ -49,6 +49,21 @@ branch; squash into `dev`; fast-forward `dev` to `main`. Hook-written tracker no
 depend on `OPUM_HOOK_ACTOR` and `OPUM_HOOK_ACCOUNTABLE_HUMAN` in the committed
 `.claude/settings.json`; with either unset the hooks write nothing.
 
+**The gated ref is `dev`.** Measured live on 2026-09-28 with
+`gh api repos/opum-ai/ward-cli/rules/branches/dev`: ruleset 24097150, "require CI on
+dev", active, no bypass actors, requires `Check`, `Docs` and `Tracker integrity`,
+each pinned to integration 15368 (GitHub Actions), strict policy off. `main` has no
+rules. A required check can only pass on a SHA that has already been through CI, so
+nothing can be pushed straight to `dev`, a tracker-only change included: every
+change lands through a pull request. Re-measure rather than trust this paragraph.
+Renaming or removing a CI job means updating the ruleset in the same change, or
+every merge blocks on a check that never reports.
+
+CI is `.github/workflows/ci.yml` (WCLI-17), on `[self-hosted, Linux, ARM64]`. The
+org and repository runner listings both report 0 runners, yet every job is picked
+up within seconds by the `mbpm2` group's ephemeral `linux-arm64-*` runners. A
+listing is not evidence either way; an actual job's `runner_name` is.
+
 ### Retirement machinery carried here
 
 None known.
