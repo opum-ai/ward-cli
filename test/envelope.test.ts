@@ -2,11 +2,11 @@
 // envelope, spec §6.3. Keys and plaintexts are synthetic; nothing here reads
 // a keychain or ~/.ward.
 import { describe, expect, test } from "bun:test";
+import { createCipheriv, createDecipheriv } from "node:crypto";
 import type { ErrorCode } from "../src/contract/errors.ts";
 import { WardError } from "../src/contract/errors.ts";
 import {
   associatedData,
-  encryptWithNonce,
   envelopeLimits,
   generateVaultKey,
   open,
@@ -39,8 +39,10 @@ function sealed(plaintext = utf8('{"schema":1,"secrets":{}}')) {
 }
 
 // McGrew and Viega, "The Galois/Counter Mode of Operation", test cases 13-16
-// (the AES-256, 96-bit IV cases). Matched by Bun (BoringSSL) and, when these
-// were recorded, by Node 24 (OpenSSL 3.6).
+// (the AES-256, 96-bit IV cases). Run against the runtime's node:crypto in
+// both directions, which is the parity check spec §13 asks for. Matched by
+// Bun (BoringSSL) and, when these were recorded, by Node 24.20 (OpenSSL
+// 3.5.7).
 const K16 = "feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308";
 const P64 =
   "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255";
@@ -104,18 +106,27 @@ describe("T03: AES-256-GCM known answers", () => {
     tag,
   ] of knownAnswers)
     test(name, () => {
-      const out = encryptWithNonce(
-        hex(key),
-        hex(nonce),
-        hex(aad),
-        hex(plaintext),
-      );
-      expect(toHex(out.ciphertext)).toBe(ciphertext);
-      expect(toHex(out.tag)).toBe(tag);
+      const cipher = createCipheriv("aes-256-gcm", hex(key), hex(nonce));
+      cipher.setAAD(hex(aad));
+      const out = Buffer.concat([
+        cipher.update(hex(plaintext)),
+        cipher.final(),
+      ]);
+      expect(out.toString("hex")).toBe(ciphertext);
+      expect(cipher.getAuthTag().toString("hex")).toBe(tag);
+
+      const decipher = createDecipheriv("aes-256-gcm", hex(key), hex(nonce));
+      decipher.setAAD(hex(aad));
+      decipher.setAuthTag(hex(tag));
+      const back = Buffer.concat([
+        decipher.update(hex(ciphertext)),
+        decipher.final(),
+      ]);
+      expect(back.toString("hex")).toBe(plaintext);
     });
 
   // Pins the envelope's own format: the authenticated-data encoding, field
-  // order and domain. Recorded identically under Bun and Node 24; changing
+  // order and domain. Recorded identically under Bun and Node 24.20; changing
   // any of them is a format change and must bump formatVersion.
   test("golden envelope record opens, and its authenticated data is fixed", () => {
     const header = { formatVersion: 1, vaultId: VAULT_ID, revision: 7 };
@@ -309,7 +320,7 @@ describe("T04: any change fails before plaintext is returned", () => {
     const { key, record } = sealed();
     for (let index = 0; index < VAULT_ID.length; index++) {
       const char = VAULT_ID[index];
-      if (char === "-" || index === 14 || index === 19) continue;
+      if (char === "-" || index === 14) continue;
       const replacement = char === "a" ? "b" : "a";
       const vaultId =
         VAULT_ID.slice(0, index) + replacement + VAULT_ID.slice(index + 1);
@@ -326,4 +337,113 @@ describe("T04: any change fails before plaintext is returned", () => {
         open(key, { ...record, revision }),
       );
     });
+});
+
+// Hostile-shaped inputs (review of PR #10). None of these is reachable from a
+// record deserialized out of SQLite, but the envelope must not depend on that.
+class LyingLength extends Uint8Array {
+  constructor(
+    bytes: number,
+    private readonly claimed: number,
+  ) {
+    super(bytes);
+  }
+  override get length(): number {
+    return this.claimed;
+  }
+}
+
+describe("inputs are read once and copied before use", () => {
+  test("a view claiming a smaller length cannot bypass the size limit", () => {
+    const over = envelopeLimits.maxPlaintextBytes + 1;
+    failsWith("vault_record_too_large", () =>
+      seal(
+        generateVaultKey(),
+        { vaultId: VAULT_ID, revision: 1 },
+        new LyingLength(over, 1),
+      ),
+    );
+    const { key, record } = sealed();
+    failsWith("vault_record_too_large", () =>
+      open(key, { ...record, ciphertext: new LyingLength(over, 1) }),
+    );
+  });
+
+  test("a short nonce, tag or key claiming the right length is refused", () => {
+    const { key, record } = sealed();
+    failsWith("vault_record_malformed", () =>
+      open(key, { ...record, nonce: new LyingLength(8, 12) }),
+    );
+    failsWith("vault_record_malformed", () =>
+      open(key, { ...record, tag: new LyingLength(4, 16) }),
+    );
+    failsWith("vault_key_invalid", () => open(new LyingLength(16, 32), record));
+  });
+
+  test("each header field is read exactly once", () => {
+    const { key, record } = sealed();
+    let reads = 0;
+    const header = {
+      ...record,
+      get revision() {
+        reads += 1;
+        return reads === 1 ? 3 : 1e21;
+      },
+    };
+    expect(open(key, header)).toEqual(sealed().plaintext);
+    expect(reads).toBe(1);
+  });
+
+  test("a SharedArrayBuffer-backed key is copied, not used in place", () => {
+    const { key, record } = sealed();
+    const shared = new Uint8Array(new SharedArrayBuffer(32));
+    shared.set(key);
+    expect(open(shared, record)).toEqual(sealed().plaintext);
+  });
+
+  test("the sealed record carries only envelope fields", () => {
+    const record = seal(
+      generateVaultKey(),
+      {
+        vaultId: VAULT_ID,
+        revision: 1,
+        formatVersion: 9,
+        note: "unencrypted",
+      } as unknown as { vaultId: string; revision: number },
+      utf8("x"),
+    );
+    expect(Object.keys(record)).toEqual([
+      "formatVersion",
+      "vaultId",
+      "revision",
+      "nonce",
+      "ciphertext",
+      "tag",
+    ]);
+    expect(record.formatVersion).toBe(1);
+  });
+
+  test("non-byte plaintext, a missing record or header, and a fake key are refused", () => {
+    const key = generateVaultKey();
+    failsWith("vault_record_malformed", () =>
+      seal(
+        key,
+        { vaultId: VAULT_ID, revision: 1 },
+        "text" as unknown as Uint8Array,
+      ),
+    );
+    failsWith("vault_record_malformed", () =>
+      open(key, null as unknown as SealedRecord),
+    );
+    failsWith("vault_record_malformed", () =>
+      seal(
+        key,
+        null as unknown as { vaultId: string; revision: number },
+        utf8("x"),
+      ),
+    );
+    failsWith("vault_key_invalid", () =>
+      open(Object.create(Uint8Array.prototype) as Uint8Array, sealed().record),
+    );
+  });
 });

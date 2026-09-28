@@ -47,7 +47,7 @@ export const errorCatalog = {
   // Vault envelope (spec §6.3). None of these carries a byte of the record.
   vault_key_invalid: {
     type: "validation",
-    message: "The vault key has the wrong length.",
+    message: "The vault key is not a 32-byte key.",
   },
   vault_format_unsupported: {
     type: "validation",

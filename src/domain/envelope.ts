@@ -11,9 +11,12 @@ import { WardError } from "../contract/errors.ts";
 // record that was valid under the same key still opens. Rollback resistance
 // is not claimed.
 //
-// A random 96-bit nonce is safe for well under 2^32 seals per key (NIST SP
-// 800-38D §8.3). Ward seals once per vault mutation, which stays far below
-// that on a single developer's machine.
+// NIST SP 800-38D §8.3 caps random-nonce invocations per key at 2^32. Ward
+// seals once per vault mutation.
+//
+// Not enforced here, and owned by the storage and secret layers: the 64 KiB
+// per-value limit, the revision increment on each mutation, and persisting
+// only these record fields.
 
 export const envelopeDomain = "opum.ward.vault";
 export const formatVersion = 1;
@@ -47,12 +50,45 @@ export function generateVaultKey(): Uint8Array {
   return new Uint8Array(randomBytes(envelopeLimits.keyBytes));
 }
 
-function assertKey(key: Uint8Array): void {
-  if (!(key instanceof Uint8Array) || key.length !== envelopeLimits.keyBytes)
-    throw new WardError("vault_key_invalid");
+// Every input is read once and copied before it is checked or used. The
+// TypedArray constructor copies by the view's internal length, so a subclass
+// overriding `length`, a getter returning different values on each read, or
+// a SharedArrayBuffer another thread can write cannot make the bytes that
+// were validated differ from the bytes that reach the cipher.
+function ownBytes(
+  value: unknown,
+  code: "vault_key_invalid" | "vault_record_malformed",
+): Uint8Array {
+  if (!(value instanceof Uint8Array)) throw new WardError(code);
+  try {
+    return new Uint8Array(value);
+  } catch {
+    throw new WardError(code);
+  }
 }
 
-function assertHeader(header: EnvelopeHeader): void {
+function ownKey(value: unknown): Uint8Array {
+  const key = ownBytes(value, "vault_key_invalid");
+  if (key.length !== envelopeLimits.keyBytes)
+    throw new WardError("vault_key_invalid");
+  return key;
+}
+
+function withinLimit(bytes: Uint8Array): Uint8Array {
+  if (bytes.length > envelopeLimits.maxPlaintextBytes)
+    throw new WardError("vault_record_too_large");
+  return bytes;
+}
+
+function ownHeader(value: unknown): EnvelopeHeader {
+  if (typeof value !== "object" || value === null)
+    throw new WardError("vault_record_malformed");
+  const source = value as Record<string, unknown>;
+  const header = {
+    formatVersion: source.formatVersion,
+    vaultId: source.vaultId,
+    revision: source.revision,
+  };
   if (header.formatVersion !== formatVersion)
     throw new WardError("vault_format_unsupported");
   if (
@@ -60,21 +96,22 @@ function assertHeader(header: EnvelopeHeader): void {
     !vaultIdPattern.test(header.vaultId)
   )
     throw new WardError("vault_record_malformed");
-  if (!Number.isSafeInteger(header.revision) || header.revision < 1)
+  if (
+    typeof header.revision !== "number" ||
+    !Number.isSafeInteger(header.revision) ||
+    header.revision < 1
+  )
     throw new WardError("vault_record_malformed");
-}
-
-function assertBytes(value: unknown, length?: number): void {
-  if (!(value instanceof Uint8Array))
-    throw new WardError("vault_record_malformed");
-  if (length !== undefined && value.length !== length)
-    throw new WardError("vault_record_malformed");
+  return {
+    formatVersion: header.formatVersion,
+    vaultId: header.vaultId,
+    revision: header.revision,
+  };
 }
 
 // Deterministic: a fixed-order JSON array of validated fields, so the same
 // header always yields the same bytes.
-export function associatedData(header: EnvelopeHeader): Uint8Array {
-  assertHeader(header);
+function encodeHeader(header: EnvelopeHeader): Uint8Array {
   return new TextEncoder().encode(
     JSON.stringify([
       envelopeDomain,
@@ -85,24 +122,8 @@ export function associatedData(header: EnvelopeHeader): Uint8Array {
   );
 }
 
-// The AES-256-GCM primitive with a caller-supplied nonce. Exported only so
-// known-answer tests can drive it; everything else seals through seal(),
-// which never takes a nonce from its caller.
-export function encryptWithNonce(
-  key: Uint8Array,
-  nonce: Uint8Array,
-  aad: Uint8Array,
-  plaintext: Uint8Array,
-): { ciphertext: Uint8Array; tag: Uint8Array } {
-  const cipher = createCipheriv("aes-256-gcm", key, nonce, {
-    authTagLength: envelopeLimits.tagBytes,
-  });
-  cipher.setAAD(aad);
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  return {
-    ciphertext: new Uint8Array(ciphertext),
-    tag: new Uint8Array(cipher.getAuthTag()),
-  };
+export function associatedData(header: EnvelopeHeader): Uint8Array {
+  return encodeHeader(ownHeader(header));
 }
 
 export function seal(
@@ -110,43 +131,67 @@ export function seal(
   header: Omit<EnvelopeHeader, "formatVersion">,
   plaintext: Uint8Array,
 ): SealedRecord {
-  assertKey(key);
-  const full: EnvelopeHeader = { formatVersion, ...header };
-  const aad = associatedData(full);
-  assertBytes(plaintext);
-  if (plaintext.length > envelopeLimits.maxPlaintextBytes)
-    throw new WardError("vault_record_too_large");
+  const ownedKey = ownKey(key);
+  const fields =
+    typeof header === "object" && header !== null
+      ? { vaultId: header.vaultId, revision: header.revision }
+      : header;
+  const ownedHeader = ownHeader({ formatVersion, ...fields });
+  const ownedPlaintext = withinLimit(
+    ownBytes(plaintext, "vault_record_malformed"),
+  );
   const nonce = new Uint8Array(randomBytes(envelopeLimits.nonceBytes));
-  return { ...full, nonce, ...encryptWithNonce(key, nonce, aad, plaintext) };
+  const cipher = createCipheriv("aes-256-gcm", ownedKey, nonce, {
+    authTagLength: envelopeLimits.tagBytes,
+  });
+  cipher.setAAD(encodeHeader(ownedHeader));
+  const ciphertext = Buffer.concat([
+    cipher.update(ownedPlaintext),
+    cipher.final(),
+  ]);
+  // Field by field, so nothing a caller attached to the header is carried
+  // into a record the storage layer persists.
+  return {
+    formatVersion: ownedHeader.formatVersion,
+    vaultId: ownedHeader.vaultId,
+    revision: ownedHeader.revision,
+    nonce,
+    ciphertext: new Uint8Array(ciphertext),
+    tag: new Uint8Array(cipher.getAuthTag()),
+  };
 }
 
 // Every length, the format and the header are checked before the cipher
 // runs, and no plaintext leaves this function until the tag has verified.
 // Node's decipher.update() hands out bytes before final() authenticates
 // them, so those bytes are held here and zeroed if authentication fails.
+// The zeroing is best effort and is not asserted by a test; nothing is
+// claimed about copies the runtime makes internally.
 export function open(key: Uint8Array, record: SealedRecord): Uint8Array {
-  assertKey(key);
-  const aad = associatedData(record);
-  assertBytes(record.nonce, envelopeLimits.nonceBytes);
-  assertBytes(record.tag, envelopeLimits.tagBytes);
-  assertBytes(record.ciphertext);
-  if (record.ciphertext.length > envelopeLimits.maxPlaintextBytes)
-    throw new WardError("vault_record_too_large");
+  const ownedKey = ownKey(key);
+  const header = ownHeader(record);
+  const nonce = ownBytes(record.nonce, "vault_record_malformed");
+  const tag = ownBytes(record.tag, "vault_record_malformed");
+  const ciphertext = withinLimit(
+    ownBytes(record.ciphertext, "vault_record_malformed"),
+  );
+  if (nonce.length !== envelopeLimits.nonceBytes)
+    throw new WardError("vault_record_malformed");
+  if (tag.length !== envelopeLimits.tagBytes)
+    throw new WardError("vault_record_malformed");
 
-  const decipher = createDecipheriv("aes-256-gcm", key, record.nonce, {
+  const decipher = createDecipheriv("aes-256-gcm", ownedKey, nonce, {
     authTagLength: envelopeLimits.tagBytes,
   });
-  decipher.setAAD(aad);
-  decipher.setAuthTag(record.tag);
-  const unverified = decipher.update(record.ciphertext);
+  decipher.setAAD(encodeHeader(header));
+  decipher.setAuthTag(tag);
+  const unverified = decipher.update(ciphertext);
   try {
     decipher.final();
   } catch {
     unverified.fill(0);
     throw new WardError("vault_authentication_failed");
   }
-  // Copied out, then the source zeroed: a small Buffer can be a view into a
-  // shared allocation pool, which a returned view would keep reachable.
   const plaintext = new Uint8Array(unverified);
   unverified.fill(0);
   return plaintext;
