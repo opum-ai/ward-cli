@@ -1,13 +1,16 @@
 // Enforces the import direction between source layers: cli may use
-// application and contract, application may use contract, and contract is a
-// leaf. Imports that leave src/ (package.json) are not checked here.
+// application and contract, application may use domain and contract, domain
+// (pure policy and cryptography; no I/O by convention, which this script does
+// not check) may use contract, and contract is a leaf. Imports that leave
+// src/ (package.json) are not checked here.
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, extname, join, normalize, relative } from "node:path";
 
 const sourceRoot = "src";
 const allowedDependencies = new Map([
   ["cli", new Set(["application", "contract"])],
-  ["application", new Set(["contract"])],
+  ["application", new Set(["domain", "contract"])],
+  ["domain", new Set(["contract"])],
   ["contract", new Set()],
 ]);
 
