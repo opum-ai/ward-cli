@@ -20,3 +20,4 @@ entry point and the only one that carries `okf_version`.
 - [Vault storage and key custody](adr/0001-vault-storage-and-key-custody.md)
 - [P0 threat model and non-guarantees](adr/0002-p0-threat-model-and-non-guarantees.md)
 - [Profile approval authority](adr/0003-profile-approval-authority.md)
+- [Committed platform target](adr/0004-committed-platform-target.md)
