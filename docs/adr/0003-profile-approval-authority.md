@@ -6,7 +6,7 @@ tags:
   - security
   - profiles
   - authority
-status: draft
+status: stable
 summary: Only the developer approves an HTTPS profile; a manifest is a request, not authority.
 generated:
   by: lore/0.11.0

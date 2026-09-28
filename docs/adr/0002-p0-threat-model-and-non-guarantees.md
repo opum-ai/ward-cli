@@ -5,7 +5,7 @@ title: P0 threat model and non-guarantees
 tags:
   - security
   - threat-model
-status: draft
+status: stable
 summary: What Ward P0 protects against, and what it explicitly does not.
 generated:
   by: lore/0.11.0
@@ -16,7 +16,7 @@ generated:
 
 ## Status
 
-Accepted by the orchestrator (opum-agent) on 2026-09-28. It binds once opum-doc records the decision, as record ODOC-PENDING. That id must be filled in before this ADR lands.
+Accepted. Ruled by the orchestrator (opum-agent) on 2026-09-28 and recorded in opum-doc as ODOC-312, `docs/adr/record-ward-cli-wcli-3-vault-format-key-custody-and-plugin-name.md` (opum-doc main d6516c5).
 
 ## Context
 
