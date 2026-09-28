@@ -1,5 +1,7 @@
-// Enforces the import direction between source layers: cli may use
-// application and contract, application may use domain and contract, domain
+// Enforces the import direction between source layers: cli may use adapters,
+// application and contract; adapters (credential store, and later
+// filesystem and network) may use application, domain and contract;
+// application may use domain and contract; domain
 // (pure policy and cryptography; no I/O by convention, which this script does
 // not check) may use contract, and contract is a leaf. Imports that leave
 // src/ (package.json) are not checked here.
@@ -8,7 +10,8 @@ import { dirname, extname, join, normalize, relative } from "node:path";
 
 const sourceRoot = "src";
 const allowedDependencies = new Map([
-  ["cli", new Set(["application", "contract"])],
+  ["cli", new Set(["adapters", "application", "contract"])],
+  ["adapters", new Set(["application", "domain", "contract"])],
   ["application", new Set(["domain", "contract"])],
   ["domain", new Set(["contract"])],
   ["contract", new Set()],

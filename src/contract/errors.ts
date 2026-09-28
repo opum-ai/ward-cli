@@ -61,6 +61,22 @@ export const errorCatalog = {
     type: "validation",
     message: "The vault data exceeds the size limit.",
   },
+  // Key provider (spec §6.4). Nothing that reports one of these creates a key.
+  vault_key_missing: {
+    type: "not_found",
+    message: "No vault key was found in the credential store.",
+    hint: "If Ward was never set up, run `ward setup` in a trusted terminal. If a vault already exists, a missing key is a recovery condition, and Ward will not create a new key for it.",
+  },
+  vault_key_unavailable: {
+    type: "indeterminate",
+    message:
+      "The credential store did not return the vault key in time. It may be locked, access may have been refused, or it may be unavailable.",
+  },
+  vault_key_exists: {
+    type: "conflict",
+    message:
+      "A vault key already exists in the credential store. Ward never replaces one.",
+  },
   vault_authentication_failed: {
     type: "validation",
     message:
