@@ -1,0 +1,9 @@
+# adr
+
+<!-- lore:index:begin -->
+- [Vault storage and key custody](0001-vault-storage-and-key-custody.md)
+- [P0 threat model and non-guarantees](0002-p0-threat-model-and-non-guarantees.md)
+- [Profile approval authority](0003-profile-approval-authority.md)
+- [Committed platform target](0004-committed-platform-target.md)
+- [Project binding identity](0005-project-binding-identity.md)
+<!-- lore:index:end -->

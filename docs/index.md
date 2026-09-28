@@ -22,3 +22,7 @@ entry point and the only one that carries `okf_version`.
 - [Profile approval authority](adr/0003-profile-approval-authority.md)
 - [Committed platform target](adr/0004-committed-platform-target.md)
 - [Project binding identity](adr/0005-project-binding-identity.md)
+
+<!-- lore:index:begin -->
+- [adr](adr/index.md)
+<!-- lore:index:end -->
