@@ -137,10 +137,14 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   fields and nothing else. No plaintext column, index or full-text table exists.
   - Ward recognizes its own file by `application_id` 0x57415244 ("WARD"), `user_version` 1 and an
     exact match of the whole schema. It refuses anything else, including an added trigger or index,
-    and never modifies a file it does not recognize: the layout check runs before any setting that
-    writes (a foreign database is refused untouched, not checkpointed or re-journaled first). A
-    Ward vault someone converted to WAL is healed back to the rollback journal on the first writing
-    connection.
+    and never modifies a file it does not recognize: a file whose header declares WAL mode is
+    refused before SQLite ever opens it (a read-write open would checkpoint a foreign WAL journal
+    and create sidecars), and the layout check runs before any setting that writes. A Ward vault
+    converted to another rollback-journal mode (persist or truncate) is healed back on the first
+    writing connection; one converted to WAL is refused as a recovery condition. The one change
+    outside Ward's control is SQLite's own mandatory open-time recovery of a file left mid-
+    transaction with a hot journal, which rolls that transaction back before any layout check can
+    read the file.
   - Every call opens its own connection with the rollback journal (`journal_mode = DELETE`),
     `synchronous = FULL`, `trusted_schema = OFF` and a busy timeout of 5 s. The connection is
     closed before the call returns.

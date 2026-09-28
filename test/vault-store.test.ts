@@ -434,6 +434,13 @@ describe("T06: transactions", () => {
       expect([...outcomes].sort()).toEqual(["created", "vault_exists"]);
       expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 1 });
       expect(text(store.read(key).plaintext) === "seed").toBe(true);
+      // The contract pinned here is the outcome pair, not the lock timing:
+      // whether the loser meets the winner's lock or an already committed
+      // vault, exactly one create wins and the other refuses. A deferred
+      // regression could pass this test; pinning the immediate begin
+      // deterministically would need a hook inside create(), which the
+      // port does not have, and create stays correct under deferred anyway
+      // because the layout re-check runs inside the transaction.
     },
     { timeout: 30_000 },
   );
@@ -690,6 +697,74 @@ describe("T07: permissions, links and untrusted files", () => {
       allRefuse(store, "vault_store_unrecognized");
       expect(readFileSync(file).equals(before)).toBe(true);
     }
+  });
+
+  test("a WAL-mode database is refused before SQLite opens it, untouched", () => {
+    const { directory, file, store } = fresh();
+    mkdirSync(directory, { mode: 0o700 });
+    withRaw(file, (db) => {
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("CREATE TABLE notes (body TEXT)");
+      db.exec("INSERT INTO notes VALUES ('foreign data')");
+    });
+    for (const path of [file, `${file}-wal`, `${file}-shm`])
+      if (existsSync(path)) chmodSync(path, 0o600);
+    const before = readFileSync(file);
+    const listing = readdirSync(directory).sort();
+    // A read-write open would checkpoint the WAL and create sidecars; the
+    // refusal must come from the file's own header, so nothing moves.
+    allRefuse(store, "vault_store_unrecognized");
+    expect(readFileSync(file).equals(before)).toBe(true);
+    expect(readdirSync(directory).sort()).toEqual(listing);
+  });
+
+  test(
+    "a WAL-mode database with a hot transaction is refused untouched",
+    async () => {
+      const { directory, file, store } = fresh();
+      mkdirSync(directory, { mode: 0o700 });
+      const worker = spawnWorker(generateVaultKey(), ["wal-hold", directory]);
+      await untilReady(worker);
+      try {
+        for (const path of [file, `${file}-wal`, `${file}-shm`])
+          if (existsSync(path)) chmodSync(path, 0o600);
+        const before = readFileSync(file);
+        const listing = readdirSync(directory).sort();
+        allRefuse(store, "vault_store_unrecognized");
+        expect(readFileSync(file).equals(before)).toBe(true);
+        expect(readdirSync(directory).sort()).toEqual(listing);
+      } finally {
+        await killed(worker);
+      }
+    },
+    { timeout: 30_000 },
+  );
+
+  test("a Ward vault converted to WAL mode is refused as a recovery condition", () => {
+    const { file, store } = fresh();
+    const key = generateVaultKey();
+    store.create(VAULT_ID, key, bytes("x"));
+    withRaw(file, (db) => db.exec("PRAGMA journal_mode = WAL"));
+    for (const path of [`${file}-wal`, `${file}-shm`])
+      if (existsSync(path)) chmodSync(path, 0o600);
+    allRefuse(store, "vault_store_unrecognized");
+  });
+
+  test("a foreign rollback-journal database is refused without re-journaling it", () => {
+    const { directory, file, store } = fresh();
+    mkdirSync(directory, { mode: 0o700 });
+    withRaw(file, (db) => {
+      db.exec("PRAGMA journal_mode = PERSIST");
+      db.exec("CREATE TABLE notes (body TEXT)");
+      db.exec("INSERT INTO notes VALUES ('foreign data')");
+    });
+    for (const path of [file, `${file}-journal`])
+      if (existsSync(path)) chmodSync(path, 0o600);
+    const before = readFileSync(file);
+    const listing = readdirSync(directory).sort();
+    allRefuse(store, "vault_store_unrecognized");
+    expect(readFileSync(file).equals(before)).toBe(true);
+    expect(readdirSync(directory).sort()).toEqual(listing);
   });
 
   test("a Ward vault with an altered layout is refused", () => {

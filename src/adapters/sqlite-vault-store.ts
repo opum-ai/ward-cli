@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readSync,
   realpathSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, normalize } from "node:path";
@@ -132,6 +133,31 @@ function lstatOrAbsent(path: string): EntryStats | undefined {
   }
 }
 
+// A WAL-mode database is refused before SQLite ever opens it: a read-write
+// open would checkpoint a foreign WAL journal and create -wal/-shm sidecars
+// in a directory Ward does not own the file of. The database header's format
+// read/write version bytes (offsets 18/19) are 2 in WAL mode and 1 for every
+// rollback-journal mode, so the mode is read from the file's own header,
+// never from the sidecars. A file shorter than the header is left to SQLite,
+// which refuses it as not a database.
+function headerVersions(
+  path: string,
+): { read: number; write: number } | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW);
+  } catch {
+    throw new WardError("vault_store_failed");
+  }
+  try {
+    const header = new Uint8Array(20);
+    if (readSync(fd, header, 0, 20, 0) < 20) return undefined;
+    return { read: header[18], write: header[19] };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function inspect(
   location: Location,
   uid: number | undefined,
@@ -149,6 +175,9 @@ function inspect(
   if (file === undefined) return "directory";
   if (!isPrivateEntry(file, "file", uid))
     throw new WardError("vault_store_insecure");
+  const versions = headerVersions(location.file);
+  if (versions !== undefined && (versions.read === 2 || versions.write === 2))
+    throw new WardError("vault_store_unrecognized");
   return "file";
 }
 
@@ -247,10 +276,12 @@ function connect(file: string, busyTimeoutMs: number): Database {
   return db;
 }
 
-// The rollback journal is part of Ward's layout: a Ward vault someone
-// converted to WAL is healed back on the first writing connection. Called
-// only after layoutOf() has accepted the file, so a foreign database is
-// refused before any setting that writes is applied.
+// The rollback journal is part of Ward's layout: a Ward vault converted to
+// another rollback-journal mode (persist or truncate) is healed back on the
+// first writing connection. A WAL-mode vault never gets here; inspect()
+// refuses it before the file is opened. Called only after layoutOf() has
+// accepted the file, so a foreign database is refused before any setting
+// that writes is applied.
 function healJournalMode(db: Database): void {
   const mode = db.query("PRAGMA journal_mode = DELETE").get() as {
     journal_mode?: unknown;

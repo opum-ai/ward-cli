@@ -12,6 +12,9 @@
 //   crash-create <dir>            the same against an empty ward.db, part way
 //                                 through laying down a vault
 //   create <dir>                  create the vault once and report the outcome
+//   wal-hold <dir>                make ward.db a WAL database with a hot
+//                                 transaction, report "ready", then block
+//                                 until killed
 import { Database } from "bun:sqlite";
 import { writeSync } from "node:fs";
 import { join } from "node:path";
@@ -93,6 +96,15 @@ if (mode === "append") {
       })}\n`,
     );
   }
+} else if (mode === "wal-hold") {
+  const db = new Database(join(directory, "ward.db"));
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA wal_autocheckpoint = 0");
+  db.exec("CREATE TABLE notes (body TEXT)");
+  db.exec("BEGIN IMMEDIATE");
+  db.exec("INSERT INTO notes VALUES ('foreign')");
+  writeSync(1, "ready\n");
+  blockForever();
 } else {
   throw new Error("unknown mode");
 }
