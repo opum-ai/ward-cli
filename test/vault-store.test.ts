@@ -740,6 +740,33 @@ describe("T07: permissions, links and untrusted files", () => {
     { timeout: 30_000 },
   );
 
+  test(
+    "a WAL database with committed but uncheckpointed frames is refused untouched",
+    async () => {
+      // This is the state the header refusal exists for: the frames are
+      // committed, no lock is held, so a read-write open would replay them
+      // into the database before the layout check could refuse the file.
+      const { directory, file, store } = fresh();
+      mkdirSync(directory, { mode: 0o700 });
+      const worker = spawnWorker(generateVaultKey(), ["wal-commit", directory]);
+      await untilReady(worker);
+      await killed(worker);
+      for (const path of [file, `${file}-wal`, `${file}-shm`])
+        if (existsSync(path)) chmodSync(path, 0o600);
+      const before = readFileSync(file);
+      const walBefore = existsSync(`${file}-wal`)
+        ? readFileSync(`${file}-wal`)
+        : undefined;
+      const listing = readdirSync(directory).sort();
+      allRefuse(store, "vault_store_unrecognized");
+      expect(readFileSync(file).equals(before)).toBe(true);
+      if (walBefore !== undefined)
+        expect(readFileSync(`${file}-wal`).equals(walBefore)).toBe(true);
+      expect(readdirSync(directory).sort()).toEqual(listing);
+    },
+    { timeout: 30_000 },
+  );
+
   test("a Ward vault converted to WAL mode is refused as a recovery condition", () => {
     const { file, store } = fresh();
     const key = generateVaultKey();

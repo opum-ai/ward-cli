@@ -135,11 +135,16 @@ function lstatOrAbsent(path: string): EntryStats | undefined {
 
 // A WAL-mode database is refused before SQLite ever opens it: a read-write
 // open would checkpoint a foreign WAL journal and create -wal/-shm sidecars
-// in a directory Ward does not own the file of. The database header's format
-// read/write version bytes (offsets 18/19) are 2 in WAL mode and 1 for every
-// rollback-journal mode, so the mode is read from the file's own header,
-// never from the sidecars. A file shorter than the header is left to SQLite,
-// which refuses it as not a database.
+// in a directory Ward does not own the file of. The database header carries
+// the file format versions as two single bytes: the write version at offset
+// 18 and the read version at offset 19 (offset 20 is the reserved-space
+// byte). Both are 1 in every rollback-journal mode and 2 in WAL mode, and
+// SQLite's own open runs WAL recovery for any value of 2 or more, so 2 or
+// more in either byte is refused from the file's own header, never from the
+// sidecars. A header of 0 in a file whose creation was interrupted is left
+// to SQLite's own judgement: hot-journal recovery rolls it back, and
+// anything else is refused as not a database. A file shorter than the
+// header is left to SQLite for the same reason.
 function headerVersions(
   path: string,
 ): { read: number; write: number } | undefined {
@@ -152,7 +157,7 @@ function headerVersions(
   try {
     const header = new Uint8Array(20);
     if ((readSync(fd, header, 0, 20, 0) ?? 0) < 20) return undefined;
-    return { read: header[18] ?? 0, write: header[19] ?? 0 };
+    return { read: header[19] ?? 0, write: header[18] ?? 0 };
   } finally {
     closeSync(fd);
   }
@@ -176,7 +181,7 @@ function inspect(
   if (!isPrivateEntry(file, "file", uid))
     throw new WardError("vault_store_insecure");
   const versions = headerVersions(location.file);
-  if (versions !== undefined && (versions.read === 2 || versions.write === 2))
+  if (versions !== undefined && (versions.read >= 2 || versions.write >= 2))
     throw new WardError("vault_store_unrecognized");
   return "file";
 }

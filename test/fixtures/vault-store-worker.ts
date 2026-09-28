@@ -15,6 +15,9 @@
 //   wal-hold <dir>                make ward.db a WAL database with a hot
 //                                 transaction, report "ready", then block
 //                                 until killed
+//   wal-commit <dir>              make ward.db a WAL database with committed
+//                                 but uncheckpointed frames, report "ready",
+//                                 then block until killed
 import { Database } from "bun:sqlite";
 import { writeSync } from "node:fs";
 import { join } from "node:path";
@@ -103,6 +106,14 @@ if (mode === "append") {
   db.exec("CREATE TABLE notes (body TEXT)");
   db.exec("BEGIN IMMEDIATE");
   db.exec("INSERT INTO notes VALUES ('foreign')");
+  writeSync(1, "ready\n");
+  blockForever();
+} else if (mode === "wal-commit") {
+  const db = new Database(join(directory, "ward.db"));
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA wal_autocheckpoint = 0");
+  db.exec("CREATE TABLE notes (body TEXT)");
+  for (let i = 0; i < 100; i++) db.exec(`INSERT INTO notes VALUES ('row-${i}')`);
   writeSync(1, "ready\n");
   blockForever();
 } else {
