@@ -173,6 +173,66 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "backup",
+    summary:
+      "Create one passphrase-encrypted backup of the vault, in a trusted terminal. The backup opens without this machine's OS credential store item, and Ward neither keeps nor prints the passphrase.",
+    args: [],
+    flags: [
+      {
+        name: "--output",
+        takesValue: true,
+        summary:
+          "The file to create. Must not already exist, and is created readable only by you.",
+      },
+      jsonFlag,
+    ],
+    kind: "backup.complete",
+    mutates: true,
+    unlocksVault: true,
+    admin: true,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+    ],
+    examples: ["ward backup --output ward-backup.json"],
+  },
+  {
+    name: "restore",
+    summary:
+      "Restore a backup into an empty vault directory under a fresh vault key and a fresh vault id, with every checkout binding cleared pending explicit re-registration. Run it yourself, in a trusted terminal.",
+    args: [],
+    flags: [
+      {
+        name: "--input",
+        takesValue: true,
+        summary: "The backup file to open.",
+      },
+      jsonFlag,
+    ],
+    kind: "restore.complete",
+    mutates: true,
+    unlocksVault: true,
+    admin: true,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: ["ward restore --input ward-backup.json"],
+  },
+  {
     name: "help",
     summary: "Show usage for Ward or one command.",
     args: [{ name: "command", required: false }],

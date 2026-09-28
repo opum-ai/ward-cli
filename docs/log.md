@@ -6,6 +6,7 @@
 - 2026-09-28T12:12:02-05:00 65a87b5cc6d9c7dfe2975dc2a33735acdeb1e38e WCLI-3: ADRs for storage and key custody, threat model, profile authority (#12)
 - 2026-09-28T13:11:04-05:00 c41a62af265c62853a75b929713b7c0d34cc7e63 WCLI-23: record the committed platform target (ODOC-316) (#16)
 - 2026-09-28T18:16:01-05:00 a1c8d29633574a01f286fd88eb76514e1810c6a8 WCLI-7: `ward init` and project binding (#27)
+- 2026-09-28T18:25:49-05:00 4ed62db68c4fab55c58b2c15be589945a936a653 WCLI-28: track the lore-generated bundle index and log (#31)
 
 ## docs/adr
 

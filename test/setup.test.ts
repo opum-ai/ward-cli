@@ -549,18 +549,29 @@ describe("the bounded explicit exit, in a real process", () => {
   );
 });
 
-describe("only setup ever creates a key", () => {
-  test("no other source module calls the provider's create", () => {
-    // Spec §6.4: "nothing else ever creates or regenerates a key". The
-    // enforceable form is source-level: the only modules allowed to name a
-    // create call (any spelling: dotted, destructured, subscript, spaced)
-    // are the two port declarations, the two implementations, and the one
-    // caller, setup. Anything else naming a create call fails this test,
-    // and the allowed five must all still name one, so the scan provably
-    // reads something.
+describe("only two callers ever create a key", () => {
+  test("no source module outside setup and restore calls create", () => {
+    // Spec §6.4: "nothing else ever creates or regenerates a key" — for a
+    // vault that exists. Spec §10 then requires a restore to generate a
+    // fresh vault key and vault id for the vault it is creating, which is
+    // the one other caller. The enforceable form is source-level: the only
+    // modules allowed to name a create call (any spelling: dotted,
+    // destructured, subscript, spaced) are the two port declarations, their
+    // implementations, the restore file adapter (which has its own create
+    // method for the backup file, not a key), and the two callers, setup and
+    // backup (which holds restore). Anything else naming a create call fails
+    // this test, and every allowed module must still name one, so the scan
+    // provably reads something.
+    //
+    // What this test cannot say is that the second caller is safe: that
+    // restore creates a key only for a vault id it minted and only into an
+    // empty destination is asserted in test/backup.test.ts, including that a
+    // destination which already has a vault leaves its key untouched.
     const allowed = new Set([
+      "adapters/backup-file.ts",
       "adapters/keychain.ts",
       "adapters/sqlite-vault-store.ts",
+      "application/backup.ts",
       "application/key-provider.ts",
       "application/setup.ts",
       "application/vault-store.ts",
