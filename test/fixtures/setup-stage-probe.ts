@@ -7,8 +7,13 @@
 //   after-write <store-dir> <ward-dir>   store the key, then block before
 //                                        the write confirms
 //   plain <store-dir> <ward-dir>         run setup normally and report
+//   lock-hold <anything> <ward-dir>      hold the setup lock with flock(2)
+//                                        and block until killed
 // The key survives the kill because the store is files on disk.
-import { writeSync } from "node:fs";
+import { dlopen } from "bun:ffi";
+import { constants as fileConstants, openSync, writeSync } from "node:fs";
+import { join } from "node:path";
+import { prepareVaultDirectory } from "../../src/adapters/sqlite-vault-store.ts";
 import { createKeychainKeyProvider } from "../../src/adapters/keychain.ts";
 import { runWard } from "../../src/cli/main.ts";
 import { FileKeychain } from "../support/file-keychain.ts";
@@ -20,6 +25,25 @@ if (
   wardDirectory === undefined
 )
   throw new Error("usage: <mode> <store-dir> <ward-dir>");
+
+if (mode === "lock-hold") {
+  prepareVaultDirectory(wardDirectory, process.getuid?.());
+  const fd = openSync(
+    join(wardDirectory, "setup.lock"),
+    fileConstants.O_CREAT |
+      fileConstants.O_RDWR |
+      fileConstants.O_TRUNC |
+      fileConstants.O_NOFOLLOW,
+    0o600,
+  );
+  const flock = dlopen("/usr/lib/libSystem.B.dylib", {
+    flock: { args: ["int", "int"], returns: "int" },
+  }).symbols.flock as (fd: number, operation: number) => number;
+  if (flock(fd, 2 | 4) !== 0) throw new Error("could not take the lock");
+  writeSync(fd, `${process.pid}\n`);
+  writeSync(1, "ready\n");
+  blockForever();
+}
 
 const keychain = new FileKeychain(storeDirectory);
 const provider =

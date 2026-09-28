@@ -51,8 +51,11 @@ export async function runSetup(options: {
       // A vault exists. Its key must load and open the vault; anything else
       // is a recovery condition and nothing is created or replaced.
       const existing = await keyProvider.load(header.vaultId);
-      store.read(existing);
-      existing.fill(0);
+      try {
+        store.read(existing);
+      } finally {
+        existing.fill(0);
+      }
       // A damaged journal beside a healthy vault is cleared, not refused:
       // the setup completed, and only its bookkeeping failed.
       let journalId: string | undefined;

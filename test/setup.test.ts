@@ -103,7 +103,9 @@ describe("T01: setup and non-initialization", () => {
     expect(keychain.items.size).toBe(1);
     expect(mode(directory)).toBe(0o700);
     expect(mode(join(directory, vaultFileName))).toBe(0o600);
-    expect(existsSync(join(directory, setupLockFileName))).toBe(false);
+    // The lock file persists (flock lives in the kernel; the file content
+    // is advisory); only the journal disappears.
+    expect(existsSync(join(directory, setupLockFileName))).toBe(true);
     expect(existsSync(join(directory, setupJournalFileName))).toBe(false);
     // The sealed snapshot is the minimal skeleton document.
     const key = keychain.items.values().next().value as number[];
@@ -370,38 +372,46 @@ describe("write-unconfirmed resolution", () => {
 });
 
 describe("the setup lock", () => {
-  test("a live holder refuses a second setup", async () => {
-    const { directory, options } = fresh();
-    mkdirSync(directory, { mode: 0o700 });
-    writeFileSync(join(directory, setupLockFileName), `${process.pid}\n`, {
-      mode: 0o600,
-    });
-    const result = await setupViaRunWard(options());
-    expect(result.exitCode).toBe(exitCodes.conflict);
-    expect(json(result.stderr).code).toBe("setup_in_progress");
-    expect(existsSync(join(directory, vaultFileName))).toBe(false);
-  });
+  test(
+    "a live flock holder refuses a second setup, and release admits it",
+    async () => {
+      const { directory, options } = fresh();
+      const worker = spawnProbe(STAGE_PROBE, [
+        "lock-hold",
+        "unused",
+        directory,
+      ]);
+      await untilReady(worker);
+      try {
+        const result = await setupViaRunWard(options());
+        expect(result.exitCode).toBe(exitCodes.conflict);
+        expect(json(result.stderr).code).toBe("setup_in_progress");
+        expect(existsSync(join(directory, vaultFileName))).toBe(false);
+      } finally {
+        worker.kill(9);
+        await worker.exited;
+      }
+      // The kernel released the lock with the holder's death.
+      expect((await setupViaRunWard(options())).exitCode).toBe(
+        exitCodes.success,
+      );
+    },
+    { timeout: 30_000 },
+  );
 
-  test("an empty lock fails closed: a live holder may be mid-write", async () => {
+  test("an unlocked lock file does not block setup", async () => {
     const { directory, options } = fresh();
     mkdirSync(directory, { mode: 0o700 });
-    writeFileSync(join(directory, setupLockFileName), "", { mode: 0o600 });
-    const result = await setupViaRunWard(options());
-    expect(result.exitCode).toBe(exitCodes.conflict);
-    expect(json(result.stderr).code).toBe("setup_in_progress");
-    expect(existsSync(join(directory, vaultFileName))).toBe(false);
-  });
-
-  test("a stale lock is cleared and setup proceeds", async () => {
-    const { directory, options } = fresh();
-    mkdirSync(directory, { mode: 0o700 });
-    // 999999 is past macOS's pid_max, so it can never be alive.
+    // Content is advisory on macOS, where flock(2) arbitrates: a pid of a
+    // dead process must not block a new setup.
     writeFileSync(join(directory, setupLockFileName), "999999\n", {
       mode: 0o600,
     });
     const result = await setupViaRunWard(options());
     expect(result.exitCode).toBe(exitCodes.success);
-    expect(existsSync(join(directory, setupLockFileName))).toBe(false);
+    expect(readFileSync(join(directory, setupLockFileName), "utf8")).toBe(
+      `${process.pid}\n`,
+    );
   });
 });
 
@@ -537,10 +547,12 @@ describe("the bounded explicit exit, in a real process", () => {
 
 describe("only setup ever creates a key", () => {
   test("no other source module calls the provider's create", () => {
-    // Spec §6.4: "nothing else ever creates or regenerates a key". The only
-    // enforceable form is source-level: exactly one module in src/ calls
-    // `.create(` on anything, and it is the setup flow. (The store's and
-    // provider's own `create(...)` method definitions carry no dot.)
+    // Spec §6.4: "nothing else ever creates or regenerates a key". The
+    // enforceable form is source-level: `create` bound to a vaultId
+    // argument appears in the two port declarations, the two
+    // implementations, and the one caller, setup. A new caller in any
+    // spelling (dotted, destructured or subscript) shows up as an extra
+    // module and fails this test.
     const callers: string[] = [];
     for (const layer of ["application", "adapters", "cli"]) {
       for (const name of readdirSync(
@@ -551,9 +563,16 @@ describe("only setup ever creates a key", () => {
           join(import.meta.dir, "..", "src", layer, name),
           "utf8",
         );
-        if (/\.create\(/.test(source)) callers.push(`${layer}/${name}`);
+        if (/\bcreate\([^)]*vaultId/.test(source))
+          callers.push(`${layer}/${name}`);
       }
     }
-    expect(callers).toEqual(["application/setup.ts"]);
+    expect(callers.sort()).toEqual([
+      "adapters/keychain.ts",
+      "adapters/sqlite-vault-store.ts",
+      "application/key-provider.ts",
+      "application/setup.ts",
+      "application/vault-store.ts",
+    ]);
   });
 });

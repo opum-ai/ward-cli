@@ -118,9 +118,15 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   - A create that fails after its write began reports `vault_key_write_unconfirmed`: the key may
     or may not have been stored. The caller resolves that with a load, never by writing again.
 - **Setup serialization and resume (WCLI-20).** Setup is the only command that ever calls the
-  provider's create (pinned by a source-level test). It takes an exclusive `setup.lock` file in
-  the vault directory (O_EXCL; a crash leaves it, and the next setup removes it when the recorded
-  pid is dead, else reports `setup_in_progress`), and records the pending vault id in a
+  provider's create (pinned by a source-level test). It takes an exclusive `setup.lock` in the
+  vault directory — flock(2) through bun:ffi on macOS, where the kernel arbitrates and releases
+  the lock when the holding process dies, so a crash needs no reaping and two setups can never
+  both hold it; the file itself persists and its content is advisory, the last holder's pid. Off
+  macOS the fallback is an O_EXCL file whose recorded pid is reaped only when provably dead, with
+  fail-closed staleness (an empty or unreadable lock refuses, because that is also the state a
+  live holder occupies mid-write) and compare-and-delete release. An adversarial review measured
+  the check-then-delete race in a purely pid-based scheme (19 overlapping holder pairs across 300
+  rounds) before flock replaced it on macOS. Setup records the pending vault id in a
   `setup.json` journal, durably, before the key exists. A rerun at any point either completes the
   same setup — reusing the recorded id, the stored key, or both — or reports the state it finds:
   a vault whose key loads is an already-completed setup, a vault whose key does not load is a
