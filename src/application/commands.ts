@@ -57,8 +57,13 @@ function instructions(input: CommandInput): CommandOutput {
 }
 
 function commandUsage(command: CommandSpec): string {
-  const flags = [...command.flags, ...universalFlags].map(
-    (flag) => `  ${flag.name.padEnd(12)}${flag.summary}`,
+  const all = [...command.flags, ...universalFlags];
+  // Wide enough for the longest flag on this command, so a long one (init's
+  // --no-register) cannot run into its own summary. 12 is every other
+  // command's width, so this stays the layout they already print.
+  const width = Math.max(12, ...all.map((flag) => flag.name.length + 2));
+  const flags = all.map(
+    (flag) => `  ${flag.name.padEnd(width)}${flag.summary}`,
   );
   return [
     usageLine(command),
