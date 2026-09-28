@@ -20,10 +20,14 @@ export interface CommandSpec {
   summary: string;
   args: ArgumentSpec[];
   flags: FlagSpec[];
+  // The result kind of the command's primary form.
   kind: ResultKind;
+  // Kinds its other forms emit, such as `instructions --list`.
+  resultKinds?: ResultKind[];
   mutates: boolean;
   // True when the command reads or decrypts the user vault. A command with
-  // `unlocksVault: false` must never resolve ~/.ward/ or the key provider.
+  // `unlocksVault: false` must never read or write ~/.ward/ or call the key
+  // provider.
   unlocksVault: boolean;
   // True when the command must be run by the developer in a trusted terminal,
   // never by an agent on its own behalf.
@@ -32,6 +36,15 @@ export interface CommandSpec {
   exitCodes: ExitCode[];
   examples: string[];
 }
+
+// Accepted by every command, so not repeated in each command's `flags`.
+export const universalFlags: FlagSpec[] = [
+  {
+    name: "--help",
+    takesValue: false,
+    summary: "Show usage for this command.",
+  },
+];
 
 const jsonFlag: FlagSpec = {
   name: "--json",
@@ -51,7 +64,7 @@ export const commands: CommandSpec[] = [
     unlocksVault: false,
     admin: false,
     outputSensitivity: "public",
-    exitCodes: [exitCodes.success, exitCodes.usage],
+    exitCodes: [exitCodes.success, exitCodes.uncaught, exitCodes.usage],
     examples: ["ward manifest --json"],
   },
   {
@@ -68,11 +81,17 @@ export const commands: CommandSpec[] = [
       jsonFlag,
     ],
     kind: "instructions.topic",
+    resultKinds: ["instructions.list"],
     mutates: false,
     unlocksVault: false,
     admin: false,
     outputSensitivity: "public",
-    exitCodes: [exitCodes.success, exitCodes.usage, exitCodes.notFound],
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+    ],
     examples: [
       "ward instructions",
       "ward instructions agent-rules",
@@ -89,7 +108,7 @@ export const commands: CommandSpec[] = [
     unlocksVault: false,
     admin: false,
     outputSensitivity: "public",
-    exitCodes: [exitCodes.success, exitCodes.usage],
+    exitCodes: [exitCodes.success, exitCodes.uncaught, exitCodes.usage],
     examples: ["ward help", "ward help instructions"],
   },
 ];

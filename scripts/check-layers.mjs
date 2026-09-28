@@ -28,9 +28,9 @@ function layerFor(path) {
 }
 
 function relativeImportTargets(source) {
-  return [...source.matchAll(/(?:from\s*|import\s*)["'](\.[^"']+)["']/g)].map(
-    ([, target]) => target,
-  );
+  return [
+    ...source.matchAll(/(?:from\s*|import\s*\(?\s*)["'](\.[^"']+)["']/g),
+  ].map(([, target]) => target);
 }
 
 const files = await collectTypeScriptFiles(sourceRoot);

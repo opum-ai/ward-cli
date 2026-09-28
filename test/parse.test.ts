@@ -83,3 +83,30 @@ describe("parseArguments", () => {
     });
   });
 });
+
+describe("parseArguments --help", () => {
+  test("--help and -h are accepted by every command and recorded as --help", () => {
+    expect(parseArguments(spec, ["a", "-h"]).flags.get("--help")).toBe(true);
+    expect(parseArguments(spec, ["--help"]).flags.get("--help")).toBe(true);
+  });
+
+  test("-h as an option's value is a value, not a help request", () => {
+    const parsed = parseArguments(spec, ["a", "--output", "-h"]);
+    expect(parsed.flags.get("--output")).toBe("-h");
+    expect(parsed.flags.has("--help")).toBe(false);
+  });
+
+  test("--help is answered before argument counts are enforced", () => {
+    expect(parseArguments(spec, ["--help"]).positionals).toEqual([]);
+    expect(
+      parseArguments(spec, ["a", "b", "c", "-h"]).flags.has("--help"),
+    ).toBe(true);
+  });
+
+  test("--help after -- is a positional", () => {
+    expect(parseArguments(spec, ["a", "--", "--help"]).positionals).toEqual([
+      "a",
+      "--help",
+    ]);
+  });
+});

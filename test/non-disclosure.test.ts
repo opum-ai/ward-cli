@@ -3,7 +3,14 @@
 // Assertions report a label, never the sentinel, so a failure report cannot
 // itself disclose the value under test.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CommandHandler, handlers } from "../src/application/commands.ts";
@@ -12,10 +19,22 @@ import { type ExitCode, exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
 
 const SENTINEL = "ward-sentinel-7f3a9c1e";
-const MAIN = join(import.meta.dir, "..", "src", "cli", "main.ts");
+const CLI = join(import.meta.dir, "..", "src", "cli");
+const ENTRY = join(CLI, "ward.ts");
 
 function disclosed(output: string): boolean {
   return output.includes(SENTINEL);
+}
+
+function spawnWard(argv: string[], env?: Record<string, string>) {
+  const run = Bun.spawnSync(["bun", ENTRY, ...argv], {
+    env: { ...process.env, ...env },
+  });
+  return {
+    stdout: run.stdout.toString(),
+    stderr: run.stderr.toString(),
+    exitCode: run.exitCode,
+  };
 }
 
 const rejectedArgv: [label: string, argv: string[], exitCode: ExitCode][] = [
@@ -32,6 +51,7 @@ const rejectedArgv: [label: string, argv: string[], exitCode: ExitCode][] = [
     ["manifest", `--json=${SENTINEL}`],
     exitCodes.usage,
   ],
+  ["value to --help", ["manifest", `--help=${SENTINEL}`], exitCodes.usage],
   ["extra positional", ["manifest", SENTINEL], exitCodes.usage],
   [
     "extra positional after terminator",
@@ -39,26 +59,27 @@ const rejectedArgv: [label: string, argv: string[], exitCode: ExitCode][] = [
     exitCodes.usage,
   ],
   ["unknown topic", ["instructions", SENTINEL], exitCodes.notFound],
+  ["topic with --list", ["instructions", "--list", SENTINEL], exitCodes.usage],
   ["unknown help target", ["help", SENTINEL], exitCodes.usage],
   ["value to --version", ["--version", SENTINEL], exitCodes.usage],
 ];
 
 describe("rejected arguments are not echoed", () => {
   for (const [label, argv, exitCode] of rejectedArgv) {
-    test(label, () => {
+    test(`${label} (in process)`, () => {
       const result = runWard(argv);
       expect(result.exitCode).toBe(exitCode);
       expect(disclosed(result.stdout)).toBe(false);
       expect(disclosed(result.stderr)).toBe(false);
     });
-  }
 
-  test("the compiled entry behaves the same as a subprocess", () => {
-    const run = Bun.spawnSync(["bun", MAIN, "manifest", `--token=${SENTINEL}`]);
-    expect(run.exitCode).toBe(exitCodes.usage);
-    expect(disclosed(run.stdout.toString())).toBe(false);
-    expect(disclosed(run.stderr.toString())).toBe(false);
-  });
+    test(`${label} (entry point)`, () => {
+      const result = spawnWard(argv);
+      expect(result.exitCode).toBe(exitCode);
+      expect(disclosed(result.stdout)).toBe(false);
+      expect(disclosed(result.stderr)).toBe(false);
+    });
+  }
 });
 
 describe("unexpected exceptions", () => {
@@ -79,21 +100,69 @@ describe("unexpected exceptions", () => {
       handlers.manifest = original;
     }
   });
+
+  // The guard is what stands between an error thrown outside runWard and
+  // Bun's default report, which prints the message and stack.
+  const escapes: [label: string, body: string][] = [
+    ["synchronous throw", `throw new Error("${SENTINEL}");`],
+    [
+      "throw from a timer",
+      `setTimeout(() => { throw new Error("${SENTINEL}"); }, 0);`,
+    ],
+    ["unhandled rejection", `Promise.reject(new Error("${SENTINEL}"));`],
+  ];
+  test("the entry point imports the guard before anything else", async () => {
+    const source = await Bun.file(ENTRY).text();
+    const imports = [...source.matchAll(/^import\s.*["'](.+)["'];?$/gm)].map(
+      ([, target]) => target,
+    );
+    expect(imports[0]).toBe("./guard.ts");
+  });
+
+  for (const [label, body] of escapes) {
+    test(`the guard reports a ${label} as a fixed envelope`, () => {
+      const dir = mkdtempSync(join(tmpdir(), "ward-guard-"));
+      try {
+        const script = join(dir, "escape.ts");
+        writeFileSync(script, `import "${join(CLI, "guard.ts")}";\n${body}\n`);
+        const run = Bun.spawnSync(["bun", script]);
+        expect(run.exitCode).toBe(exitCodes.uncaught);
+        expect(disclosed(run.stdout.toString())).toBe(false);
+        expect(disclosed(run.stderr.toString())).toBe(false);
+        expect(
+          (JSON.parse(run.stderr.toString()) as { code: string }).code,
+        ).toBe("uncaught");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
-describe("commands that do not unlock the vault never touch ~/.ward", () => {
-  test("running each one under an empty HOME leaves it empty", () => {
+describe("commands that do not unlock the vault never read or write ~/.ward", () => {
+  // ~/.ward is planted as an unreadable, unwritable file. Opening it, listing
+  // it, or creating anything beneath it throws, and the command exits 1. An
+  // existence check or stat does not throw, so this does not catch those.
+  test("every example succeeds with ~/.ward unusable, and HOME is unchanged", () => {
     const home = mkdtempSync(join(tmpdir(), "ward-home-"));
+    const trap = join(home, ".ward");
+    writeFileSync(trap, "");
+    chmodSync(trap, 0o000);
     try {
       for (const command of commands) {
         expect(command.unlocksVault).toBe(false);
-        const run = Bun.spawnSync(["bun", MAIN, command.name], {
-          env: { ...process.env, HOME: home, USERPROFILE: home },
-        });
-        expect(run.exitCode).toBe(exitCodes.success);
+        for (const example of command.examples) {
+          const result = spawnWard(example.split(" ").slice(1), {
+            HOME: home,
+            USERPROFILE: home,
+          });
+          expect(result.exitCode).toBe(exitCodes.success);
+        }
       }
-      expect(readdirSync(home)).toEqual([]);
+      expect(readdirSync(home)).toEqual([".ward"]);
+      expect(statSync(trap).size).toBe(0);
     } finally {
+      chmodSync(trap, 0o600);
       rmSync(home, { recursive: true, force: true });
     }
   });

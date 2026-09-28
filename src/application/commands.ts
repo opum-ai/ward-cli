@@ -1,12 +1,13 @@
+import packageJson from "../../package.json" with { type: "json" };
 import { exitCodes, type ResultKind } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
 import {
   type CommandSpec,
   commands,
   findCommand,
+  universalFlags,
   usageLine,
 } from "../contract/manifest.ts";
-import packageJson from "../../package.json" with { type: "json" };
 import { findInstructionTopic, instructionTopics } from "./instructions.ts";
 
 export interface CommandInput {
@@ -25,7 +26,7 @@ export type CommandHandler = (input: CommandInput) => CommandOutput;
 export const version: string = packageJson.version;
 
 function manifest(): CommandOutput {
-  const data = { cli: "ward", version, exitCodes, commands };
+  const data = { cli: "ward", version, exitCodes, universalFlags, commands };
   const text = commands
     .map((command) => `${usageLine(command)}\n  ${command.summary}`)
     .join("\n");
@@ -34,6 +35,8 @@ function manifest(): CommandOutput {
 
 function instructions(input: CommandInput): CommandOutput {
   if (input.flags.has("--list")) {
+    if (input.positionals.length > 0)
+      throw new WardError("unexpected_argument");
     const topics = instructionTopics.map(({ key, title }) => ({ key, title }));
     return {
       kind: "instructions.list",
@@ -54,14 +57,16 @@ function instructions(input: CommandInput): CommandOutput {
 }
 
 function commandUsage(command: CommandSpec): string {
-  const flags = command.flags.map(
+  const flags = [...command.flags, ...universalFlags].map(
     (flag) => `  ${flag.name.padEnd(12)}${flag.summary}`,
   );
   return [
     usageLine(command),
     "",
     command.summary,
-    ...(flags.length > 0 ? ["", "Options:", ...flags] : []),
+    "",
+    "Options:",
+    ...flags,
   ].join("\n");
 }
 

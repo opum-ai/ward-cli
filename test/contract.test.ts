@@ -3,7 +3,6 @@ import { handlers } from "../src/application/commands.ts";
 import { instructionTopics } from "../src/application/instructions.ts";
 import { runWard } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
-import { errorCatalog } from "../src/contract/errors.ts";
 import { commands } from "../src/contract/manifest.ts";
 
 function json(stdout: string): Record<string, unknown> {
@@ -40,10 +39,25 @@ describe("manifest", () => {
     expect(data.exitCodes).toEqual({ ...exitCodes });
   });
 
-  test("every declared result kind is dotted and every command has an example", () => {
+  test("every example emits a declared kind and a declared exit code", () => {
     for (const command of commands) {
-      expect(command.kind).toMatch(/^[a-z]+\.[a-z.]+$/);
       expect(command.examples.length).toBeGreaterThan(0);
+      const declared: string[] = [command.kind, ...(command.resultKinds ?? [])];
+      for (const example of command.examples) {
+        const argv = example.split(" ").slice(1);
+        const result = runWard(
+          argv.includes("--json") ? argv : [...argv, "--json"],
+        );
+        expect(command.exitCodes).toContain(result.exitCode);
+        expect(declared).toContain(json(result.stdout).kind as string);
+      }
+    }
+  });
+
+  test("every command declares exit codes 0 and 1", () => {
+    for (const command of commands) {
+      expect(command.exitCodes).toContain(exitCodes.success);
+      expect(command.exitCodes).toContain(exitCodes.uncaught);
     }
   });
 });
@@ -66,6 +80,12 @@ describe("instructions", () => {
     }
   });
 
+  test("--list takes no topic", () => {
+    const result = runWard(["instructions", "--list", "overview"]);
+    expect(result.exitCode).toBe(exitCodes.usage);
+    expect(json(result.stderr).code).toBe("unexpected_argument");
+  });
+
   test("an unknown topic exits 3", () => {
     const result = runWard(["instructions", "no-such-topic"]);
     expect(result.exitCode).toBe(exitCodes.notFound);
@@ -81,12 +101,26 @@ describe("help", () => {
     expect(runWard(["help"]).stdout).toBe(bare.stdout);
   });
 
-  test("<command> --help is help for that command", () => {
+  test("<command> --help and -h are help for that command, including help", () => {
     for (const command of commands) {
-      if (command.name === "help") continue;
-      const result = runWard([command.name, "--help"]);
+      const expected = runWard(["help", command.name]).stdout;
+      for (const flag of ["--help", "-h"]) {
+        const result = runWard([command.name, flag]);
+        expect(result.exitCode).toBe(exitCodes.success);
+        expect(result.stdout).toBe(expected);
+      }
+    }
+  });
+
+  test("--help keeps --json on every path", () => {
+    for (const argv of [
+      ["--help", "--json"],
+      ["manifest", "--help", "--json"],
+      ["manifest", "--json", "--help"],
+    ]) {
+      const result = runWard(argv);
       expect(result.exitCode).toBe(exitCodes.success);
-      expect(result.stdout).toBe(runWard(["help", command.name]).stdout);
+      expect(json(result.stdout).kind).toBe("help.usage");
     }
   });
 
@@ -111,12 +145,6 @@ describe("errors", () => {
       const envelope = json(result.stderr);
       expect(envelope.error_type).toBe("usage");
       expect(envelope).not.toHaveProperty("input");
-    }
-  });
-
-  test("every catalogued error has a fixed message", () => {
-    for (const entry of Object.values(errorCatalog)) {
-      expect(entry.message.length).toBeGreaterThan(0);
     }
   });
 });

@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 import { handlers, version } from "../application/commands.ts";
 import {
   type ExitCode,
@@ -38,18 +37,11 @@ function dispatch(argv: readonly string[]): RunResult {
   if (command === undefined || handler === undefined)
     throw new WardError("unknown_command", 1);
 
-  // `ward <command> --help` is help for that command, wherever the flag sits
-  // before a `--` terminator.
-  const optionsEnd = rest.indexOf("--");
-  const options = optionsEnd === -1 ? rest : rest.slice(0, optionsEnd);
-  if (
-    command.name !== "help" &&
-    (options.includes("--help") || options.includes("-h"))
-  ) {
-    return dispatch(["help", command.name]);
-  }
-
   const parsed = parseArguments(command, rest);
+  if (parsed.flags.has("--help")) {
+    const json = parsed.flags.has("--json") ? ["--json"] : [];
+    return dispatch(["help", command.name, ...json]);
+  }
   const output = handler(parsed);
   const stdout = parsed.flags.has("--json")
     ? JSON.stringify(success(output.kind, output.data))
@@ -68,20 +60,4 @@ export function runWard(argv: readonly string[]): RunResult {
       error instanceof WardError ? error : new WardError("uncaught"),
     );
   }
-}
-
-function emitUncaughtAndExit(): never {
-  process.stderr.write(
-    `${JSON.stringify(errorEnvelope(new WardError("uncaught")))}\n`,
-  );
-  process.exit(exitCodes.uncaught);
-}
-
-if (import.meta.main) {
-  process.on("uncaughtException", emitUncaughtAndExit);
-  process.on("unhandledRejection", emitUncaughtAndExit);
-  const result = runWard(process.argv.slice(2));
-  process.stdout.write(result.stdout);
-  process.stderr.write(result.stderr);
-  process.exitCode = result.exitCode;
 }

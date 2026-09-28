@@ -9,7 +9,8 @@ export interface ParsedArguments {
 // Parses the argv that follows the command name, strictly against the
 // command's manifest entry. Faults are reported by 1-based position in the
 // full argv (the command name is position 1), never by value: an unknown
-// option could be `--ghp_...` pasted into the wrong place.
+// option could be `--ghp_...` pasted into the wrong place. `--help` and `-h`
+// are accepted by every command and recorded as `--help`.
 export function parseArguments(
   command: CommandSpec,
   argv: readonly string[],
@@ -35,6 +36,14 @@ export function parseArguments(
 
     const equals = token.indexOf("=");
     const name = equals === -1 ? token : token.slice(0, equals);
+    // Every command accepts --help. Recognising it here, rather than by
+    // scanning argv, means a value that happens to be "-h" is still a value.
+    if (name === "--help" || name === "-h") {
+      if (equals !== -1)
+        throw new WardError("unexpected_option_value", position);
+      flags.set("--help", true);
+      continue;
+    }
     const spec = command.flags.find((flag) => flag.name === name);
     if (spec === undefined) throw new WardError("unknown_option", position);
     if (flags.has(spec.name)) throw new WardError("repeated_option", position);
@@ -57,6 +66,9 @@ export function parseArguments(
     index++;
   }
 
+  // A help request is answered whatever else is on the line, so
+  // `ward <command> --help` works before the caller knows the arguments.
+  if (flags.has("--help")) return { positionals, flags };
   const required = command.args.filter((arg) => arg.required).length;
   if (positionals.length < required) throw new WardError("missing_argument");
   if (positionals.length > command.args.length) {

@@ -53,7 +53,7 @@ and its documented deployment boundary are the controls.
     body: `0 success. 1 internal error. 2 usage. 3 not found. 4 denied. 5 conflict. 6 validation or failed
 check. 7 indeterminate.
 
-Errors are JSON on stderr: {error_type, code, message, hint?}. They never echo your arguments, so a
+Errors are JSON on stderr: {error_type, code, message, hint?, principal}. They never echo your arguments, so a
 position such as "(argument 3)" is all you get; that is deliberate.
 
 Denied (4) or a missing binding, credential or approval: stop the dependent work and ask the developer.
