@@ -1,5 +1,7 @@
-// Enforces the import direction between source layers: cli may use
-// application and contract, application may use domain and contract, domain
+// Enforces the import direction between source layers: cli may use adapters,
+// application and contract; adapters (credential store, and later
+// filesystem and network) may use application, domain and contract;
+// application may use domain and contract; domain
 // (pure policy and cryptography; no I/O by convention, which this script does
 // not check) may use contract, and contract is a leaf. Imports that leave
 // src/ (package.json) are not checked here.
@@ -8,7 +10,8 @@ import { dirname, extname, join, normalize, relative } from "node:path";
 
 const sourceRoot = "src";
 const allowedDependencies = new Map([
-  ["cli", new Set(["application", "contract"])],
+  ["cli", new Set(["adapters", "application", "contract"])],
+  ["adapters", new Set(["application", "domain", "contract"])],
   ["application", new Set(["domain", "contract"])],
   ["domain", new Set(["contract"])],
   ["contract", new Set()],
@@ -36,6 +39,16 @@ function relativeImportTargets(source) {
   ].map(([, target]) => target);
 }
 
+// Native bindings reach the OS directly, so only adapters may name them,
+// and only by the package root, which is what the test mock replaces. Any
+// quoted or template-literal occurrence counts, so import, export, require
+// and import() are all caught.
+const nativeSpecifier = /["'`](@napi-rs\/keyring(?:[-/][^"'`]*)?)["'`]/g;
+
+function nativeTargets(source) {
+  return [...source.matchAll(nativeSpecifier)].map(([, target]) => target);
+}
+
 const files = await collectTypeScriptFiles(sourceRoot);
 const violations = [];
 
@@ -49,7 +62,16 @@ for (const file of files) {
     );
     continue;
   }
-  for (const target of relativeImportTargets(await readFile(file, "utf8"))) {
+  const source = await readFile(file, "utf8");
+  for (const target of nativeTargets(source)) {
+    if (sourceLayer !== "adapters")
+      violations.push(`${file}: only adapters may import ${target}`);
+    else if (target !== "@napi-rs/keyring")
+      violations.push(
+        `${file}: import the native binding by its package root, not ${target}`,
+      );
+  }
+  for (const target of relativeImportTargets(source)) {
     const targetPath = relative(sourceRoot, join(dirname(file), target));
     if (targetPath.startsWith("..")) continue;
     const targetLayer = layerFor(targetPath);

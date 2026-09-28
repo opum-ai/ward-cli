@@ -80,10 +80,58 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   Keychain ACL protects anything, and until it exists no Ward document may make that claim.
 - **WCLI-19 is accepted as a stated P0 limitation.** `BUN_OPTIONS` and `BUN_BE_BUN` reaching the
   packaged executable will be revisited together with signing.
-- **Open and unmeasured: which Keychain API `@napi-rs/keyring` uses underneath.** It is either the
-  legacy file-based keychain or the data-protection keychain, and the two have different ACL
-  semantics. It is not a precondition for this decision. Measuring it means writing a throwaway
-  item into the developer's real login keychain. It is an acceptance criterion on WCLI-5, and the
-  developer authorises it when that task starts.
+- **Measured under WCLI-5: the item lives in the legacy file-based login keychain.** The
+  developer authorised one throwaway item, using a random synthetic value in the
+  `opum.ward.probe-*` namespace, which was deleted afterwards. The measurement ran on 2026-09-28
+  with bun 1.3.14 on macOS arm64:
+  - `setSecret` wrote a `genp` item into `login.keychain-db`, where `security
+    find-generic-password` can see it. It is not the data-protection keychain.
+  - The build that created the item read it back with no prompt.
+  - A second build of the same source, with a different cdhash, was refused in 16 ms with "User
+    interaction is not allowed" from the agent's non-GUI shell, and no prompt was shown. This
+    confirms the ACL trusts the creating build only.
+  - The prompt that an interactive terminal session would show is not measured.
+- **Binding decision (WCLI-5): `@napi-rs/keyring` is adopted, pinned exactly to 2.1.0.**
+  - It is MIT licensed. SLSA v1 provenance attestations are published for both the package and
+    its darwin-arm64 binary.
+  - It embeds in, and loads from, an executable built by `scripts/build.ts`, including after
+    the executable is moved elsewhere.
+  - Its `AsyncEntry` accepts an `AbortSignal`. Ward bounds every call with its own timer as well
+    (`defaultKeyTimeoutMs`, 10 s), because a native call can outlive its abort.
+  - Its types are wrong in two places, both measured: `getSecret` resolves a plain `number[]`
+    rather than a `Uint8Array`, and `null` rather than `undefined` for an absent item. The
+    adapter normalizes and validates both. A `number[]` cannot be zeroed reliably, so that
+    zeroing is best effort.
+- **The adapter round trip was measured in a compiled executable.** The developer authorised
+  it. One executable built by `scripts/build.ts` from the WCLI-5 adapter source at commit
+  45f5795 (bun 1.3.14) used a fresh `opum.ward.probe-*` service and deleted the item
+  afterwards. The results:
+  - A load before create reported `vault_key_missing`.
+  - Create succeeded in 17 ms, and a load returned the same 32 bytes in 3 ms.
+  - A second create was refused with `vault_key_exists`, and the original key was intact.
+  - After the item was deleted, a load reported `vault_key_missing` again.
+  - No prompt was shown.
+- **Creating a key is check, write, read back, and is not atomic in the store.** A writer that
+  lands between the check and the write is overwritten.
+  - `ward setup` (WCLI-20) must serialize Ward against itself. Nothing in Ward can stop a writer
+    outside Ward.
+  - A create that fails after its write began reports `vault_key_write_unconfirmed`: the key may
+    or may not have been stored. The caller resolves that with a load, never by writing again.
+- **The bound is on the call, not the process.** Every store call settles within
+  `defaultKeyTimeoutMs`, but a native call can outlive its abort and keep the process alive. A
+  command that receives `vault_key_unavailable` must exit explicitly (WCLI-20).
+- **The adapter supports macOS only.** On any other platform it fails closed with
+  `vault_key_store_unsupported` before constructing an entry. The reason: off macOS the binding
+  silently falls back to the Linux kernel keyutils keyring, which does not survive a reboot,
+  and spec §6.4 forbids that substitution. Linux and Windows follow WCLI-21 and WCLI-22.
+- **Tests are kept away from real keychain items.** A mock makes constructing a real binding
+  entry throw. `bunfig.toml` preloads it when `bun test` runs from the repository root.
+  Because Bun reads `bunfig.toml` from the working directory only, every test that can reach
+  the adapter also imports the mock first, and `test/test-isolation.test.ts` enforces that.
+  The adapter has no default service name.
+- **The round trip is reproducible.** `test/qualification/keychain-roundtrip.ts` is the probe
+  that produced the measurement above. `bun test` never runs it, and it refuses to run without
+  an explicit opt-in. It writes to the real keychain, so it runs only with the developer's
+  authorisation.
 - One key opens the whole vault. Compromise of that key exposes every project's secrets
   (spec §2).

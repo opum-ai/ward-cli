@@ -1,0 +1,8 @@
+# Test-only configuration for this repository. The shipped executable is
+# compiled with bunfig autoload off (WCLI-16) and never reads this file.
+[test]
+# Replaces the native credential-store binding when `bun test` runs from the
+# repository root. Bun reads this file from the working directory only, so
+# every test that can reach the adapter also imports the mock first, and
+# test/test-isolation.test.ts enforces that (WCLI-5).
+preload = ["./test/support/no-real-keychain.ts"]

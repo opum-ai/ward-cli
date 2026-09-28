@@ -54,7 +54,10 @@ defects to fix in P0:
 
 - **The launcher.** The shipped executable ignores the working directory's `bunfig.toml` and
   `.env` (WCLI-16). The inherited `BUN_OPTIONS` and `BUN_BE_BUN` still reach it (WCLI-19), which
-  is arbitrary code with equivalent authority.
+  is arbitrary code with equivalent authority. `NAPI_RS_NATIVE_LIBRARY_PATH` would load any
+  module in place of the credential-store binding. Because the binding reads it only when first
+  imported, `src/cli/guard.ts` deletes it before any other Ward module runs, and a compiled
+  control shows the override loading without that guard (WCLI-5).
 - **The keychain.** The Keychain ACL is per-build and ad-hoc signed. Developer ID signing, the
   precondition for any ACL claim, is an operator decision held as opum-agent OPAG-672. See
   [vault storage and key custody](0001-vault-storage-and-key-custody.md).
