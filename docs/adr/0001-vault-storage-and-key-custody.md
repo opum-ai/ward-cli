@@ -55,7 +55,7 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
 - Any change to the authenticated-data encoding, its field order or its domain string requires a
   new format version. The golden test pins version 1.
 - The sealed record is stored as a SQLite BLOB, and SQLite receives ciphertext only (spec §6.3).
-  The store itself is WCLI-6.
+  The store is `src/adapters/sqlite-vault-store.ts` (WCLI-6), described under Consequences.
 
 **P0 key custody is a generic-password item in the macOS Keychain.**
 
@@ -133,5 +133,43 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   that produced the measurement above. `bun test` never runs it, and it refuses to run without
   an explicit opt-in. It writes to the real keychain, so it runs only with the developer's
   authorisation.
+- **Store layout 1 (WCLI-6).** `ward.db` holds one row in a `STRICT` table: the six sealed-record
+  fields and nothing else. No plaintext column, index or full-text table exists.
+  - Ward recognizes its own file by `application_id` 0x57415244 ("WARD"), `user_version` 1 and an
+    exact match of the whole schema. It refuses anything else, including an added trigger or index,
+    and never modifies a file it does not recognize: a file whose header declares WAL mode is
+    refused before SQLite ever opens it (a read-write open would checkpoint a foreign WAL journal
+    and create sidecars), and the layout check runs before any setting that writes. A Ward vault
+    converted to another rollback-journal mode (persist or truncate) is healed back on the first
+    writing connection; one converted to WAL is refused as a recovery condition. The one change
+    outside Ward's control is SQLite's own mandatory open-time recovery of a file left mid-
+    transaction with a hot journal, which rolls that transaction back before any layout check can
+    read the file.
+  - Every call opens its own connection with the rollback journal (`journal_mode = DELETE`),
+    `synchronous = FULL`, `trusted_schema = OFF` and a busy timeout of 5 s. The connection is
+    closed before the call returns.
+  - A mutation runs in one `BEGIN IMMEDIATE` transaction. It reads and authenticates the latest
+    snapshot, applies a synchronous change, seals the next revision and updates the row. Because
+    the change is synchronous, no network request can run while the write transaction is open.
+  - Concurrent Ward processes wait for the lock. Past the busy timeout they report `vault_busy`,
+    and nothing is changed. A writer killed at any point leaves the last committed snapshot, which
+    the next connection restores from the journal. A create commits the schema and its first row
+    together, so an interrupted create leaves an empty file that reads as no vault.
+  - The directory must be mode 0700 and the database and any sidecar mode 0600, all owned by the
+    current user and none a symbolic link. A looser mode is refused, never repaired. Links above
+    the vault directory, such as a home reached through a link, are resolved. SQLite opens the
+    file with `SQLITE_OPEN_NOFOLLOW` and never creates it.
+  - Entries Ward itself creates get inherited access control lists stripped (`chmod -N` on macOS,
+    measured to remove an ACL inherited from the parent directory; a failed strip refuses the
+    create). An entry that already exists is checked for mode, ownership and links but not for
+    ACLs: an ACL the user placed there stays. An inherited ACL left on a pre-existing directory
+    can grant other local users read access to the ciphertext and metadata; confidentiality still
+    rests on the envelope, and a write ACL would let them tamper or delete, which the
+    [threat model](0002-p0-threat-model-and-non-guarantees.md) does not concede. Detecting ACLs
+    without a subprocess is not possible with the current runtime, which is why pre-existing
+    entries are not checked.
+  - These checks and the open are separate steps, so a process running as the same user could
+    race them. The [threat model](0002-p0-threat-model-and-non-guarantees.md) already concedes
+    that attacker.
 - One key opens the whole vault. Compromise of that key exposes every project's secrets
   (spec §2).

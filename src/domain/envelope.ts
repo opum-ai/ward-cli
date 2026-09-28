@@ -113,6 +113,12 @@ function ownHeader(value: unknown): EnvelopeHeader {
   };
 }
 
+// Validates a header read from storage without the key, with the same
+// grammar and failure codes as open().
+export function parseHeader(value: unknown): EnvelopeHeader {
+  return ownHeader(value);
+}
+
 // Deterministic: a fixed-order JSON array of validated fields, so the same
 // header always yields the same bytes.
 function encodeHeader(header: EnvelopeHeader): Uint8Array {

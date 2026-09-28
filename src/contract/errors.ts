@@ -92,6 +92,38 @@ export const errorCatalog = {
     message:
       "The vault record failed authentication: it was modified, is corrupt, or was sealed under a different key.",
   },
+  // Vault store (spec §6.1-6.3). None of these names a path or a SQL error.
+  vault_not_found: {
+    type: "not_found",
+    message: "No vault exists yet.",
+    hint: "Run `ward setup` in a trusted terminal.",
+  },
+  vault_exists: {
+    type: "conflict",
+    message: "A vault already exists. Ward does not replace an existing vault.",
+  },
+  vault_busy: {
+    type: "conflict",
+    message:
+      "Another Ward process held the vault for too long. Nothing was changed.",
+    hint: "Retry once the other Ward command has finished.",
+  },
+  vault_store_insecure: {
+    type: "validation",
+    message:
+      "The vault location is not a private directory and file owned by this user, one of them is a link, or an inherited access control list could not be removed from it. Ward will not use it.",
+    hint: "The vault directory must be mode 0700 and its database files mode 0600, both owned by you, and neither may be a symbolic link.",
+  },
+  vault_store_unrecognized: {
+    type: "validation",
+    message:
+      "The vault database is not a Ward vault, uses a layout this version of Ward cannot read, or is damaged. Ward did not change it.",
+  },
+  vault_store_failed: {
+    type: "indeterminate",
+    message:
+      "Ward could not read or write the vault database. If a change was being made, it may not have been saved.",
+  },
 } as const satisfies Record<
   string,
   { type: ErrorType; message: string; hint?: string }
