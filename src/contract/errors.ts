@@ -44,6 +44,28 @@ export const errorCatalog = {
     message: "Unknown instructions topic.",
     hint: "Run `ward instructions --list` for the topic list.",
   },
+  // Vault envelope (spec §6.3). None of these carries a byte of the record.
+  vault_key_invalid: {
+    type: "validation",
+    message: "The vault key has the wrong length.",
+  },
+  vault_format_unsupported: {
+    type: "validation",
+    message: "The vault record uses a format this version of Ward cannot read.",
+  },
+  vault_record_malformed: {
+    type: "validation",
+    message: "The vault record is malformed.",
+  },
+  vault_record_too_large: {
+    type: "validation",
+    message: "The vault data exceeds the size limit.",
+  },
+  vault_authentication_failed: {
+    type: "validation",
+    message:
+      "The vault record failed authentication: it was modified, is corrupt, or was sealed under a different key.",
+  },
 } as const satisfies Record<
   string,
   { type: ErrorType; message: string; hint?: string }
