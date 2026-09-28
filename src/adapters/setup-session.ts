@@ -98,10 +98,7 @@ function acquireFlock(
   try {
     fd = openSync(
       lockPath,
-      fileConstants.O_CREAT |
-        fileConstants.O_RDWR |
-        fileConstants.O_TRUNC |
-        fileConstants.O_NOFOLLOW,
+      fileConstants.O_CREAT | fileConstants.O_RDWR | fileConstants.O_NOFOLLOW,
       0o600,
     );
   } catch {
@@ -110,6 +107,8 @@ function acquireFlock(
   const flock = dlopen("/usr/lib/libSystem.B.dylib", {
     flock: { args: ["int", "int"], returns: "int" },
   }).symbols.flock as (fd: number, operation: number) => number;
+  // A non-contention flock failure is indistinguishable here and reports
+  // setup_in_progress too; fail-closed either way.
   if (flock(fd, LOCK_EX | LOCK_NB) !== 0) {
     closeSync(fd);
     throw new WardError("setup_in_progress");

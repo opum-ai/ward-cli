@@ -125,8 +125,12 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   macOS the fallback is an O_EXCL file whose recorded pid is reaped only when provably dead, with
   fail-closed staleness (an empty or unreadable lock refuses, because that is also the state a
   live holder occupies mid-write) and compare-and-delete release. An adversarial review measured
-  the check-then-delete race in a purely pid-based scheme (19 overlapping holder pairs across 300
-  rounds) before flock replaced it on macOS. Setup records the pending vault id in a
+  the check-then-delete race in a purely pid-based scheme — 19 overlapping holder pairs across 25
+  rounds of 12 simultaneous attempts — before flock replaced it on macOS. The same review
+  measured 12 overlapping pairs in 20 rounds against the fallback itself, which is unreachable
+  today because the key provider refuses non-darwin platforms; the platform tasks (WCLI-21,
+  WCLI-22) must replace the fallback with kernel-arbitrated locking (or identity-checked
+  compare-and-delete) before any other platform is qualified. Setup records the pending vault id in a
   `setup.json` journal, durably, before the key exists. A rerun at any point either completes the
   same setup — reusing the recorded id, the stored key, or both — or reports the state it finds:
   a vault whose key loads is an already-completed setup, a vault whose key does not load is a

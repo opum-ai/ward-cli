@@ -552,12 +552,21 @@ describe("the bounded explicit exit, in a real process", () => {
 describe("only setup ever creates a key", () => {
   test("no other source module calls the provider's create", () => {
     // Spec §6.4: "nothing else ever creates or regenerates a key". The
-    // enforceable form is source-level: `create` bound to a vaultId
-    // argument appears in the two port declarations, the two
-    // implementations, and the one caller, setup. A new caller in any
-    // spelling (dotted, destructured or subscript) shows up as an extra
-    // module and fails this test.
-    const callers: string[] = [];
+    // enforceable form is source-level: the only modules allowed to name a
+    // create call (any spelling: dotted, destructured, subscript, spaced)
+    // are the two port declarations, the two implementations, and the one
+    // caller, setup. Anything else naming a create call fails this test,
+    // and the allowed five must all still name one, so the scan provably
+    // reads something.
+    const allowed = new Set([
+      "adapters/keychain.ts",
+      "adapters/sqlite-vault-store.ts",
+      "application/key-provider.ts",
+      "application/setup.ts",
+      "application/vault-store.ts",
+    ]);
+    const offenders: string[] = [];
+    const present = new Set<string>();
     for (const layer of ["application", "adapters", "cli"]) {
       for (const name of readdirSync(
         join(import.meta.dir, "..", "src", layer),
@@ -567,16 +576,14 @@ describe("only setup ever creates a key", () => {
           join(import.meta.dir, "..", "src", layer, name),
           "utf8",
         );
-        if (/\bcreate\([^)]*vaultId/.test(source))
-          callers.push(`${layer}/${name}`);
+        if (/\bcreate\s*\(|\["create"\]\s*\(/.test(source)) {
+          const module = `${layer}/${name}`;
+          present.add(module);
+          if (!allowed.has(module)) offenders.push(module);
+        }
       }
     }
-    expect(callers.sort()).toEqual([
-      "adapters/keychain.ts",
-      "adapters/sqlite-vault-store.ts",
-      "application/key-provider.ts",
-      "application/setup.ts",
-      "application/vault-store.ts",
-    ]);
+    expect(offenders).toEqual([]);
+    expect([...present].sort()).toEqual([...allowed].sort());
   });
 });

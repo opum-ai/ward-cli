@@ -129,7 +129,7 @@ export const errorCatalog = {
     type: "conflict",
     message:
       "Another Ward setup appears to be running on this machine. Nothing was changed.",
-    hint: "If no other setup is running, delete the setup lock file from the Ward directory and run `ward setup` again.",
+    hint: "Wait for that setup to finish, or stop the process holding it, then run `ward setup` again. If the lock file was left behind by a crash and Ward still refuses, remove the setup lock file and retry.",
   },
   setup_state_invalid: {
     type: "validation",
