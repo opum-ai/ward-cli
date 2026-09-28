@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { WardError } from "../contract/errors.ts";
+import { isOpaqueId } from "./identifiers.ts";
 
 // The vault encryption envelope (spec §6.3). One logical snapshot is sealed
 // with AES-256-GCM under the 32-byte vault key, with a fresh random 12-byte
@@ -29,14 +30,9 @@ export const envelopeLimits = {
   maxPlaintextBytes: 10 * 1024 * 1024,
 } as const;
 
-// crypto.randomUUID() output: lowercase, version 4, RFC 9562 variant. The
-// grammar is strict so the authenticated data has exactly one encoding.
-const vaultIdPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-export function isVaultId(value: unknown): value is string {
-  return typeof value === "string" && vaultIdPattern.test(value);
-}
+// A vault id is an opaque identifier, the same grammar as a project id
+// (domain/identifiers.ts).
+export const isVaultId = isOpaqueId;
 
 export interface EnvelopeHeader {
   formatVersion: number;
@@ -95,10 +91,7 @@ function ownHeader(value: unknown): EnvelopeHeader {
   };
   if (header.formatVersion !== formatVersion)
     throw new WardError("vault_format_unsupported");
-  if (
-    typeof header.vaultId !== "string" ||
-    !vaultIdPattern.test(header.vaultId)
-  )
+  if (!isOpaqueId(header.vaultId))
     throw new WardError("vault_record_malformed");
   if (
     typeof header.revision !== "number" ||

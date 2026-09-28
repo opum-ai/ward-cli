@@ -1,18 +1,25 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { canonicalDirectory, locateCheckout } from "../adapters/checkout.ts";
 import {
   createKeychainKeyProvider,
   keychainService,
 } from "../adapters/keychain.ts";
+import { createProjectFiles } from "../adapters/project-files.ts";
 import { acquireSetupSession } from "../adapters/setup-session.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
-import type { KeyProvider } from "../application/key-provider.ts";
-import { runSetup } from "../application/setup.ts";
+import { createTerminalConsent } from "../adapters/terminal-consent.ts";
+import type { RegistrationApprover } from "../application/approvals.ts";
 import {
+  type CommandInput,
+  type CommandOutput,
   handlers,
   version,
-  type CommandOutput,
 } from "../application/commands.ts";
+import type { KeyProvider } from "../application/key-provider.ts";
+import { initProject } from "../application/project.ts";
+import { runSetup } from "../application/setup.ts";
 import {
   type ExitCode,
   exitCodeForErrorType,
@@ -20,7 +27,7 @@ import {
   success,
 } from "../contract/envelope.ts";
 import { errorEnvelope, WardError } from "../contract/errors.ts";
-import { findCommand } from "../contract/manifest.ts";
+import { type AgentTarget, findCommand } from "../contract/manifest.ts";
 import { parseArguments } from "./parse.ts";
 
 export interface RunResult {
@@ -41,6 +48,14 @@ export interface RunOptions {
   // The credential store the vault key lives in. Defaults to the platform
   // provider; tests and qualification probes override it.
   keyProvider?: KeyProvider;
+  // The directory the command acts in. Defaults to the process's working
+  // directory; tests resolve projects in a temporary checkout.
+  cwd?: string;
+  // Who answers Ward's registration question. Defaults to the terminal
+  // prompt; tests supply an answer.
+  approver?: RegistrationApprover;
+  // The clock, for timestamps recorded in the vault.
+  now?: () => Date;
 }
 
 function failure(error: WardError): RunResult {
@@ -83,6 +98,40 @@ async function setupCommand(options: RunOptions): Promise<{
   };
 }
 
+// The composition root for `ward init`. The checkout is resolved from the
+// directory the command runs in, and the project files are bound to that
+// root; the store and provider are constructed but only touched when the
+// run registers the checkout.
+async function initCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const targets: AgentTarget[] = [];
+  if (input.flags.has("--claude")) targets.push("claude");
+  if (input.flags.has("--codex")) targets.push("codex");
+
+  const result = await initProject({
+    checkout,
+    files: createProjectFiles(checkout.root),
+    store: createSqliteVaultStore({ directory }),
+    keyProvider:
+      options.keyProvider ??
+      createKeychainKeyProvider({ service: keychainService }),
+    approver: options.approver ?? createTerminalConsent(),
+    // Canonical, so the check against the (canonical) checkout root compares
+    // two names for a location rather than two spellings of one.
+    vaultDirectory: canonicalDirectory(directory),
+    register: !input.flags.has("--no-register"),
+    targets,
+    now: options.now ?? (() => new Date()),
+    newProjectId: () => randomUUID(),
+  });
+  const { text, ...data } = result;
+  return { kind: "init.complete", data, text };
+}
+
 async function dispatch(
   argv: readonly string[],
   options: RunOptions,
@@ -108,6 +157,8 @@ async function dispatch(
     const run = await setupCommand(options);
     output = run.output;
     exitExplicitly = run.exitExplicitly;
+  } else if (command.name === "init") {
+    output = await initCommand(parsed, options);
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);
