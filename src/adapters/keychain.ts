@@ -53,6 +53,7 @@ async function bounded<T>(
   timeoutMs: number,
   failure: "vault_key_unavailable" | "vault_key_write_unconfirmed",
   run: (signal: AbortSignal) => Promise<T>,
+  onAbandon?: () => void,
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
@@ -61,6 +62,8 @@ async function bounded<T>(
     timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
+      // The bound gave up on a call that may still be running natively.
+      onAbandon?.();
       reject(new WardError(failure));
     }, timeoutMs);
   });
@@ -126,13 +129,20 @@ export function createKeychainKeyProvider(options: {
   const timeoutMs = options.timeoutMs ?? defaultKeyTimeoutMs;
   const entryFor =
     options.entry ?? nativeEntryFor(options.platform ?? process.platform);
+  let abandoned = false;
+  const onAbandon = () => {
+    abandoned = true;
+  };
 
   async function read(
     entry: SecretEntry,
     failure: "vault_key_unavailable" | "vault_key_write_unconfirmed",
   ): Promise<Uint8Array | undefined> {
-    const raw = await bounded(timeoutMs, failure, (signal) =>
-      entry.getSecret(signal),
+    const raw = await bounded(
+      timeoutMs,
+      failure,
+      (signal) => entry.getSecret(signal),
+      onAbandon,
     );
     return raw === null || raw === undefined ? undefined : keyFrom(raw);
   }
@@ -176,8 +186,11 @@ export function createKeychainKeyProvider(options: {
       // From here a failure is indeterminate: the write may have landed.
       // `owned` is not zeroed on that path, because a native write still
       // pending might read it.
-      await bounded(timeoutMs, "vault_key_write_unconfirmed", (signal) =>
-        entry.setSecret(owned, signal),
+      await bounded(
+        timeoutMs,
+        "vault_key_write_unconfirmed",
+        (signal) => entry.setSecret(owned, signal),
+        onAbandon,
       );
       let stored: Uint8Array | undefined;
       try {
@@ -193,5 +206,9 @@ export function createKeychainKeyProvider(options: {
       owned.fill(0);
       if (!same) throw new WardError("vault_key_write_unconfirmed");
     },
+
+    // True once any call was abandoned at its bound, so the entry point can
+    // exit explicitly instead of waiting out a pending native call.
+    abandonedCall: () => abandoned,
   };
 }
