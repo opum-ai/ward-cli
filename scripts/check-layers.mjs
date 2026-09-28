@@ -39,6 +39,15 @@ function relativeImportTargets(source) {
   ].map(([, target]) => target);
 }
 
+// Native bindings reach the OS directly, so only adapters may import them.
+const nativePackages = new Set(["@napi-rs/keyring"]);
+
+function packageImportTargets(source) {
+  return [
+    ...source.matchAll(/(?:from\s*|import\s*\(?\s*)["']([^."'][^"']*)["']/g),
+  ].map(([, target]) => target);
+}
+
 const files = await collectTypeScriptFiles(sourceRoot);
 const violations = [];
 
@@ -52,7 +61,13 @@ for (const file of files) {
     );
     continue;
   }
-  for (const target of relativeImportTargets(await readFile(file, "utf8"))) {
+  const source = await readFile(file, "utf8");
+  for (const target of packageImportTargets(source))
+    if (nativePackages.has(target) && sourceLayer !== "adapters")
+      violations.push(
+        `${file}: only adapters may import the native binding ${target}`,
+      );
+  for (const target of relativeImportTargets(source)) {
     const targetPath = relative(sourceRoot, join(dirname(file), target));
     if (targetPath.startsWith("..")) continue;
     const targetLayer = layerFor(targetPath);

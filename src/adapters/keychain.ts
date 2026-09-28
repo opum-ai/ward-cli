@@ -7,10 +7,15 @@ import { envelopeLimits, isVaultId } from "../domain/envelope.ts";
 // through @napi-rs/keyring (docs/adr/0001). On macOS the item lands in the
 // legacy file-based login keychain, and its ACL trusts only the build that
 // created it; measured under WCLI-5.
+//
+// The production service name is passed in by the CLI composition root; this
+// module has no default, so a test cannot reach the real item by omission.
 export const keychainService = "opum.ward";
 
-// Every credential-store call is bounded. A locked keychain or a hidden
-// approval prompt must not hold a noninteractive command indefinitely.
+// Every credential-store call is bounded. This bounds the promise only: a
+// native call can outlive its abort and keep the process alive, so a
+// command that receives vault_key_unavailable must exit explicitly rather
+// than wait for the event loop to drain (WCLI-20).
 export const defaultKeyTimeoutMs = 10_000;
 
 export interface SecretEntry {
@@ -20,13 +25,15 @@ export interface SecretEntry {
 
 export type EntryFactory = (service: string, account: string) => SecretEntry;
 
-function nativeEntry(service: string, account: string): SecretEntry {
-  // bun test sets NODE_ENV=test, and the compiled executable inlines
-  // "development". A test that reached the real production item would
-  // touch the developer's actual vault key, so it fails here instead.
-  if (service === keychainService && process.env.NODE_ENV === "test")
-    throw new Error("tests must not use the production keychain service");
-  return new AsyncEntry(service, account);
+// macOS only until WCLI-21 and WCLI-22 qualify another backend. On Linux the
+// binding silently falls back to the kernel keyutils keyring, which does not
+// survive a reboot; spec §6.4 forbids that substitution.
+function nativeEntryFor(platform: string): EntryFactory {
+  return (service, account) => {
+    if (platform !== "darwin")
+      throw new WardError("vault_key_store_unsupported");
+    return new AsyncEntry(service, account);
+  };
 }
 
 function accountFor(vaultId: string): string {
@@ -34,28 +41,38 @@ function accountFor(vaultId: string): string {
   return `vault-${vaultId}`;
 }
 
-// A native call can outlive its abort: the signal is passed through, but
-// the timer here is what bounds the wait. A caller that times out should
-// exit rather than wait for the process to drain, because a native call
-// may still be pending on a worker thread.
+function zero(value: unknown): void {
+  try {
+    if (Array.isArray(value) || value instanceof Uint8Array) value.fill(0);
+  } catch {
+    // Best effort: a frozen or exotic value is left as it is.
+  }
+}
+
 async function bounded<T>(
   timeoutMs: number,
+  failure: "vault_key_unavailable" | "vault_key_write_unconfirmed",
   run: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController();
+  let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      timedOut = true;
       controller.abort();
-      reject(new WardError("vault_key_unavailable"));
+      reject(new WardError(failure));
     }, timeoutMs);
   });
   const call = (async () => {
     try {
-      return await run(controller.signal);
+      const value = await run(controller.signal);
+      // A key that arrives after the caller gave up is not used by anyone.
+      if (timedOut) zero(value);
+      return value;
     } catch {
       // The store's message is not passed on: it can name items or paths.
-      throw new WardError("vault_key_unavailable");
+      throw new WardError(failure);
     }
   })();
   try {
@@ -66,64 +83,86 @@ async function bounded<T>(
 }
 
 // The binding resolves a plain number[] (not the Uint8Array its types
-// declare) and null for an absent item; both measured under WCLI-5. The
-// source array is overwritten afterwards, as best effort only.
+// declare) and null for an absent item; both measured under WCLI-5. Every
+// index is checked, including holes, and the source is overwritten after
+// copying, as best effort only.
 function keyFrom(raw: unknown): Uint8Array {
-  const bytes =
+  const candidate =
     raw instanceof Uint8Array || Array.isArray(raw)
       ? (raw as ArrayLike<unknown>)
       : undefined;
-  if (bytes === undefined) throw new WardError("vault_key_invalid");
-  const valid =
-    bytes.length === envelopeLimits.keyBytes &&
-    Array.prototype.every.call(
-      bytes,
-      (byte: unknown) =>
-        typeof byte === "number" &&
-        Number.isInteger(byte) &&
-        byte >= 0 &&
-        byte <= 255,
-    );
-  const key = valid ? Uint8Array.from(bytes as ArrayLike<number>) : undefined;
-  if (Array.isArray(raw)) raw.fill(0);
-  else if (raw instanceof Uint8Array) raw.fill(0);
+  let key: Uint8Array | undefined;
+  if (candidate !== undefined && candidate.length === envelopeLimits.keyBytes) {
+    const copy = new Uint8Array(envelopeLimits.keyBytes);
+    let valid = true;
+    for (let index = 0; index < envelopeLimits.keyBytes; index++) {
+      const byte = index in candidate ? candidate[index] : undefined;
+      if (
+        typeof byte !== "number" ||
+        !Number.isInteger(byte) ||
+        byte < 0 ||
+        byte > 255
+      ) {
+        valid = false;
+        break;
+      }
+      copy[index] = byte;
+    }
+    if (valid) key = copy;
+    else copy.fill(0);
+  }
+  zero(raw);
   if (key === undefined) throw new WardError("vault_key_invalid");
   return key;
 }
 
-export function createKeychainKeyProvider(
-  options: { service?: string; timeoutMs?: number; entry?: EntryFactory } = {},
-): KeyProvider {
-  const service = options.service ?? keychainService;
+export function createKeychainKeyProvider(options: {
+  service: string;
+  timeoutMs?: number;
+  entry?: EntryFactory;
+  platform?: string;
+}): KeyProvider {
+  const { service } = options;
   const timeoutMs = options.timeoutMs ?? defaultKeyTimeoutMs;
-  const entryFor = options.entry ?? nativeEntry;
+  const entryFor =
+    options.entry ?? nativeEntryFor(options.platform ?? process.platform);
 
-  async function read(entry: SecretEntry): Promise<Uint8Array | undefined> {
-    const raw = await bounded(timeoutMs, (signal) => entry.getSecret(signal));
+  async function read(
+    entry: SecretEntry,
+    failure: "vault_key_unavailable" | "vault_key_write_unconfirmed",
+  ): Promise<Uint8Array | undefined> {
+    const raw = await bounded(timeoutMs, failure, (signal) =>
+      entry.getSecret(signal),
+    );
     return raw === null || raw === undefined ? undefined : keyFrom(raw);
   }
 
   return {
     async load(vaultId) {
-      const key = await read(entryFor(service, accountFor(vaultId)));
+      const entry = entryFor(service, accountFor(vaultId));
+      const key = await read(entry, "vault_key_unavailable");
       if (key === undefined) throw new WardError("vault_key_missing");
       return key;
     },
 
-    // Check, write, read back. The check and the write are not atomic in
-    // the credential store, so two concurrent setups could race; `ward
-    // setup` (WCLI-20) must serialize itself before calling this.
+    // Check, write, read back. The check and the write are not atomic in the
+    // store: another writer between them is overwritten. `ward setup`
+    // (WCLI-20) serializes Ward against itself; nothing here can stop a
+    // writer outside Ward.
     async create(vaultId, key) {
       const entry = entryFor(service, accountFor(vaultId));
       if (!(key instanceof Uint8Array))
         throw new WardError("vault_key_invalid");
       const owned = new Uint8Array(key);
-      if (owned.length !== envelopeLimits.keyBytes)
+      if (owned.length !== envelopeLimits.keyBytes) {
+        owned.fill(0);
         throw new WardError("vault_key_invalid");
+      }
       let existing: Uint8Array | undefined;
       try {
-        existing = await read(entry);
+        existing = await read(entry, "vault_key_unavailable");
       } catch (error) {
+        owned.fill(0);
         // An unreadable existing item still exists: never write over it.
         if (error instanceof WardError && error.code === "vault_key_invalid")
           throw new WardError("vault_key_exists");
@@ -131,17 +170,28 @@ export function createKeychainKeyProvider(
       }
       if (existing !== undefined) {
         existing.fill(0);
+        owned.fill(0);
         throw new WardError("vault_key_exists");
       }
-      await bounded(timeoutMs, (signal) => entry.setSecret(owned, signal));
-      const stored = await read(entry);
+      // From here a failure is indeterminate: the write may have landed.
+      // `owned` is not zeroed on that path, because a native write still
+      // pending might read it.
+      await bounded(timeoutMs, "vault_key_write_unconfirmed", (signal) =>
+        entry.setSecret(owned, signal),
+      );
+      let stored: Uint8Array | undefined;
+      try {
+        stored = await read(entry, "vault_key_write_unconfirmed");
+      } catch {
+        throw new WardError("vault_key_write_unconfirmed");
+      }
       const same =
         stored !== undefined &&
         stored.length === owned.length &&
         stored.every((byte, index) => byte === owned[index]);
       stored?.fill(0);
       owned.fill(0);
-      if (!same) throw new WardError("vault_key_unavailable");
+      if (!same) throw new WardError("vault_key_write_unconfirmed");
     },
   };
 }

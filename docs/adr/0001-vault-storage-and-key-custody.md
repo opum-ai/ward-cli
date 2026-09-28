@@ -102,7 +102,29 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
     rather than a `Uint8Array`, and `null` rather than `undefined` for an absent item. The
     adapter normalizes and validates both. A `number[]` cannot be zeroed reliably, so that
     zeroing is best effort.
-- **Creating a key is check, write, read back, and is not atomic in the store.** Two concurrent
-  setups could race. `ward setup` (WCLI-20) must serialize itself before it creates a key.
+- **The adapter round trip was measured in a compiled executable.** The developer authorised
+  it. One executable built by `scripts/build.ts` used a fresh `opum.ward.probe-*` service and
+  deleted the item afterwards. The results:
+  - A load before create reported `vault_key_missing`.
+  - Create succeeded in 17 ms, and a load returned the same 32 bytes in 3 ms.
+  - A second create was refused with `vault_key_exists`, and the original key was intact.
+  - After the item was deleted, a load reported `vault_key_missing` again.
+  - No prompt was shown.
+- **Creating a key is check, write, read back, and is not atomic in the store.** A writer that
+  lands between the check and the write is overwritten.
+  - `ward setup` (WCLI-20) must serialize Ward against itself. Nothing in Ward can stop a writer
+    outside Ward.
+  - A create that fails after its write began reports `vault_key_write_unconfirmed`: the key may
+    or may not have been stored. The caller resolves that with a load, never by writing again.
+- **The bound is on the call, not the process.** Every store call settles within
+  `defaultKeyTimeoutMs`, but a native call can outlive its abort and keep the process alive. A
+  command that receives `vault_key_unavailable` must exit explicitly (WCLI-20).
+- **The adapter supports macOS only.** On any other platform it fails closed with
+  `vault_key_store_unsupported` before constructing an entry. The reason: off macOS the binding
+  silently falls back to the Linux kernel keyutils keyring, which does not survive a reboot,
+  and spec §6.4 forbids that substitution. Linux and Windows follow WCLI-21 and WCLI-22.
+- **Tests cannot reach a real keychain item.** `bunfig.toml` preloads a mock that makes
+  constructing a real binding entry throw in every test process, whatever `NODE_ENV` is. The
+  adapter has no default service name.
 - One key opens the whole vault. Compromise of that key exposes every project's secrets
   (spec §2).

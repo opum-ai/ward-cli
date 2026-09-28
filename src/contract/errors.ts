@@ -70,12 +70,22 @@ export const errorCatalog = {
   vault_key_unavailable: {
     type: "indeterminate",
     message:
-      "The credential store did not return the vault key in time. It may be locked, access may have been refused, or it may be unavailable.",
+      "The credential store did not provide the vault key. It may be locked, access may have been refused, it may be unavailable, or it did not answer in time.",
   },
   vault_key_exists: {
     type: "conflict",
     message:
-      "A vault key already exists in the credential store. Ward never replaces one.",
+      "A vault key already exists in the credential store. Ward does not replace an existing key.",
+  },
+  vault_key_write_unconfirmed: {
+    type: "indeterminate",
+    message:
+      "Ward could not confirm that the vault key was stored. A key may or may not now exist in the credential store.",
+  },
+  vault_key_store_unsupported: {
+    type: "validation",
+    message:
+      "Ward does not yet support a credential store on this platform. The developer preview supports macOS only.",
   },
   vault_authentication_failed: {
     type: "validation",
