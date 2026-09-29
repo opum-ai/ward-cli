@@ -19,6 +19,7 @@
     "layer:check": "node scripts/check-layers.mjs",
     "eval:check": "node scripts/check-evals.mjs",
     "reserved:check": "node scripts/check-reserved-bindings.mjs",
+    "clean:temp": "node scripts/clean-temp.mjs",
     "test": "bun test",
     "check": "bun run typecheck && bun run lint && bun run format:check && bun run layer:check && bun run eval:check && bun run reserved:check && bun run test"
   },
