@@ -71,7 +71,9 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   has nothing wrong with it; readiness for a profile is `ward check`
   (WCLI-9), not this command. The consequence is deliberately narrow: doctor
   exits 6 only for a condition that is wrong about something present, and a
-  skipped check is not evidence of readiness.
+  skipped check is not evidence of readiness. `ok: true` and exit 0 mean no
+  check failed — not that anything is set up; a consumer that needs readiness
+  reads the per-check statuses.
 - **The instruction check judges the blocks that exist.** A block whose bytes
   are not what this build writes is `stale`; a block whose markers the writer
   would refuse is `malformed`; both fail. A host with no block at all is
@@ -98,10 +100,20 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   header table already and readable without the key, so a report can name the
   schema it would have to read even when the key is missing; the port change
   is additive and the store's own tests pin the new shape.
-- **Nothing either command does can change bytes.** Pinned by test: the vault
-  database, the project manifest and the bridge files are byte-identical
-  before and after both commands, the vault revision is unchanged, and the
-  credential store sees no write.
+- **Nothing either command does can change bytes it controls.** Pinned by
+  test: the vault database, the project manifest and both bridge files are
+  byte-identical before and after both commands, nothing new appears in the
+  vault directory or the checkout, the vault revision is unchanged, and the
+  credential store sees no write. One change is outside Ward's control and is
+  inherited from the store rather than introduced here: SQLite's mandatory
+  open-time recovery of a file left mid-transaction with a hot journal rolls
+  that transaction back when the database is opened (ADR 0001), before any
+  layout check can read it, and a read cannot decline to cause it.
+- **An empty vault file reads as absent, by the store's own contract.** An
+  interrupted `ward setup` can leave an empty `ward.db` that reads as no
+  vault at all (ADR 0001); status reports the vault as absent and doctor
+  skips the vault-dependent checks. Nothing is lost — the store's `create`
+  accepts that file — but "absent" must not be read as "nothing is on disk".
 - **A locked or unreadable vault is a failure, not a pass.** `vault_busy`
   from a concurrent writer and `vault_store_failed` are reported as failures
   of the checks that needed them, because "could not read" and "read and

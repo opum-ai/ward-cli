@@ -15,24 +15,31 @@
 // keychain or repositories.
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { locateCheckout } from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
+import { createProjectFiles } from "../src/adapters/project-files.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type { RegistrationApprover } from "../src/application/approvals.ts";
 import { wardBlockBody } from "../src/application/bridges.ts";
+import { runDoctor, runStatus } from "../src/application/reporting.ts";
+import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
+import { WardError } from "../src/contract/errors.ts";
 import {
   parseVaultState,
   serializeVaultState,
@@ -67,7 +74,9 @@ function harness() {
     entry: keychain.entry,
     timeoutMs: 2_000,
   });
-  const store = createSqliteVaultStore({ directory });
+  // A short busy timeout: nothing in this file contends for the vault except
+  // the lock test below, which uses it to keep the wait bounded.
+  const store = createSqliteVaultStore({ directory, busyTimeoutMs: 250 });
 
   const options = (
     cwd: string,
@@ -94,7 +103,7 @@ function harness() {
     return new Uint8Array(stored);
   };
 
-  return { directory, keychain, store, options, setUp, init, key };
+  return { directory, keychain, keyProvider, store, options, setUp, init, key };
 }
 
 interface StatusData {
@@ -136,7 +145,12 @@ const doctorOf = async (h: ReturnType<typeof harness>, cwd: string) => {
   return { result, data: json(result.stdout).data as DoctorData };
 };
 
-const checkFor = (data: DoctorData, name: string) => {
+// Works over both a parsed JSON report and the application's own readonly
+// report, so the same accessor serves the end-to-end and port-level tests.
+const checkFor = <T extends { check: string }>(
+  data: { checks: readonly T[] },
+  name: string,
+): T => {
   const check = data.checks.find((entry) => entry.check === name);
   if (check === undefined) throw new Error(`no ${name} check reported`);
   return check;
@@ -205,10 +219,13 @@ describe("ward status", () => {
     const h = harness();
     const checkout = worktree("status-conflict");
     await h.setUp(checkout);
-    await h.init(checkout);
+    const bound = json((await h.init(checkout)).stdout).data as {
+      projectId: string;
+    };
 
-    // The vault also holds a second project and a second checkout's binding.
-    // Both carry sentinels a report must never surface.
+    // Three ids must never surface: the project this checkout is actually
+    // bound to — the one a conflict has to describe without naming — and a
+    // second project with a second checkout's binding, seeded below.
     const otherProject = randomUUID();
     const otherRoot = "/tmp/ward-report-other-checkout";
     h.store.mutate(h.key(), (plaintext) => {
@@ -248,12 +265,20 @@ describe("ward status", () => {
     // name this checkout's own claim.
     expect(data.manifest.projectId).toBe(replacement);
     expect(data.checkout).toBe(realpathSync(checkout));
+    expect(result.stdout).not.toContain(bound.projectId);
     expect(result.stdout).not.toContain(otherProject);
     expect(result.stdout).not.toContain(otherRoot);
     const text = (await runWard(["status"], h.options(checkout))).stdout;
     expect(text).toContain(replacement);
+    expect(text).not.toContain(bound.projectId);
     expect(text).not.toContain(otherProject);
     expect(text).not.toContain(otherRoot);
+    // The doctor report over the same state carries the same verdict and the
+    // same restraint.
+    const doctor = await runWard(["doctor", "--json"], h.options(checkout));
+    expect(doctor.stdout).not.toContain(bound.projectId);
+    expect(doctor.stdout).not.toContain(otherProject);
+    expect(doctor.stdout).not.toContain(otherRoot);
   });
 
   test("outside a Git worktree both commands exit 3", async () => {
@@ -366,6 +391,102 @@ describe("ward doctor", () => {
       status: "fail",
       code: "unavailable",
     });
+    // The bounded call was abandoned with a native call possibly still
+    // pending, so the process must exit explicitly rather than wait on it.
+    expect(result.exitExplicitly).toBe(true);
+  });
+
+  test("a locked vault fails the checks that needed it, never passes them", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-locked");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+    // The harness store's short busy timeout is what keeps this quick; the
+    // ports are driven directly so the locked read is a real SQLite lock
+    // rather than a stub, with the same ports the composition root builds.
+    const options = {
+      checkout: identity,
+      files: createProjectFiles(identity.root),
+      store: h.store,
+      keyProvider: h.keyProvider,
+    };
+
+    const locker = new Database(join(h.directory, "ward.db"));
+    locker.exec("BEGIN EXCLUSIVE");
+    try {
+      const doctor = await runDoctor(options);
+      expect(doctor.exitCode).toBe(exitCodes.validation);
+      expect(checkFor(doctor.data, "permissions")).toMatchObject({
+        status: "fail",
+        code: "busy",
+      });
+      expect(checkFor(doctor.data, "key_provider")).toMatchObject({
+        status: "fail",
+        code: "vault_busy",
+      });
+      expect(checkFor(doctor.data, "schema").code).toBe("vault_busy");
+      expect(checkFor(doctor.data, "binding").code).toBe("vault_busy");
+      expect(checkFor(doctor.data, "instructions").status).toBe("pass");
+
+      const status = await runStatus(options);
+      expect(status.data.vault.status).toBe("busy");
+      expect(status.data.keyProvider.status).toBe("unchecked");
+    } finally {
+      locker.exec("ROLLBACK");
+      locker.close();
+    }
+
+    // Both halves of the gate, measured: the same checkout passes once the
+    // writer is gone.
+    const recovered = await runDoctor(options);
+    expect(recovered.exitCode).toBe(exitCodes.success);
+  });
+
+  test("a vault store that fails is reported unreadable, never absent", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-store-failed");
+    const identity = locateCheckout(checkout);
+    // The port is the seam: a store whose every read fails must not be
+    // reported as a vault that was never there. A real SQLite failure and
+    // "no vault" are different facts, and this pins the mapping between them.
+    const failing: VaultStore = {
+      header: () => {
+        throw new WardError("vault_store_failed");
+      },
+      create: () => {
+        throw new WardError("vault_store_failed");
+      },
+      read: () => {
+        throw new WardError("vault_store_failed");
+      },
+      mutate: () => {
+        throw new WardError("vault_store_failed");
+      },
+    };
+    const options = {
+      checkout: identity,
+      files: createProjectFiles(identity.root),
+      store: failing,
+      keyProvider: h.keyProvider,
+    };
+
+    const doctor = await runDoctor(options);
+    expect(doctor.exitCode).toBe(exitCodes.validation);
+    expect(checkFor(doctor.data, "permissions")).toMatchObject({
+      status: "fail",
+      code: "unreadable",
+    });
+    expect(checkFor(doctor.data, "key_provider")).toMatchObject({
+      status: "fail",
+      code: "vault_unreadable",
+    });
+    expect(checkFor(doctor.data, "schema").code).toBe("vault_unreadable");
+    expect(checkFor(doctor.data, "binding").status).toBe("skipped");
+
+    const status = await runStatus(options);
+    expect(status.data.vault.status).toBe("unreadable");
+    expect(status.data.keyProvider.status).toBe("unchecked");
   });
 
   test("schema: a newer manifest and a future state document both fail", async () => {
@@ -390,7 +511,11 @@ describe("ward doctor", () => {
       status: "fail",
       code: "manifest_unsupported",
     });
-    expect(checkFor(newer.data, "binding").code).toBe("manifest_unsupported");
+    // A claim that exists but cannot be judged is a failure, not an absence.
+    expect(checkFor(newer.data, "binding")).toMatchObject({
+      status: "fail",
+      code: "manifest_unsupported",
+    });
 
     // A state document from another build is refused by the same parse the
     // real reads run.
@@ -507,10 +632,18 @@ describe("both commands change nothing and render nothing secret", () => {
     const dbPath = join(h.directory, "ward.db");
     const manifestPath = join(checkout, ".ward", "project.json");
     const claudePath = join(checkout, "CLAUDE.md");
+    const agentsPath = join(checkout, "AGENTS.md");
     const before = {
       db: readFileSync(dbPath),
       manifest: readFileSync(manifestPath),
+      // Both bridge files: a write through the codex path is a mutation too.
       claude: readFileSync(claudePath),
+      agents: readFileSync(agentsPath),
+      // And nothing new may appear beside them, in the checkout or in the
+      // vault directory (which holds the database, its journal and the
+      // setup lock).
+      checkoutListing: readdirSync(checkout),
+      vaultListing: readdirSync(h.directory),
       revision: h.store.header()?.revision,
       writes: h.keychain.writeAttempts,
     };
@@ -540,5 +673,8 @@ describe("both commands change nothing and render nothing secret", () => {
     expect(readFileSync(dbPath).equals(before.db)).toBe(true);
     expect(readFileSync(manifestPath).equals(before.manifest)).toBe(true);
     expect(readFileSync(claudePath).equals(before.claude)).toBe(true);
+    expect(readFileSync(agentsPath).equals(before.agents)).toBe(true);
+    expect(readdirSync(checkout)).toEqual(before.checkoutListing);
+    expect(readdirSync(h.directory)).toEqual(before.vaultListing);
   });
 });

@@ -517,7 +517,10 @@ function bindingCheck(
     case "unsupported":
     case "unreadable":
     case "unsafe":
-      return { check, status: "skipped", code: `manifest_${manifest.status}` };
+      // A manifest that exists but cannot be judged is a failure, not an
+      // absence: the checkout claims integration and the claim is wrong or
+      // unreadable. Only the manifest's actual absence is a skip.
+      return { check, status: "fail", code: `manifest_${manifest.status}` };
     case "present":
       break;
   }
