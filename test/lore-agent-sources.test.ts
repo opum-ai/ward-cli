@@ -1,9 +1,11 @@
 // scripts/check-lore-agent-sources.mjs runs in the Docs job against this
-// repository's real bundle, where the only reachable verdict is a pass. These
-// tests pin the other half with a stub `lore`: that the check rejects an
-// undeclared concept, accepts a recorded exclusion, and fails rather than
-// passes when it read nothing. Without them a check that had quietly become
-// always-green would keep the Docs job green and be believed (ADR 0008).
+// repository's real bundle, where the only reachable verdicts are a pass and
+// whatever that bundle happens to be. These tests pin the other half with a
+// stub `lore`: that the check rejects an undeclared concept and a pack that
+// dropped a declared source, that it accepts a recorded exclusion, and that it
+// fails rather than passes when it read nothing. Without them a check that had
+// quietly become always-green would keep the Docs job green and be believed
+// (ADR 0008).
 import { expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,9 +18,9 @@ const script = join(
   "check-lore-agent-sources.mjs",
 );
 
-// Answers exactly the three reads the check makes. The bundle is two concepts
-// and one profile throughout; only the declarations and the failure modes
-// vary, so a difference in verdict can only come from the check.
+// Answers exactly the reads the check makes. The bundle is two concepts and one
+// profile throughout; only the declarations and the failure modes vary, so a
+// difference in verdict can only come from the check.
 const stub = `#!/bin/sh
 case "$STUB_MODE" in
   fails) echo "boom: backend unavailable" >&2; exit 3 ;;
@@ -47,6 +49,14 @@ if [ "$1" = "agent" ] && [ "$2" = "show" ]; then
   fi
   exit 0
 fi
+if [ "$1" = "agent" ] && [ "$2" = "context" ]; then
+  if [ "$STUB_MODE" = "truncated" ]; then
+    echo '{"data":{"truncated":true}}'
+  else
+    echo '{"data":{"truncated":false}}'
+  fi
+  exit 0
+fi
 echo "unexpected arguments" >&2
 exit 2
 `;
@@ -56,9 +66,24 @@ const stubPath = join(stubDirectory, "lore");
 writeFileSync(stubPath, stub);
 chmodSync(stubPath, 0o755);
 
-function runCheck(mode: string): { code: number | undefined; output: string } {
+const exclusionsPath = join(stubDirectory, "exclusions.json");
+writeFileSync(
+  exclusionsPath,
+  JSON.stringify({ "adr/0002-two": "recorded by this test" }),
+);
+
+function runCheck(
+  mode: string,
+  extra: Record<string, string> = {},
+): { code: number | undefined; output: string } {
   const result = Bun.spawnSync([process.execPath, script], {
-    env: { ...process.env, LORE_BIN: stubPath, STUB_MODE: mode },
+    env: {
+      ...process.env,
+      LORE_BIN: stubPath,
+      LORE_EXCLUSIONS: "",
+      STUB_MODE: mode,
+      ...extra,
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -85,6 +110,28 @@ test("declaring one concept in pinned and another in sources covers both", () =>
 test("reading the bundle's own counts, so a broken stub cannot pass alone", () => {
   const { output } = runCheck("covered");
   expect(output).toContain("0 concepts in no profile");
+});
+
+test("a concept recorded in the exclusion map is accepted, and printed", () => {
+  const { code, output } = runCheck("uncovered", {
+    LORE_EXCLUSIONS: exclusionsPath,
+  });
+  expect(code).toBe(0);
+  expect(output).toContain("excluded from every profile: adr/0002-two");
+});
+
+test("the same concept without the exclusion is still rejected", () => {
+  // The pair is the evidence. An accept that would also accept everything
+  // proves nothing about the exclusion path.
+  const { code } = runCheck("uncovered");
+  expect(code).toBe(1);
+});
+
+test("a profile that drops a declared source is rejected by name", () => {
+  const { code, output } = runCheck("truncated");
+  expect(code).toBe(1);
+  expect(output).toContain("only");
+  expect(output).toContain("max_tokens");
 });
 
 test("reading no concepts fails rather than reporting a clean bundle", () => {

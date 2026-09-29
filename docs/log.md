@@ -9,6 +9,7 @@
 - 2026-09-28T18:25:49-05:00 4ed62db68c4fab55c58b2c15be589945a936a653 WCLI-28: track the lore-generated bundle index and log (#31)
 - 2026-09-28T19:14:02-05:00 3dfe16aea0999900c69d6f3aeccc92b3b6de847d WCLI-13: encrypted backup and fresh-store restore (#32)
 - 2026-09-28T20:00:23-05:00 d0b8877cbff67cd301cc20c8b188c5f22e57269e WCLI-26: `ward status` and `ward doctor` (#36)
+- 2026-09-28T20:21:13-05:00 53fbbc8b311297ea2cf03380666d7038cbb6435e WCLI-25: keep the four lore agent source lists current
 
 ## docs/adr
 
