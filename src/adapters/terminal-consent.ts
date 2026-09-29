@@ -34,7 +34,7 @@ export interface TerminalConsentParts {
 
 // Only "y" and "yes" are consent. Everything else — including an empty line,
 // EOF, and any word Ward does not recognize — is a no.
-function isConsent(answer: string): boolean {
+export function isConsentAnswer(answer: string): boolean {
   const normalized = answer.trim().toLowerCase();
   return normalized === "y" || normalized === "yes";
 }
@@ -85,7 +85,9 @@ function defaultWritePrompt(text: string): void {
   }
 }
 
-function defaultReadAnswer(): string {
+// One line from a terminal, bounded so a stream that never ends cannot grow
+// it. Shared with every other yes/no question Ward asks on a terminal.
+export function readAnswerLine(): string {
   const bytes: number[] = [];
   const buffer = new Uint8Array(1);
   while (bytes.length < 64) {
@@ -104,7 +106,7 @@ export function createTerminalConsent(
   const isInteractive =
     parts.isInteractive ?? (() => process.stdin.isTTY === true);
   const writePrompt = parts.writePrompt ?? defaultWritePrompt;
-  const readAnswer = parts.readAnswer ?? defaultReadAnswer;
+  const readAnswer = parts.readAnswer ?? readAnswerLine;
   const available = (): boolean => {
     try {
       return isInteractive();
@@ -119,7 +121,7 @@ export function createTerminalConsent(
       if (!available()) return "unavailable";
       try {
         writePrompt(promptFor(request));
-        return isConsent(readAnswer()) ? "approved" : "declined";
+        return isConsentAnswer(readAnswer()) ? "approved" : "declined";
       } catch {
         // A terminal that cannot be written to or read from cannot be
         // answered, and an unanswerable question is not consent.

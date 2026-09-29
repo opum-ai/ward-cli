@@ -6,9 +6,11 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
+import type { RegistrationApprover } from "../src/application/approvals.ts";
 import type { PassphraseSource } from "../src/application/backup.ts";
 import { handlers } from "../src/application/commands.ts";
 import { instructionTopics } from "../src/application/instructions.ts";
+import type { SecretValueSource } from "../src/application/secrets.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
@@ -44,6 +46,24 @@ const passphrases: PassphraseSource = {
   read: () => new TextEncoder().encode("contract-example-passphrase"),
 };
 
+// A registration answer without a terminal, so an example that registers
+// (`ward init` asked to register, and the secret examples' setup) can run.
+const approver: RegistrationApprover = {
+  available: () => true,
+  ask: () => "approved",
+};
+
+// Secret values without a terminal or a pipe: what a hidden read would have
+// returned, and consent to the replacement question. The adapter that reads
+// a real terminal has its own tests.
+const exampleSecretValue = new TextEncoder().encode("contract-example-value");
+const secrets: SecretValueSource = {
+  available: () => true,
+  readHidden: () => exampleSecretValue.slice(),
+  readStdin: () => exampleSecretValue.slice(),
+  confirmReplace: () => true,
+};
+
 function options(): RunOptions {
   const keychain = new MemoryKeychain();
   return {
@@ -55,6 +75,8 @@ function options(): RunOptions {
     }),
     cwd: exampleCheckout,
     passphrases,
+    approver,
+    secrets,
   };
 }
 
@@ -83,6 +105,23 @@ async function prepareExample(name: string): Promise<RunOptions> {
       source,
     );
     expect(created.exitCode).toBe(exitCodes.success);
+  } else if (name === "secret") {
+    // A vault, a registered checkout and one existing alias: `set` replaces
+    // it through the hidden path, and `inspect` and `delete` find it.
+    expect((await runWard(["setup", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await runWard(["init", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect(
+      (
+        await runWard(
+          ["secret", "set", "example-alias", "--stdin", "--json"],
+          prepared,
+        )
+      ).exitCode,
+    ).toBe(exitCodes.success);
   }
   return prepared;
 }
@@ -105,10 +144,11 @@ describe("manifest", () => {
   });
 
   test("lists exactly the commands that have handlers", () => {
-    // `setup`, `init`, `status`, `doctor`, `backup` and `restore` are
-    // dispatched by the composition root in main.ts rather than by the
+    // `setup`, `init`, `status`, `doctor`, `backup`, `restore` and `secret`
+    // are dispatched by the composition root in main.ts rather than by the
     // synchronous handler table, because they need the injected store,
-    // provider, checkout, consent or terminal passphrase.
+    // provider, checkout, consent, terminal passphrase or secret value
+    // source.
     const compositionRoot = [
       "setup",
       "init",
@@ -116,6 +156,7 @@ describe("manifest", () => {
       "doctor",
       "backup",
       "restore",
+      "secret",
     ];
     expect(commands.map((command) => command.name).sort()).toEqual(
       [...Object.keys(handlers), ...compositionRoot].sort(),

@@ -36,6 +36,7 @@ import {
   backupLimits,
   newBackupKdf,
 } from "../src/domain/backup.ts";
+import { decodeSecretValue } from "../src/domain/secret.ts";
 import { parseVaultState, type VaultState } from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
@@ -128,8 +129,12 @@ const codeOf = (run: () => unknown): string | undefined => {
   }
 };
 
-// A machine with a vault, a registered checkout, and a backup of it.
-async function backedUp() {
+// A machine with a vault, a registered checkout, and a backup of it. When a
+// secret is asked for, it is stored before the backup is taken, so the file
+// carries it.
+async function backedUp(
+  options: { secret?: { alias: string; value: Uint8Array } } = {},
+) {
   const origin = machine();
   const checkout = worktree();
   const setup = await runWard(["setup", "--json"], origin.options(checkout));
@@ -139,6 +144,21 @@ async function backedUp() {
     approver,
   });
   expect(init.exitCode).toBe(exitCodes.success);
+  if (options.secret !== undefined) {
+    const stored = await runWard(
+      ["secret", "set", options.secret.alias, "--stdin", "--json"],
+      {
+        ...origin.options(checkout),
+        secrets: {
+          available: () => false,
+          readHidden: () => undefined,
+          readStdin: () => options.secret!.value.slice(),
+          confirmReplace: () => false,
+        },
+      },
+    );
+    expect(stored.exitCode).toBe(exitCodes.success);
+  }
   const path = backupPath();
   const backup = await runWard(
     ["backup", "--output", path, "--json"],
@@ -191,6 +211,29 @@ describe("T20: a backup opens with only its passphrase", () => {
     // T21: the key is fresh, not the original, and the original is untouched.
     expect([...key]).not.toEqual([...storedKey(origin)]);
     expect(origin.header()?.vaultId).toBe(backup.vaultId as string);
+  });
+
+  test("a restore keeps secret records and clears only bindings", async () => {
+    const secretBytes = new TextEncoder().encode("restored-sentinel-9d2f");
+    const { path } = await backedUp({
+      secret: { alias: "kept-alias", value: secretBytes },
+    });
+
+    const restored = machine();
+    const result = await runWard(
+      ["restore", "--input", path, "--json"],
+      restored.options(worktree()),
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+
+    const state = restored.state(storedKey(restored));
+    expect(state.localBindings).toEqual([]);
+    expect(state.secrets).toHaveLength(1);
+    const record = state.secrets[0];
+    if (record === undefined) throw new Error("no record");
+    expect(record.alias).toBe("kept-alias");
+    // The value bytes survive the container and the fresh key exactly.
+    expect(decodeSecretValue(record.value)).toEqual(secretBytes);
   });
 
   test("the restored checkout registers again instead of inheriting its binding", async () => {

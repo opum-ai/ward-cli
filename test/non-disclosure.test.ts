@@ -64,6 +64,21 @@ const rejectedArgv: [label: string, argv: string[], exitCode: ExitCode][] = [
   ["topic with --list", ["instructions", "--list", SENTINEL], exitCodes.usage],
   ["unknown help target", ["help", SENTINEL], exitCodes.usage],
   ["value to --version", ["--version", SENTINEL], exitCodes.usage],
+  // Secret arguments are judged before any vault is opened or read, so a
+  // sentinel in any of them is refused without touching a vault.
+  ["unknown secret action", ["secret", SENTINEL], exitCodes.usage],
+  [
+    "secret alias with a leading digit",
+    ["secret", "set", `9${SENTINEL}`],
+    exitCodes.usage,
+  ],
+  ["missing secret alias", ["secret", "set"], exitCodes.usage],
+  [
+    "extra secret argument",
+    ["secret", "set", "an-alias", SENTINEL],
+    exitCodes.usage,
+  ],
+  ["secret alias on a list", ["secret", "list", SENTINEL], exitCodes.usage],
 ];
 
 describe("rejected arguments are not echoed", () => {

@@ -9,6 +9,7 @@ import {
 } from "../adapters/keychain.ts";
 import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
+import { createTerminalSecretValues } from "../adapters/secret-value.ts";
 import { acquireSetupSession } from "../adapters/setup-session.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
 import { createTerminalConsent } from "../adapters/terminal-consent.ts";
@@ -32,6 +33,7 @@ import {
   runStatus,
 } from "../application/reporting.ts";
 import { runSetup } from "../application/setup.ts";
+import { runSecret, type SecretValueSource } from "../application/secrets.ts";
 import {
   type ExitCode,
   exitCodeForErrorType,
@@ -70,6 +72,11 @@ export interface RunOptions {
   // suppressed; tests and qualification probes supply one. There is no
   // option, argument or environment path to it, here or anywhere.
   passphrases?: PassphraseSource;
+  // Where a secret value comes from: hidden terminal entry, exact bytes from
+  // stdin, and the replacement question. Defaults to the terminal adapter;
+  // tests supply one so no real terminal is needed. There is no option,
+  // argument or environment path to a value, here or anywhere.
+  secrets?: SecretValueSource;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
 }
@@ -290,6 +297,39 @@ async function doctorCommand(
   };
 }
 
+// The composition root for `ward secret`. The checkout is resolved the way
+// every project command resolves it; the value source is the terminal
+// adapter — hidden entry, stdin bytes, and the replacement question — and
+// may be replaced by a caller that must not touch a terminal.
+async function secretCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const action = input.positionals[0];
+  if (action === undefined) throw new WardError("missing_argument");
+  const result = await runSecret(
+    {
+      action,
+      alias: input.positionals[1],
+      viaStdin: input.flags.has("--stdin"),
+    },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+      values: options.secrets ?? createTerminalSecretValues(),
+      now: options.now ?? (() => new Date()),
+      newSecretId: () => randomUUID(),
+    },
+  );
+  return { kind: result.kind, data: result.data, text: result.text };
+}
+
 async function dispatch(
   argv: readonly string[],
   options: RunOptions,
@@ -333,6 +373,8 @@ async function dispatch(
     const run = await doctorCommand(options);
     output = run.output;
     exitExplicitly = run.exitExplicitly;
+  } else if (command.name === "secret") {
+    output = await secretCommand(parsed, options);
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);

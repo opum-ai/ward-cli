@@ -183,7 +183,11 @@ export async function runRestore(options: {
       serializeVaultState({
         formatVersion: backup.formatVersion,
         projects: backup.projects,
+        // Bindings name directories on this machine and are never carried by
+        // a backup; secret records are the projects' data and are. Clearing
+        // the first must not drop the second.
         localBindings: [],
+        secrets: backup.secrets,
       }),
     );
     return {

@@ -190,6 +190,62 @@ export const errorCatalog = {
       "Registering a checkout needs an interactive terminal, and this run has none to ask on.",
     hint: "Run `ward init` yourself in a terminal to register this checkout, or run `ward init --no-register` to prepare the project files without granting access.",
   },
+  // Secrets (spec §6.2, §8, §7.1). None of these echoes an alias or names a
+  // value: an alias came from argv, and a value is never text an error could
+  // carry. None of them claims that nothing was changed, because a multi-file
+  // truth is not always available to a message that cannot name what happened.
+  project_not_registered: {
+    type: "denied",
+    message:
+      "This checkout is not registered with Ward, so it has no access to this project's secrets.",
+    hint: "Run `ward init` in a terminal to register this checkout.",
+  },
+  secret_action_unknown: {
+    type: "usage",
+    message: "Unknown secret action.",
+    hint: "Use set, list, inspect or delete. Run `ward help secret` for usage.",
+  },
+  secret_alias_invalid: {
+    type: "usage",
+    message:
+      "A secret alias must start with a letter, be at most 64 characters, and use only letters, digits, dot, underscore or dash.",
+  },
+  secret_option_unexpected: {
+    type: "usage",
+    message: "That option does not apply to this secret action.",
+    hint: "Run `ward help secret` for usage.",
+  },
+  secret_requires_terminal: {
+    type: "denied",
+    message:
+      "Entering a secret value needs an interactive terminal, and this run has none to read one on.",
+    hint: "Run the command yourself in a terminal, or pipe the value with --stdin.",
+  },
+  secret_stdin_terminal: {
+    type: "usage",
+    message:
+      "Standard input is an interactive terminal, where anything typed would be echoed. Pipe the value in instead.",
+    hint: "Leave --stdin off to enter the value hidden.",
+  },
+  secret_value_rejected: {
+    type: "validation",
+    message: "The secret value was empty, or the terminal read was cancelled.",
+  },
+  secret_value_too_large: {
+    type: "validation",
+    message: "The secret value is larger than 64 KiB.",
+  },
+  secret_not_found: {
+    type: "not_found",
+    message: "No secret with that alias exists in this project.",
+    hint: "List this project's aliases with `ward secret list`.",
+  },
+  secret_changed: {
+    type: "conflict",
+    message:
+      "The secret changed while this command was running, so Ward did not write it.",
+    hint: "Run the command again to see the current state and confirm a replacement.",
+  },
   vault_state_malformed: {
     type: "validation",
     message:
