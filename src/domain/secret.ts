@@ -14,10 +14,15 @@
 
 export const secretLimits = {
   maxAliasChars: 64,
+  // The catalog's secret_value_too_large message states this limit as
+  // 64 KiB; the two move together.
   maxValueBytes: 64 * 1024,
 } as const;
 
-const aliasPattern = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+// The spec's grammar, built from the limit so the two cannot drift.
+const aliasPattern = new RegExp(
+  `^[A-Za-z][A-Za-z0-9._-]{0,${secretLimits.maxAliasChars - 1}}$`,
+);
 
 export function isSecretAlias(value: unknown): value is string {
   return typeof value === "string" && aliasPattern.test(value);

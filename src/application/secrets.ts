@@ -47,7 +47,8 @@ export interface SecretValueSource {
   available(): boolean;
   // Echo-suppressed entry. The caller owns the buffer and zeroes it.
   // undefined when the read was cancelled; an empty buffer when nothing was
-  // typed. The two are the same answer to the caller.
+  // typed. The two are the same answer to the caller. A value past the
+  // limit is refused as too large rather than truncated.
   readHidden(): Uint8Array | undefined;
   // Standard input to EOF as exact bytes, terminator included: --stdin does
   // nothing to the bytes it is given. Refuses an interactive terminal as the
@@ -329,6 +330,11 @@ async function setSecret(
     options.store.mutate(bound.key, (plaintext) => {
       const current = boundProjectOf(options, plaintext, bound.projectId);
       const previous = findSecret(current, bound.projectId, alias);
+      // The confirmation belongs to the state the value was read against. An
+      // alias that appeared in between was never covered by it, so the write
+      // is refused rather than replacing a record unasked.
+      if (!input.viaStdin && existing === undefined && previous !== undefined)
+        throw new WardError("secret_changed");
       // The id survives a replacement: it is the record's identity, and a
       // rotation changes the value, not the identity.
       const id = previous?.id ?? options.newSecretId();

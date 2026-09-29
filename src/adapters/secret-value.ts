@@ -81,12 +81,15 @@ function readOnce(descriptor: number, buffer: Uint8Array): number {
 // be tested without a pty. Backspace (0x7f and 0x08) removes the last byte;
 // Enter ends the reading; Ctrl-C abandons it, which lands as empty; Ctrl-D
 // ends the input, submitting what was typed — nothing, if nothing was.
-// Reading is bounded: bytes past the bound are not read, so a stream that
-// never ends cannot grow the value.
+// Reading refuses rather than truncates at the bound: a value of exactly the
+// limit is accepted, and the next byte that is not a terminator, an edit or
+// an end-of-input fails the entry as too large — a stored prefix of a larger
+// value would be a silently wrong secret. Bytes past the refusal are left
+// unread, exactly as the stdin path leaves them.
 export function readHiddenValueBytes(descriptor = 0): Uint8Array {
   const bytes: number[] = [];
   const buffer = new Uint8Array(1);
-  while (bytes.length < secretLimits.maxValueBytes) {
+  for (;;) {
     const read = readOnce(descriptor, buffer);
     if (read === 0) break;
     const byte = buffer[0] as number;
@@ -97,6 +100,8 @@ export function readHiddenValueBytes(descriptor = 0): Uint8Array {
       bytes.pop();
       continue;
     }
+    if (bytes.length === secretLimits.maxValueBytes)
+      throw new WardError("secret_value_too_large");
     bytes.push(byte);
   }
   return new Uint8Array(bytes);
@@ -104,15 +109,17 @@ export function readHiddenValueBytes(descriptor = 0): Uint8Array {
 
 // Standard input to EOF as exact bytes: nothing is stripped, and a
 // terminator a producer sent is part of the value. Bounded rather than
-// truncating — one byte past the bound is refused as too large, and the
-// rest of the stream is left unread.
+// truncating — the read never takes more than one byte past the bound, so
+// the refusal happens within one byte of it and the rest of the stream is
+// left unread.
 export function readStdinValueBytes(
   maxBytes: number,
   descriptor = 0,
 ): Uint8Array {
   const bytes: number[] = [];
-  const buffer = new Uint8Array(64 * 1024);
   for (;;) {
+    const size = Math.min(64 * 1024, maxBytes - bytes.length + 1);
+    const buffer = new Uint8Array(size);
     const read = readOnce(descriptor, buffer);
     if (read === 0) break;
     for (let index = 0; index < read; index++) {
@@ -151,9 +158,12 @@ export function createTerminalSecretValues(
       setRaw(true);
       try {
         return readHiddenBytes();
-      } catch {
-        // A terminal that cannot be read cannot provide a value; an
-        // unreadable answer is not a value.
+      } catch (error) {
+        // A reading that refused the value is an answer, not a failure, and
+        // is rethrown: swallowing it would report a too-large value as an
+        // empty one. Everything else — a terminal that cannot be read —
+        // cannot provide a value, and an unreadable answer is not a value.
+        if (error instanceof WardError) throw error;
         return undefined;
       } finally {
         try {

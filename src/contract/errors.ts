@@ -240,6 +240,12 @@ export const errorCatalog = {
     message: "No secret with that alias exists in this project.",
     hint: "List this project's aliases with `ward secret list`.",
   },
+  secret_changed: {
+    type: "conflict",
+    message:
+      "The secret changed while this command was running, so Ward did not write it.",
+    hint: "Run the command again to see the current state and confirm a replacement.",
+  },
   vault_state_malformed: {
     type: "validation",
     message:

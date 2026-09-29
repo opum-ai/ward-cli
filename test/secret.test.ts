@@ -5,7 +5,10 @@
 // fingerprint in any output. T09: a sentinel value, and a sentinel inside a
 // rejected argument or a failed adapter, never appears in stdout or stderr.
 // T11: every lookup is scoped to the bound project — a missing alias neither
-// falls back to another project's record nor enumerates its inventory.
+// falls back to another project's record nor enumerates its inventory. The
+// write transaction's re-checks get their own cases: a second writer moves
+// the vault between the command's read and its write, and each write is
+// refused rather than acting on a state it no longer describes.
 //
 // Every case runs against a temporary vault, a memory credential store and
 // throwaway checkouts; nothing touches the developer's ~/.ward, real keychain
@@ -27,6 +30,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
+import { locateCheckout } from "../src/adapters/checkout.ts";
+import { createProjectFiles } from "../src/adapters/project-files.ts";
 import {
   createTerminalSecretValues,
   readHiddenValueBytes,
@@ -34,7 +39,12 @@ import {
 } from "../src/adapters/secret-value.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type { RegistrationApprover } from "../src/application/approvals.ts";
-import type { SecretValueSource } from "../src/application/secrets.ts";
+import {
+  runSecret,
+  type SecretCommandInput,
+  type SecretValueSource,
+} from "../src/application/secrets.ts";
+import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import {
@@ -46,6 +56,7 @@ import {
   emptyVaultState,
   findSecret,
   parseVaultState,
+  serializeVaultState,
   type VaultState,
   withSecret,
   withoutSecret,
@@ -128,6 +139,40 @@ function harness() {
   const approver = new FakeApprover();
   let clock = "2026-09-29T00:00:00.000Z";
 
+  const key = (): Uint8Array => {
+    const stored = keychain.items.values().next().value as number[] | undefined;
+    if (stored === undefined) throw new Error("no vault key is stored");
+    return new Uint8Array(stored);
+  };
+
+  const state = (): VaultState => parseVaultState(store.read(key()).plaintext);
+
+  // A second writer, standing in for another Ward process: it mutates the
+  // vault out of band, which is exactly what the in-transaction re-checks
+  // exist for.
+  const mutate = (change: (state: VaultState) => VaultState) =>
+    store.mutate(key(), (plaintext) =>
+      serializeVaultState(change(parseVaultState(plaintext))),
+    );
+
+  // The seam a race runs through: the hook fires once, after the command's
+  // own read returns and before its write opens — the command proceeds on
+  // the state it read, while the vault has already moved.
+  let afterRead: (() => void) | undefined;
+  const hooked: VaultStore = {
+    header: () => store.header(),
+    create: (vaultId, vaultKey, plaintext) =>
+      store.create(vaultId, vaultKey, plaintext),
+    read: (readKey) => {
+      const snapshot = store.read(readKey);
+      const hook = afterRead;
+      afterRead = undefined;
+      hook?.();
+      return snapshot;
+    },
+    mutate: (mutateKey, change) => store.mutate(mutateKey, change),
+  };
+
   const options = (
     cwd: string,
     extra: Partial<RunOptions> = {},
@@ -152,6 +197,22 @@ function harness() {
   const secret = async (cwd: string, args: string[]) =>
     await runWard(["secret", ...args, "--json"], options(cwd));
 
+  // The same command through its application entry point, over the wrapped
+  // store: the only way to place a second writer's mutation between this
+  // command's read and its write, which is the race the re-checks exist for.
+  const race = async (cwd: string, input: SecretCommandInput) => {
+    const checkout = locateCheckout(cwd);
+    return await runSecret(input, {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: hooked,
+      keyProvider,
+      values,
+      now: () => new Date(clock),
+      newSecretId: () => randomUUID(),
+    });
+  };
+
   // A checkout with a vault, registered for a project of its own.
   const registered = async () => {
     const checkout = worktree();
@@ -161,12 +222,6 @@ function harness() {
     return checkout;
   };
 
-  const state = (): VaultState => {
-    const stored = keychain.items.values().next().value as number[] | undefined;
-    if (stored === undefined) throw new Error("no vault key is stored");
-    return parseVaultState(store.read(new Uint8Array(stored)).plaintext);
-  };
-
   return {
     directory,
     values,
@@ -174,8 +229,13 @@ function harness() {
     setUp,
     init,
     secret,
+    race,
     registered,
     state,
+    mutate,
+    beforeWrite: (hook: () => void) => {
+      afterRead = hook;
+    },
     setClock: (value: string) => {
       clock = value;
     },
@@ -190,10 +250,22 @@ const errorCode = (stderr: string) =>
   (JSON.parse(stderr) as { code: string }).code;
 
 // The semantic code a thrown WardError carries, for the adapter's own
-// refusals, which never reach the envelope.
+// refusals and for the application entry point, neither of which reaches the
+// envelope in-process.
 const codeOf = (run: () => unknown): string | undefined => {
   try {
     run();
+    return undefined;
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+};
+
+const thrownCode = async (
+  run: () => Promise<unknown>,
+): Promise<string | undefined> => {
+  try {
+    await run();
     return undefined;
   } catch (error) {
     return (error as { code?: string }).code;
@@ -426,6 +498,14 @@ describe("the alias grammar and value bounds", () => {
     expect(over.exitCode).toBe(exitCodes.validation);
     expect(errorCode(over.stderr)).toBe("secret_value_too_large");
     expect(storedSecret(h, "over-alias")).toBeUndefined();
+
+    // The hidden path refuses too: the real reader refuses one byte past the
+    // bound itself, and a source that did not would still be refused here.
+    h.values.hidden = new Uint8Array(secretLimits.maxValueBytes + 1).fill(0x63);
+    const hiddenOver = await h.secret(checkout, ["set", "hidden-over"]);
+    expect(hiddenOver.exitCode).toBe(exitCodes.validation);
+    expect(errorCode(hiddenOver.stderr)).toBe("secret_value_too_large");
+    expect(storedSecret(h, "hidden-over")).toBeUndefined();
   });
 
   test("an empty or cancelled read is refused, and no value is stored", async () => {
@@ -625,6 +705,111 @@ describe("T11: a lookup is scoped to the bound project", () => {
   });
 });
 
+// The race the write transaction's re-checks exist for: another writer moves
+// the vault between this command's read and its write. Each case fails the
+// write and leaves the concurrent writer's state untouched.
+describe("a write re-checks the decision it read", () => {
+  test("a binding that vanished before the write refuses it", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    h.beforeWrite(() =>
+      h.mutate((current) => ({ ...current, localBindings: [] })),
+    );
+    const code = await thrownCode(() =>
+      h.race(checkout, {
+        action: "set",
+        alias: "example-alias",
+        viaStdin: true,
+      }),
+    );
+    expect(code).toBe("project_not_registered");
+    expect(storedSecret(h, "example-alias")).toBeUndefined();
+  });
+
+  test("a binding that changed project before the write refuses it", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    await h.secret(checkout, ["set", "example-alias"]);
+    const other = projectId();
+    h.beforeWrite(() =>
+      h.mutate((current) => ({
+        ...current,
+        localBindings: current.localBindings.map((binding) => ({
+          ...binding,
+          projectId: other,
+        })),
+      })),
+    );
+    const code = await thrownCode(() =>
+      h.race(checkout, {
+        action: "delete",
+        alias: "example-alias",
+        viaStdin: false,
+      }),
+    );
+    expect(code).toBe("binding_conflict");
+    // The write rolled back: the concurrent writer's binding stands, and the
+    // record it names is still there.
+    expect(storedSecret(h, "example-alias")).toBeDefined();
+    expect(h.state().localBindings[0]?.projectId).toBe(other);
+  });
+
+  test("a record deleted before the write is not deleted twice", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    await h.secret(checkout, ["set", "example-alias"]);
+    h.beforeWrite(() =>
+      h.mutate((current) => ({
+        ...current,
+        secrets: current.secrets.filter(
+          (record) => record.alias !== "example-alias",
+        ),
+      })),
+    );
+    const code = await thrownCode(() =>
+      h.race(checkout, {
+        action: "delete",
+        alias: "example-alias",
+        viaStdin: false,
+      }),
+    );
+    expect(code).toBe("secret_not_found");
+  });
+
+  test("an alias created after the decision is not replaced unasked", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    const boundProject = h.state().localBindings[0]?.projectId ?? "";
+    h.beforeWrite(() =>
+      h.mutate((current) =>
+        withSecret(current, {
+          id: projectId(),
+          projectId: boundProject,
+          alias: "example-alias",
+          value: encodeSecretValue(encode("concurrent-writer-value")),
+          createdAt: "2026-09-29T00:00:00.000Z",
+          updatedAt: "2026-09-29T00:00:00.000Z",
+          revision: 1,
+        }),
+      ),
+    );
+    // The interactive path, with no confirmation asked: the alias did not
+    // exist when the question would have been asked.
+    const code = await thrownCode(() =>
+      h.race(checkout, {
+        action: "set",
+        alias: "example-alias",
+        viaStdin: false,
+      }),
+    );
+    expect(code).toBe("secret_changed");
+    expect(h.values.confirmations).toBe(0);
+    expect(storedSecret(h, "example-alias")?.value).toBe(
+      encodeSecretValue(encode("concurrent-writer-value")),
+    );
+  });
+});
+
 describe("the secrets collection", () => {
   const record = (project: string, alias: string, revision = 1) => ({
     id: projectId(),
@@ -691,10 +876,34 @@ describe("the terminal value adapters", () => {
     );
   });
 
-  test("hidden entry stops at the value bound", () => {
-    const long = new Uint8Array(secretLimits.maxValueBytes + 16).fill(0x61);
-    const read = withInput(long, readHiddenValueBytes);
+  test("hidden entry refuses past the bound and accepts the exact bound", () => {
+    const atBound = new Uint8Array(secretLimits.maxValueBytes).fill(0x61);
+    const read = withInput(atBound, readHiddenValueBytes);
     expect(read.length).toBe(secretLimits.maxValueBytes);
+    const over = new Uint8Array(secretLimits.maxValueBytes + 16).fill(0x61);
+    expect(codeOf(() => withInput(over, readHiddenValueBytes))).toBe(
+      "secret_value_too_large",
+    );
+  });
+
+  test("a hidden read that refused the value stays a refusal, not an empty answer", () => {
+    const over = new Uint8Array(secretLimits.maxValueBytes + 1).fill(0x61);
+    const path = join(mkdtempSync(join(root, `input-${++cases}-`)), "bytes");
+    writeFileSync(path, over);
+    const descriptor = openSync(path, "r");
+    try {
+      const values = createTerminalSecretValues({
+        isInteractive: () => true,
+        setRaw: () => {},
+        writePrompt: () => {},
+        readHiddenBytes: () => readHiddenValueBytes(descriptor),
+      });
+      // The adapter rethrows a reader's refusal and swallows only a terminal
+      // failure; swallowing both would report a too-large value as empty.
+      expect(codeOf(() => values.readHidden())).toBe("secret_value_too_large");
+    } finally {
+      closeSync(descriptor);
+    }
   });
 
   test("stdin reads exact bytes and refuses more than the bound", () => {
