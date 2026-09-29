@@ -4,10 +4,9 @@
 // `ward instructions` rather than carrying a command list of its own.
 //
 // Selecting a target writes the block into that host's instruction file
-// only. The optional per-host skill file (`skills/ward/SKILL.md` under
-// `.claude/` or `.agents/`) and the `ward agents` refresh command are
-// WCLI-14's scope; this module owns the block and its target map, which that
-// command reuses.
+// only. This module owns the block, where it goes, and where a leftover copy
+// of the skill would sit for each host - the paths `ward agents` judges a
+// found copy at, never writes (DEC-44, DEC-47).
 import type { AgentTarget } from "../contract/manifest.ts";
 import type { ProjectDocument } from "./project-files.ts";
 
@@ -25,6 +24,14 @@ export const wardBlockBody = [
 export const agentTargetDocuments: Record<AgentTarget, ProjectDocument> = {
   claude: "claude-instructions",
   codex: "codex-instructions",
+};
+
+// Where each host would discover a local copy of the skill (spec §11.2).
+// Ward writes neither document; they exist so a copy somebody put there is
+// judged and named rather than silently ignored (DEC-47).
+export const agentTargetSkillDocuments: Record<AgentTarget, ProjectDocument> = {
+  claude: "claude-skill",
+  codex: "codex-skill",
 };
 
 export const agentTargetNames: Record<AgentTarget, string> = {

@@ -7,9 +7,10 @@
 // untouched. A malformed marker pair is the same conflict on both paths,
 // because a file Ward refuses to write is one it also refuses to judge.
 //
-// The skill-file half of spec §8's row is deliberately not exercised: how a
-// local skill file is selected is an open design question on WCLI-14, so the
-// command does not do it yet and these tests say nothing about it.
+// The skill-file half of spec §8's row is pinned by its own block below
+// (DEC-47): Ward writes no local skill file, a copy found at either host's
+// path is drift that fails --check, and --force removes one only when its
+// bytes are exactly the packaged skill's.
 //
 // Every case runs in a throwaway checkout with no vault; nothing touches the
 // developer's repositories, ~/.ward or keychain.
@@ -26,7 +27,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { packagedSkillContent } from "../src/adapters/skill-content.ts";
 import { wardBlockBody } from "../src/application/bridges.ts";
 import { runWard } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
@@ -93,6 +95,11 @@ describe("ward agents --check", () => {
       document: "CLAUDE.md",
       fileExists: false,
       state: "absent",
+      skill: {
+        document: ".claude/skills/ward/SKILL.md",
+        state: "absent",
+        matchesPackaged: false,
+      },
     });
     expect(existsSync(join(cwd, "CLAUDE.md"))).toBe(false);
 
@@ -145,6 +152,11 @@ describe("ward agents --check", () => {
       document: "AGENTS.md",
       fileExists: true,
       state: "current",
+      skill: {
+        document: ".agents/skills/ward/SKILL.md",
+        state: "absent",
+        matchesPackaged: false,
+      },
     });
     expect(readFileSync(join(cwd, "AGENTS.md")).equals(before)).toBe(true);
   });
@@ -209,6 +221,12 @@ describe("ward agents --update-instructions", () => {
       target: "claude",
       document: "CLAUDE.md",
       status: "created",
+      skill: {
+        document: ".claude/skills/ward/SKILL.md",
+        state: "absent",
+        matchesPackaged: false,
+        removed: false,
+      },
     });
     expect(readFileSync(join(cwd, "CLAUDE.md"), "utf8")).toBe(block);
     expect(existsSync(join(cwd, "AGENTS.md"))).toBe(false);
@@ -373,6 +391,21 @@ describe("ward agents usage", () => {
     expect(JSON.stringify(unknown.error)).not.toContain("gemini");
   });
 
+  test("refuses --force on the checking form instead of ignoring it", async () => {
+    const cwd = checkout();
+    const result = await ward(
+      cwd,
+      "agents",
+      "--check",
+      "--force",
+      "--target",
+      "claude",
+      "--json",
+    );
+    expect(result.exitCode).toBe(exitCodes.usage);
+    expect(result.error.code).toBe("agent_option_unexpected");
+  });
+
   test("the manifest declares the command as writing files and opening no vault", async () => {
     const cwd = checkout();
     const manifest = await ward(cwd, "manifest", "--json");
@@ -384,5 +417,134 @@ describe("ward agents usage", () => {
     expect(agents.unlocksVault).toBe(false);
     expect(agents.kind).toBe("agents.status");
     expect(agents.resultKinds).toEqual(["agents.updated"]);
+  });
+});
+
+describe("the local skill file (DEC-47)", () => {
+  function skillPath(cwd: string, host: "claude" | "codex"): string {
+    return host === "claude"
+      ? join(cwd, ".claude", "skills", "ward", "SKILL.md")
+      : join(cwd, ".agents", "skills", "ward", "SKILL.md");
+  }
+
+  function plant(cwd: string, host: "claude" | "codex", content: string) {
+    const path = skillPath(cwd, host);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    return path;
+  }
+
+  test("the packaged skill is embedded in the build, and is not empty", () => {
+    // The comparison below rests on this constant being the real file. If
+    // the text import ever resolved to nothing, every empty file would
+    // "exactly match the packaged skill" and --force would remove files it
+    // must never touch, so this is asserted rather than assumed.
+    expect(packagedSkillContent.length).toBeGreaterThan(0);
+    expect(packagedSkillContent).toContain("name: ward");
+  });
+
+  test("a present copy is drift: --check exits 6 and names the path", async () => {
+    const cwd = checkout();
+    plant(cwd, "claude", packagedSkillContent);
+    const result = await ward(
+      cwd,
+      "agents",
+      "--check",
+      "--target",
+      "claude",
+      "--json",
+    );
+    expect(result.exitCode).toBe(exitCodes.validation);
+    expect(result.json.data.skill).toEqual({
+      document: ".claude/skills/ward/SKILL.md",
+      state: "present",
+      matchesPackaged: true,
+    });
+
+    // The pair: the same checkout's other host has no copy, and passes.
+    const bare = await ward(
+      cwd,
+      "agents",
+      "--check",
+      "--target",
+      "codex",
+      "--json",
+    );
+    expect(bare.exitCode).toBe(exitCodes.success);
+    expect(bare.json.data.skill).toEqual({
+      document: ".agents/skills/ward/SKILL.md",
+      state: "absent",
+      matchesPackaged: false,
+    });
+  });
+
+  test("--force removes a copy that exactly matches the packaged skill", async () => {
+    const cwd = checkout();
+    const path = plant(cwd, "claude", packagedSkillContent);
+    const result = await ward(
+      cwd,
+      "agents",
+      "--update-instructions",
+      "--force",
+      "--target",
+      "claude",
+      "--json",
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(result.json.data.skill).toEqual({
+      document: ".claude/skills/ward/SKILL.md",
+      state: "absent",
+      matchesPackaged: true,
+      removed: true,
+    });
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(join(cwd, "CLAUDE.md"), "utf8")).toBe(block);
+  });
+
+  test("--force never removes a differing file, and says why", async () => {
+    const cwd = checkout();
+    const path = plant(cwd, "claude", "# my own notes\n");
+    const result = await ward(
+      cwd,
+      "agents",
+      "--update-instructions",
+      "--force",
+      "--target",
+      "claude",
+      "--json",
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(result.json.data.skill.removed).toBe(false);
+    expect(result.json.data.skill.matchesPackaged).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe("# my own notes\n");
+  });
+
+  test("an exact copy stays without --force", async () => {
+    const cwd = checkout();
+    const path = plant(cwd, "claude", packagedSkillContent);
+    const plain = await ward(
+      cwd,
+      "agents",
+      "--update-instructions",
+      "--target",
+      "claude",
+      "--json",
+    );
+    expect(plain.exitCode).toBe(exitCodes.success);
+    expect(plain.json.data.skill).toEqual({
+      document: ".claude/skills/ward/SKILL.md",
+      state: "present",
+      matchesPackaged: true,
+      removed: false,
+    });
+    expect(existsSync(path)).toBe(true);
+  });
+
+  test("the check names the healthy absence of a path it looked at", async () => {
+    const cwd = checkout();
+    const result = await ward(cwd, "agents", "--check", "--target", "codex");
+    expect(result.stdout).toContain(".agents/skills/ward/SKILL.md");
+    expect(result.stdout).toContain("ships from the opum-ward plugin");
   });
 });

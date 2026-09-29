@@ -63,10 +63,20 @@ export const errorCatalog = {
     message: "Unknown bridge target.",
     hint: "Ward keeps a guidance block for `claude` (CLAUDE.md) and `codex` (AGENTS.md); pass one with --target.",
   },
+  // DEC-48/DEC-52: the init multiselect was interrupted (Ctrl-C, or the
+  // terminal stream ended) before a choice was made. Nothing has been
+  // written at that point, and the run stops rather than continuing to the
+  // registration question the developer just interrupted.
+  init_cancelled: {
+    type: "usage",
+    message:
+      "The instruction-file choice was cancelled, and nothing was written.",
+    hint: "Run `ward init --claude --codex` for the non-interactive path, or run `ward init` again in a terminal.",
+  },
   agent_option_unexpected: {
     type: "usage",
     message: "That option does not apply to the form you named.",
-    hint: "--require-installed is a --check option; --update-instructions writes the block and reports what it did.",
+    hint: "--require-installed is a --check option; --force is an --update-instructions option. `ward agents --check` reports, and `ward agents --update-instructions` writes.",
   },
   // Vault envelope (spec §6.3). None of these carries a byte of the record.
   vault_key_invalid: {

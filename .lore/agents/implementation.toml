@@ -2,7 +2,7 @@ schema_version = 1
 name = "implementation"
 description = "Grounds a Ward implementation change in the vault format v1 and key-custody contract, the accepted ADRs the change implements, and the P0 limits it must not exceed."
 kind = "specialist"
-max_tokens = 20000
+max_tokens = 26000
 pinned = ["adr/0001-vault-storage-and-key-custody"]
 sources = [
   "adr/0003-profile-approval-authority",
@@ -15,4 +15,8 @@ sources = [
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
+  "adr/0014-ward-stores-no-skill-source-selection",
+  "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable",
+  "adr/0016-ward-init-asks-its-file-choice-with-the-peers-multiselect",
+  "adr/0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency",
 ]

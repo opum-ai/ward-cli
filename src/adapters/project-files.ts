@@ -249,5 +249,16 @@ export function createProjectFiles(root: string): ProjectFiles {
       ensureDirectory(dirname(target.path));
       atomicWrite(target.path, content);
     },
+
+    remove(document) {
+      const target = resolve(document);
+      if (!target.exists) return false;
+      try {
+        unlinkSync(target.path);
+        return true;
+      } catch {
+        throw new WardError("project_file_unwritable");
+      }
+    },
   };
 }
