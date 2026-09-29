@@ -26,6 +26,7 @@
 - 2026-09-29T12:13:18-05:00 8b2a588098c85b75b69b74c0d861a4ac143040d7 feat(WCLI-14): skill-file drift and the init multiselect, with DEC-46..52 recorded (#128)
 - 2026-09-29T12:18:06-05:00 55fa91fe57c77eaf7e0757a7b86a46957e35d21e docs(WCLI-38): bump profileSnapshotVersion at the first release (DEC-50) (#129)
 - 2026-09-29T12:23:49-05:00 e7bec34e97d663a4f94538d3e475e78e20721314 docs(WCLI-30): point the bundle at the spec of record (DEC-51) (#130)
+- 2026-09-29T13:04:42-05:00 c0f48a154798793b799479ec1c91ba0ee9852068 docs(WCLI-61): record DEC-56 — the spec pointer keeps its two sections (#132)
 
 ## docs/adr
 
