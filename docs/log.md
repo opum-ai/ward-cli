@@ -18,6 +18,7 @@
 - 2026-09-29T07:02:08-05:00 61aa8a24d6818fcdc852bddfb5267252e83f4161 refactor(WCLI-51): one vault format at version 1, no compatibility surface (#99)
 - 2026-09-29T09:40:58-05:00 dc85a77e53e3a60b8c38f67f4582793e0a903fd7 fix(WCLI-52): refuse a backup of a state document that does not parse
 - 2026-09-29T09:50:54-05:00 74015e86f9756e2747f21fc80cbced849596d1cb fix(WCLI-52): answer the review — make the output assertion measure, and the second code
+- 2026-09-29T09:58:00-05:00 e08c848d9bc770321a5f88469280fb777b89a618 fix(WCLI-52): refuse a backup of a state document that does not parse (#110)
 
 ## docs/adr
 
