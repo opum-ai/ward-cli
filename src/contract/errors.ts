@@ -109,8 +109,12 @@ export const errorCatalog = {
   },
   vault_busy: {
     type: "conflict",
+    // The reassurance names the vault, not the run: `ward init` writes the
+    // project files before it registers the checkout, so a busy vault is
+    // reached by a command that has already changed something (WCLI-27).
+    // What is always true is that the vault transaction rolled back.
     message:
-      "Another Ward process held the vault for too long. Nothing was changed.",
+      "Another Ward process held the vault for too long. The vault was not changed.",
     hint: "Retry once the other Ward command has finished.",
   },
   vault_store_insecure: {
@@ -168,8 +172,11 @@ export const errorCatalog = {
   },
   project_file_unwritable: {
     type: "denied",
+    // Scoped to the file, not the run: `ward init` writes the manifest and
+    // then each selected bridge file, so a later target failing here follows
+    // an earlier one that landed (WCLI-27).
     message:
-      "Ward could not read or write a project file. Nothing was changed.",
+      "Ward could not read or write a project file. Ward did not change it.",
     hint: "Check that the repository directory is writable by you and not read-only.",
   },
   instructions_markers_conflict: {
