@@ -5,13 +5,20 @@
 // confirmation read hangs; the bound is 100 ms; the process must exit on
 // its own with the indeterminate envelope.
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../../src/adapters/keychain.ts";
 import { runWard } from "../../src/cli/main.ts";
 import { MemoryKeychain } from "../support/memory-keychain.ts";
 
-const directory = join(mkdtempSync(join(tmpdir(), "ward-exit-")), ".ward");
+// Under the caller's working directory, which setup.test.ts sets to its own
+// temporary root, rather than under TMPDIR: this process is the one that must
+// not be waited on, so nothing here can clean up after it, and a root of its
+// own leaked on every run (WCLI-46). The parent's teardown reclaims this with
+// everything else it made.
+const directory = join(
+  mkdtempSync(join(process.cwd(), "exit-probe-")),
+  ".ward",
+);
 const keychain = new MemoryKeychain();
 keychain.mode = "hang-after-write";
 const keyProvider = createKeychainKeyProvider({
