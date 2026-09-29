@@ -1,6 +1,6 @@
 // The decrypted vault's own document (spec §6.2): versioned collections for
-// projects and local bindings. It reaches storage only through
-// VaultStore.mutate, which seals each change as the next revision.
+// projects, local bindings and secret records. It reaches storage only
+// through VaultStore.mutate, which seals each change as the next revision.
 //
 // The document is Ward's own encrypted state, so this module is defense in
 // depth rather than a trust boundary: a snapshot that opens has already
@@ -13,6 +13,12 @@
 // stated rather than implied by where it sits.
 import { WardError } from "../contract/errors.ts";
 import { isOpaqueId } from "./identifiers.ts";
+import {
+  decodeSecretValue,
+  isSecretAlias,
+  type SecretRecord,
+  secretLimits,
+} from "./secret.ts";
 
 export const vaultStateFormatVersion = 1;
 
@@ -43,6 +49,7 @@ export interface VaultState {
   readonly formatVersion: number;
   readonly projects: readonly ProjectRecord[];
   readonly localBindings: readonly BindingRecord[];
+  readonly secrets: readonly SecretRecord[];
 }
 
 // The directory a binding is being matched against.
@@ -57,6 +64,7 @@ export function emptyVaultState(): VaultState {
     formatVersion: vaultStateFormatVersion,
     projects: [],
     localBindings: [],
+    secrets: [],
   };
 }
 
@@ -139,6 +147,54 @@ function ownCollection<T>(
   return value.map(own);
 }
 
+// A stored secret record. The value is validated by decoding it: a string
+// that is not canonical base64, or whose bytes are empty or over the limit,
+// is a damaged document rather than a secret. Nothing here decodes a value
+// for use; the parse result only ever reports that the record is intact.
+function ownSecret(value: unknown): SecretRecord {
+  if (!isRecord(value)) malformed();
+  const expected = [
+    "alias",
+    "createdAt",
+    "id",
+    "projectId",
+    "revision",
+    "updatedAt",
+    "value",
+  ];
+  const keys = Object.keys(value).sort();
+  if (keys.length !== expected.length) malformed();
+  for (const [index, key] of expected.entries())
+    if (keys[index] !== key) malformed();
+  if (!isOpaqueId(value.id) || !isOpaqueId(value.projectId)) malformed();
+  if (!isSecretAlias(value.alias)) malformed();
+  if (typeof value.value !== "string") malformed();
+  const bytes = decodeSecretValue(value.value);
+  if (
+    bytes === undefined ||
+    bytes.length === 0 ||
+    bytes.length > secretLimits.maxValueBytes
+  )
+    malformed();
+  if (!isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt))
+    malformed();
+  if (
+    typeof value.revision !== "number" ||
+    !Number.isSafeInteger(value.revision) ||
+    value.revision < 1
+  )
+    malformed();
+  return {
+    id: value.id,
+    projectId: value.projectId,
+    alias: value.alias,
+    value: value.value,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    revision: value.revision,
+  };
+}
+
 // A document with no collection key is an empty collection: the skeleton
 // `ward setup` seals holds only `formatVersion`, and an older vault gains
 // the collections with its first binding rather than being refused.
@@ -156,7 +212,8 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
     if (
       key !== "formatVersion" &&
       key !== "projects" &&
-      key !== "localBindings"
+      key !== "localBindings" &&
+      key !== "secrets"
     )
       malformed();
   // A version that is missing or is not a number is a damaged document; a
@@ -169,6 +226,7 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
     formatVersion: parsed.formatVersion,
     projects: ownCollection(parsed.projects ?? [], ownProject),
     localBindings: ownCollection(parsed.localBindings ?? [], ownBinding),
+    secrets: ownCollection(parsed.secrets ?? [], ownSecret),
   };
 }
 
@@ -183,6 +241,17 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         device,
         inode,
         registeredAt,
+      }),
+    ),
+    secrets: state.secrets.map(
+      ({ id, projectId, alias, value, createdAt, updatedAt, revision }) => ({
+        id,
+        projectId,
+        alias,
+        value,
+        createdAt,
+        updatedAt,
+        revision,
       }),
     ),
   };
@@ -230,5 +299,61 @@ export function registerCheckout(options: {
         registeredAt,
       },
     ],
+    // Carried through unchanged: registering a checkout must never drop
+    // records a project already holds.
+    secrets: state.secrets,
+  };
+}
+
+// The single secret one project stores under one alias. A miss stays a miss:
+// no other project's records are consulted (spec §7.1, T11).
+export function findSecret(
+  state: VaultState,
+  projectId: string,
+  alias: string,
+): SecretRecord | undefined {
+  return state.secrets.find(
+    (secret) => secret.projectId === projectId && secret.alias === alias,
+  );
+}
+
+// Every secret one project owns, in storage order. Another project's records
+// are not filtered in or counted: this never crosses the project boundary.
+export function secretsFor(
+  state: VaultState,
+  projectId: string,
+): readonly SecretRecord[] {
+  return state.secrets.filter((secret) => secret.projectId === projectId);
+}
+
+// Replaces the record under the same (project, alias) or appends it. The
+// caller builds the record; this only places it.
+export function withSecret(
+  state: VaultState,
+  record: SecretRecord,
+): VaultState {
+  return {
+    ...state,
+    secrets: [
+      ...state.secrets.filter(
+        (secret) =>
+          secret.projectId !== record.projectId ||
+          secret.alias !== record.alias,
+      ),
+      record,
+    ],
+  };
+}
+
+export function withoutSecret(
+  state: VaultState,
+  projectId: string,
+  alias: string,
+): VaultState {
+  return {
+    ...state,
+    secrets: state.secrets.filter(
+      (secret) => secret.projectId !== projectId || secret.alias !== alias,
+    ),
   };
 }

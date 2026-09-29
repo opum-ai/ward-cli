@@ -274,6 +274,50 @@ export const commands: CommandSpec[] = [
     examples: ["ward restore --input ward-backup.json"],
   },
   {
+    name: "secret",
+    summary:
+      "Set, list, inspect or delete this project's secrets. A value is entered hidden in a trusted terminal, or piped with --stdin for trusted automation; it is never an argument and never printed. Setting and deleting are the developer's acts.",
+    args: [
+      { name: "action", required: true },
+      { name: "alias", required: false },
+    ],
+    flags: [
+      {
+        name: "--stdin",
+        takesValue: false,
+        summary:
+          "Read the value from standard input to EOF as exact bytes. For trusted automation; replaces an existing alias without an interactive prompt. Not a way for an agent to request or handle a real value.",
+      },
+      jsonFlag,
+    ],
+    kind: "secret.set",
+    resultKinds: ["secret.list", "secret.inspect", "secret.delete"],
+    mutates: true,
+    // Reads and writes the encrypted vault through the project binding.
+    unlocksVault: true,
+    // Not marked admin: listing and inspecting are safe for an agent, and
+    // what holds the line on entry is the hidden terminal a value needs,
+    // not a label here (the same reasoning `ward init` records).
+    admin: false,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: [
+      "ward secret set example-alias",
+      "ward secret list",
+      "ward secret inspect example-alias",
+      "ward secret delete example-alias",
+    ],
+  },
+  {
     name: "help",
     summary: "Show usage for Ward or one command.",
     args: [{ name: "command", required: false }],

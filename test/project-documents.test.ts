@@ -9,6 +9,7 @@ import {
   parseProjectManifest,
   serializeProjectManifest,
 } from "../src/domain/project-manifest.ts";
+import type { SecretRecord } from "../src/domain/secret.ts";
 import {
   type CheckoutIdentity,
   emptyVaultState,
@@ -25,6 +26,19 @@ const identity: CheckoutIdentity = {
   device: "16777232",
   inode: "8429931",
 };
+
+// A complete, valid stored-secret record; each malformed case below breaks
+// exactly one field of it.
+const secretRecord = (overrides: Partial<SecretRecord> = {}): SecretRecord => ({
+  id: projectId,
+  projectId,
+  alias: "example-alias",
+  value: Buffer.from("value-bytes").toString("base64"),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  revision: 1,
+  ...overrides,
+});
 
 function codeOf(run: () => unknown): string | undefined {
   try {
@@ -49,6 +63,7 @@ describe("the vault's state document", () => {
       formatVersion: 1,
       projects: [],
       localBindings: [],
+      secrets: [],
     });
     expect(parseVaultState(serializeVaultState(emptyVaultState()))).toEqual(
       emptyVaultState(),
@@ -77,8 +92,24 @@ describe("the vault's state document", () => {
             registeredAt: timestamp,
           },
         ],
+        secrets: [],
       }),
     );
+  });
+
+  test("a secret record round-trips byte for byte", () => {
+    // Bytes a text encoding would lose, including NUL and a newline.
+    const bytes = Uint8Array.from([0x00, 0x0a, 0xff, 0x62]);
+    const state = {
+      ...emptyVaultState(),
+      secrets: [
+        secretRecord({
+          value: Buffer.from(bytes).toString("base64"),
+          revision: 3,
+        }),
+      ],
+    };
+    expect(parseVaultState(serializeVaultState(state))).toEqual(state);
   });
 
   test("registering twice keeps one project record and two bindings", () => {
@@ -193,7 +224,53 @@ describe("the vault's state document", () => {
     ],
     [
       "an unknown collection",
-      { formatVersion: 1, secrets: [], localBindings: [] },
+      { formatVersion: 1, unknownCollection: [], localBindings: [] },
+    ],
+    [
+      "a secret value that is not canonical base64",
+      { formatVersion: 1, secrets: [secretRecord({ value: "AAA" })] },
+    ],
+    [
+      "an empty secret value",
+      { formatVersion: 1, secrets: [secretRecord({ value: "" })] },
+    ],
+    [
+      "a secret value over the 64 KiB limit",
+      {
+        formatVersion: 1,
+        secrets: [
+          secretRecord({
+            value: Buffer.from(new Uint8Array(64 * 1024 + 1)).toString(
+              "base64",
+            ),
+          }),
+        ],
+      },
+    ],
+    [
+      "a secret alias outside the grammar",
+      { formatVersion: 1, secrets: [secretRecord({ alias: "9not-an-alias" })] },
+    ],
+    [
+      "a secret revision below one",
+      { formatVersion: 1, secrets: [secretRecord({ revision: 0 })] },
+    ],
+    [
+      "a secret record with a field missing",
+      {
+        formatVersion: 1,
+        secrets: [
+          {
+            id: projectId,
+            projectId,
+            alias: "example-alias",
+            value: Buffer.from("value-bytes").toString("base64"),
+            createdAt: timestamp,
+            // updatedAt is deliberately absent.
+            revision: 1,
+          },
+        ],
+      },
     ],
   ];
   for (const [label, value] of malformed) {
