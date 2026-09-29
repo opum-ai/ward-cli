@@ -15,12 +15,21 @@
 // Firing inline would hand the call an already-aborted signal, which a
 // signal-honouring store would then fail on for the wrong reason.
 //
+// Wrap only a call that cannot settle on its own. The handler is queued
+// before the call's own continuation, so the bound wins the race against a
+// fast success too: around a store that answers normally, `load` would be
+// refused with `vault_key_unavailable` while `delays` still looked right.
+// Every caller here pairs it with a fixture that hangs.
+//
 // It replaces `globalThis.setTimeout` and `globalThis.clearTimeout` for the
 // duration, so `restore()` belongs in a `finally`. It must wrap only the call
 // under test: another timer set while it is installed is fired at once and
 // recorded too. `restore()` puts back only what this instance installed, so a
 // second install that has taken over is not clobbered by the first one's
-// restore.
+// restore; and because the originals are captured at module load, a wrapper
+// installed after that point but displaced by this one is not put back (no
+// caller here does that, and the alternative — capturing per install — is
+// what leaves a fake installed forever).
 export interface ImmediateTimers {
   // Every delay `setTimeout` was given, in order.
   readonly delays: number[];

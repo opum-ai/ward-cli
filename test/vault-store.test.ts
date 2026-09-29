@@ -623,13 +623,18 @@ describe("T06: transactions", () => {
         ),
       ).toBe("vault_busy");
       expect(called).toBe(false);
-      // Measured for WCLI-53: 67-76 ms against the 50 ms busy timeout, idle
-      // and under 2x- and 6x-overcommitted CPU load, so this 2 s ceiling is
-      // more than 26x the cost it bounds. Its band is a wait between 2 s and
-      // the harness timeout; a lock wait that never returned is the harness
-      // timeout's case, and a busy timeout that stopped being applied returns
-      // in microseconds, under this ceiling rather than over it.
-      expect(performance.now() - started).toBeLessThan(2_000);
+      // Both bounds are measured for WCLI-53, idle and at 2x and 6x CPU
+      // overcommit: the wait costs 67-76 ms against the 50 ms busy timeout.
+      // The ceiling's only band is a wait between 2 s and the harness
+      // timeout, which is where a lock wait that never returned would land;
+      // 2 s is 26x the measured maximum, so contention cannot reach it. The
+      // floor is the other half, and the shape the original flake could not
+      // break — contention only ever lengthens this wait, so it fails only
+      // when the busy timeout stopped being applied, which returns in
+      // microseconds rather than waiting at all.
+      const waited = performance.now() - started;
+      expect(waited).toBeGreaterThanOrEqual(50);
+      expect(waited).toBeLessThan(2_000);
     } finally {
       holder.exec("ROLLBACK");
       holder.close();
