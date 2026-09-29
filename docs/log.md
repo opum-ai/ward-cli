@@ -27,6 +27,7 @@
 - 2026-09-29T12:18:06-05:00 55fa91fe57c77eaf7e0757a7b86a46957e35d21e docs(WCLI-38): bump profileSnapshotVersion at the first release (DEC-50) (#129)
 - 2026-09-29T12:23:49-05:00 e7bec34e97d663a4f94538d3e475e78e20721314 docs(WCLI-30): point the bundle at the spec of record (DEC-51) (#130)
 - 2026-09-29T13:04:42-05:00 c0f48a154798793b799479ec1c91ba0ee9852068 docs(WCLI-61): record DEC-56 — the spec pointer keeps its two sections (#132)
+- 2026-09-29T13:39:21-05:00 45b68a35ee3433eee99c5d82c098c20b1f8172e8 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook
 
 ## docs/adr
 
