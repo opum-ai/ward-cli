@@ -207,6 +207,15 @@ const httpsAuthorityPattern = /^https:\/\//i;
 // what the approval prompt displays and what a later build executes, so the
 // string the developer approved and the string Ward would send are one
 // string rather than two the validator hoped were equal.
+//
+// Everything outside the origin must survive parsing unchanged. Case folding
+// and a dropped default port are rewrites any parser agrees on: they name the
+// same origin. A path is not like that. `/%2e%2e/x` becomes `/x` here, and
+// `/a/../b` becomes `/b`, while a client that does not decode encoded dots,
+// or a server or filter in between that decodes them differently, can address
+// another resource — so a declaration whose path the parser rewrites is
+// refused as well, and Ward stores only a path it would request byte for
+// byte. The one addition allowed is the `/` this parser gives an empty path.
 function normalizedUrl(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -226,6 +235,17 @@ function normalizedUrl(value: unknown): string {
   if (!urlCharactersPattern.test(value)) invalid();
   if (value.replace(percentEscapePattern, "").includes("%")) invalid();
   if (!httpsAuthorityPattern.test(value)) invalid();
+  // The declaration's own path, query and fragment: everything after the
+  // authority. `https://` is 8 characters and an authority cannot contain
+  // `/`, `?` or `#`, so the first of those three after the scheme is where
+  // the authority ends — whether or not it also carries user-info, which is
+  // refused below on its own account.
+  const afterScheme = value.slice("https://".length);
+  const suffixAt = afterScheme.search(/[/?#]/);
+  const declaredSuffix = suffixAt === -1 ? "" : afterScheme.slice(suffixAt);
+  const parsedSuffix = `${url.pathname}${url.search}${url.hash}`;
+  if (parsedSuffix !== declaredSuffix && parsedSuffix !== `/${declaredSuffix}`)
+    invalid();
   // A user-info URL carries a credential outside the header path this
   // contract exists to keep credentials inside (spec §9.3).
   if (url.username !== "" || url.password !== "") invalid();

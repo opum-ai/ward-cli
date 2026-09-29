@@ -460,6 +460,25 @@ describe("the profile declaration", () => {
       },
       "profile_invalid",
     ],
+    // A path the parser rewrites names a different resource to a client, a
+    // server or a filter that reads it the other way, so both spellings are
+    // refused rather than silently resolved into `/x` and stored.
+    [
+      "a URL whose path carries an encoded dot segment",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://api.example.invalid/%2e%2e/x",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL whose path carries a literal dot segment",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://api.example.invalid/a/../x",
+      },
+      "profile_invalid",
+    ],
     [
       "a header value with a line break",
       {
@@ -555,6 +574,14 @@ describe("the profile declaration", () => {
     );
     // A URL already in canonical form is stored byte for byte.
     expect(stored(SNAPSHOT.url)).toBe(SNAPSHOT.url);
+    // The path, query and fragment survive unchanged: the origin is the only
+    // part of a URL a rewrite may touch.
+    expect(stored("https://api.example.invalid/a/b?q=1&r=%20#frag")).toBe(
+      "https://api.example.invalid/a/b?q=1&r=%20#frag",
+    );
+    expect(stored("https://api.example.invalid?q=%2e")).toBe(
+      "https://api.example.invalid/?q=%2e",
+    );
   });
 
   test("a declaration without a secret value anywhere in it", () => {
