@@ -6,11 +6,32 @@ name: CI
 # to dev can never satisfy it: every change reaches dev through a pull request,
 # which is the intended effect.
 #
+# What triggers this workflow, and why pull_request is scoped to dev (WCLI-57).
+#
+# push covers the two gated refs. pull_request covers what can land on the
+# gated ref, which is a pull request whose BASE is dev. A pull request whose
+# base is main is deliberately not covered: in this repository the only such
+# pull request is the dev -> main promotion, whose head is dev itself, and main
+# only ever receives a fast-forward of dev. Because main is an ancestor of dev,
+# that pull request's test merge IS the dev tip, so the push run tests exactly
+# the same bytes. Measured on 2026-09-29: every promotion PR produced a second
+# run on a SHA the push run already had - push 36565482468 from 12:02:12Z and
+# pull_request 36565512667 from 12:02:28Z, both on 61aa8a24. The two landed on
+# one runner group at once, the contended run taking 97 s against 42 s, and
+# that is what stretched a 150 ms wall-clock bound in the suite to 474 ms
+# (WCLI-53). Scoping the trigger removes the second run at its source rather
+# than letting it start and then cancelling it, and it leaves the concurrency
+# group keyed on the ref, which is what still cancels one push to dev against
+# the next. A promotion pull request therefore shows no checks of its own; the
+# evidence for promoting is the push run on dev at the same SHA.
+#
 # Every third-party action is pinned to a full commit SHA, verified against
 # its upstream tag when pinned (WCLI-17). Bump a pin by re-resolving the tag,
 # never by editing the comment alone.
 on:
   pull_request:
+    branches:
+      - dev
   push:
     branches:
       - dev
