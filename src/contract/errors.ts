@@ -49,6 +49,25 @@ export const errorCatalog = {
     message: "Unknown instructions topic.",
     hint: "Run `ward instructions --list` for the topic list.",
   },
+  // The bridge form is exactly one of --check or --update-instructions, and
+  // the target is one of the two hosts Ward keeps a block for. Named the way
+  // the neighbouring usage errors are (`secret_action_unknown`,
+  // `profile_action_unknown`), and neither echoes the value supplied.
+  agent_form_invalid: {
+    type: "usage",
+    message: "Name exactly one of --check or --update-instructions.",
+    hint: "`ward agents --check --target claude` reports; `ward agents --update-instructions --target claude` writes.",
+  },
+  agent_target_unknown: {
+    type: "usage",
+    message: "Unknown bridge target.",
+    hint: "Ward keeps a guidance block for `claude` (CLAUDE.md) and `codex` (AGENTS.md); pass one with --target.",
+  },
+  agent_option_unexpected: {
+    type: "usage",
+    message: "That option does not apply to the form you named.",
+    hint: "--require-installed is a --check option; --update-instructions writes the block and reports what it did.",
+  },
   // Vault envelope (spec §6.3). None of these carries a byte of the record.
   vault_key_invalid: {
     type: "validation",

@@ -54,6 +54,11 @@ import {
 } from "../contract/envelope.ts";
 import { errorEnvelope, WardError } from "../contract/errors.ts";
 import { type AgentTarget, findCommand } from "../contract/manifest.ts";
+import {
+  checkAgentBridge,
+  isAgentTarget,
+  updateAgentBridge,
+} from "../application/agents.ts";
 import { parseArguments } from "./parse.ts";
 
 export interface RunResult {
@@ -186,6 +191,41 @@ async function initCommand(
   });
   const { text, ...data } = result;
   return { kind: "init.complete", data, text };
+}
+
+// The composition root for `ward agents`. The checkout is resolved the way
+// every project command resolves it, and the project files are bound to that
+// root; no vault, key provider or terminal is touched, so this command works
+// in a checkout Ward has never seen.
+function agentsCommand(
+  input: CommandInput,
+  options: RunOptions,
+): CommandOutput {
+  const check = input.flags.has("--check");
+  const update = input.flags.has("--update-instructions");
+  if (check === update) throw new WardError("agent_form_invalid");
+  if (update && input.flags.has("--require-installed"))
+    throw new WardError("agent_option_unexpected");
+  const target = input.flags.get("--target");
+  if (typeof target !== "string" || !isAgentTarget(target))
+    throw new WardError("agent_target_unknown");
+  if (input.positionals.length > 0) throw new WardError("unexpected_argument");
+
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const files = createProjectFiles(checkout.root);
+  if (check) {
+    const result = checkAgentBridge(target, files, {
+      requireInstalled: input.flags.has("--require-installed"),
+    });
+    return {
+      kind: "agents.status",
+      data: result.data,
+      text: result.text,
+      exitCode: result.exitCode,
+    };
+  }
+  const result = updateAgentBridge(target, files);
+  return { kind: "agents.updated", data: result.data, text: result.text };
 }
 
 // The composition root for `ward backup`. The passphrase is read from the
@@ -533,6 +573,8 @@ async function dispatch(
     output = await secretCommand(parsed, options);
   } else if (command.name === "profile") {
     output = await profileCommand(parsed, options);
+  } else if (command.name === "agents") {
+    output = agentsCommand(parsed, options);
   } else if (command.name === "check") {
     output = await checkCommand(parsed, options);
   } else if (command.name === "run") {
