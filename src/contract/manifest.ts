@@ -214,6 +214,31 @@ export const commands: CommandSpec[] = [
     examples: ["ward doctor", "ward doctor --json"],
   },
   {
+    name: "audit",
+    summary:
+      "Report this project's retained operational events, sanitized, for the current project only, with the vault's retention bound stated rather than left to discover; read-only, and not a tamper-proof audit claim.",
+    args: [],
+    flags: [jsonFlag],
+    kind: "audit.report",
+    mutates: false,
+    // Reads the vault header, the vault key and the decrypted state; writes
+    // nothing.
+    unlocksVault: true,
+    admin: false,
+    outputSensitivity: "status",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: ["ward audit", "ward audit --json"],
+  },
+  {
     name: "backup",
     summary:
       "Create one passphrase-encrypted backup of the vault, in a trusted terminal. The backup opens without this machine's OS credential store item, and Ward neither keeps nor prints the passphrase.",

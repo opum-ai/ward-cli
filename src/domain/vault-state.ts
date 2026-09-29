@@ -119,14 +119,22 @@ export interface AuditRecord {
   readonly at: string;
 }
 
-// How many events this vault keeps. Spec §9.4 permits a bounded history for
-// the local MVP and requires the limit to be exposed rather than hidden;
-// stating it in `ward audit` is WCLI-11's, and the bound itself lives here so
-// that a build cannot write an unbounded collection in the meantime. The
-// oldest records are dropped first, across projects rather than per project,
-// because a per-project bound would let one project's activity be pushed out
-// by another's and would have to be enforced at every write to mean
-// anything.
+// How many events this vault keeps, across every project. Spec §9.4 permits a
+// bounded history for the local MVP and requires the limit to be exposed
+// rather than hidden: `ward audit` states this bound, and this constant is
+// the one source of that number. The oldest records are dropped first,
+// across projects rather than per project.
+//
+// The bound is deliberately vault-wide rather than per project. What bounds
+// the audit at all is the size of the state document, and a per-project
+// number cannot do that: a vault-wide cap would have to exist beside it for
+// any number of projects. A per-project limit on its own would also be a
+// second eviction rule to enforce at every write, where the collection is
+// one array and the risk is its size. The cost is real and is stated rather
+// than hidden: a project's retained history can be shorter than this limit,
+// and another project's activity can shorten it — which is why `ward audit`
+// reports the bound and the project's own retained count together, with the
+// eviction rule said in words.
 export const auditHistoryLimit = 500;
 
 export interface VaultState {
