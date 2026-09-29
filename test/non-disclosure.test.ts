@@ -18,11 +18,16 @@ import { type CommandHandler, handlers } from "../src/application/commands.ts";
 import { runWard } from "../src/cli/main.ts";
 import { type ExitCode, exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
-import { packagedWard } from "./support/packaged.ts";
+import { buildPackagedWard } from "./support/packaged.ts";
+import { createTempRoot } from "./support/temp-root.ts";
 
 const SENTINEL = "ward-sentinel-7f3a9c1e";
 const CLI = join(import.meta.dir, "..", "src", "cli");
 const ENTRY = join(CLI, "ward.ts");
+
+// This file's own build root, removed by the teardown createTempRoot registers
+// rather than at process exit (WCLI-46).
+const packagedWard = buildPackagedWard(createTempRoot("ward-packaged-"));
 
 function disclosed(output: string): boolean {
   return output.includes(SENTINEL);

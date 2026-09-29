@@ -9,21 +9,18 @@
 // preload only applies from the repository root (test-isolation.test.ts).
 import "./support/no-real-keychain.ts";
 import { Database } from "bun:sqlite";
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createSqliteVaultStore,
@@ -33,14 +30,18 @@ import {
 } from "../src/adapters/sqlite-vault-store.ts";
 import { errorEnvelope, WardError } from "../src/contract/errors.ts";
 import { envelopeLimits, generateVaultKey } from "../src/domain/envelope.ts";
+import { createTempRoot } from "./support/temp-root.ts";
 
 const VAULT_ID = "3f1c2b7e-9a4d-4e6f-8b21-5c7d9e0a1b2c";
 const SENTINEL = "ward-store-sentinel-7a3f";
 const SECOND_SENTINEL = "ward-store-sentinel-c914";
 const WORKER = join(import.meta.dir, "fixtures", "vault-store-worker.ts");
 
-const root = mkdtempSync(join(tmpdir(), "ward-store-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// Created and removed through the shared helper, which registers the removal
+// itself: the crash fixtures below kill child processes, and whatever ends the
+// run must not be the thing that decides whether this root is reclaimed
+// (WCLI-46).
+const root = createTempRoot("ward-store-");
 
 let cases = 0;
 function fresh(busyTimeoutMs?: number) {

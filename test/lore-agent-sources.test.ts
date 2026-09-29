@@ -7,9 +7,9 @@
 // quietly become always-green would keep the Docs job green and be believed
 // (ADR 0008).
 import { expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createTempRoot } from "./support/temp-root.ts";
 
 const script = join(
   import.meta.dir,
@@ -61,7 +61,10 @@ echo "unexpected arguments" >&2
 exit 2
 `;
 
-const stubDirectory = mkdtempSync(join(tmpdir(), "ward-lore-stub-"));
+// Through the shared helper, so the stub's directory is reclaimed by this
+// file's teardown: it used to be created with no removal at all and leaked on
+// every run (WCLI-46).
+const stubDirectory = createTempRoot("ward-lore-stub-");
 const stubPath = join(stubDirectory, "lore");
 writeFileSync(stubPath, stub);
 chmodSync(stubPath, 0o755);

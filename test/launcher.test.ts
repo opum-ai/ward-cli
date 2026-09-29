@@ -4,15 +4,8 @@
 // src/cli/ward.ts`, where it must find the planted files at work. A check
 // that cannot fail on the unhardened launch proves nothing about the
 // hardened one.
-import { afterAll, describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   buildCommand,
@@ -21,7 +14,8 @@ import {
   outfile,
 } from "../scripts/build.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
-import { buildRoot, packagedWard } from "./support/packaged.ts";
+import { buildPackagedWard } from "./support/packaged.ts";
+import { createTempRoot } from "./support/temp-root.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const PROBE_ENTRY = join(import.meta.dir, "fixtures", "env-probe.ts");
@@ -31,10 +25,15 @@ const DOTENV_KEY = "WARD_DOTENV_PROBE";
 const DOTENV_SENTINEL = "ward-dotenv-sentinel-b52e";
 const TOML_SENTINEL = "ward-toml-sentinel-e19a";
 
-// Registered before anything is built, so a failed build still cleans up.
-const work = mkdtempSync(join(tmpdir(), "ward-launcher-"));
+// This file's own root, created before anything is built so a failed build
+// still cleans up; the removal is registered by createTempRoot rather than
+// left to process exit (WCLI-46). The work area and both binaries live under
+// it, so one teardown reclaims all three.
+const work = createTempRoot("ward-launcher-");
+const buildRoot = createTempRoot("ward-packaged-");
 // Built at module load rather than in a hook, so the compile is not subject
 // to a per-hook timeout.
+const packagedWard = buildPackagedWard(buildRoot);
 const packagedProbe = buildExecutable({
   entry: PROBE_ENTRY,
   outfile: join(buildRoot, "env-probe"),
@@ -79,7 +78,8 @@ delete env.BUN_OPTIONS;
 delete env.BUN_BE_BUN;
 delete env[DOTENV_KEY];
 
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+// The work root's removal is registered by createTempRoot, so this file does
+// not carry a second cleanup path that could drift from it.
 
 // Findings are labels, never output, so a failure report cannot itself carry
 // a sentinel.
