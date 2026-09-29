@@ -2,7 +2,7 @@ schema_version = 1
 name = "verification"
 description = "Retrieves the platform qualification rules, the measured non-guarantees, and the accepted ADRs a claim is measured against, so a verification pass measures Ward behaviour against what its own documents permit it to claim."
 kind = "specialist"
-max_tokens = 17000
+max_tokens = 20000
 pinned = [
   "adr/0004-committed-platform-target",
   "adr/0002-p0-threat-model-and-non-guarantees",
@@ -18,4 +18,5 @@ sources = [
   "adr/0018-profilesnapshotversion-bumps-at-the-first-release",
   "runbooks/release-smoke-t24-s-manual-half",
   "runbooks/cutting-a-ward-release",
+  "reference/ward-s-spec-of-record-the-cli-contract-and-the-release-gates",
 ]

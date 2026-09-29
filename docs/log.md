@@ -24,6 +24,7 @@
 - 2026-09-29T11:27:32-05:00 9c54c5cebd7595eb63bfbdd8f9d16669e4a76aa2 docs(WCLI-14): record DEC-44 and DEC-45, and correct the spec where they land (#121)
 - 2026-09-29T11:59:04-05:00 351ff7e05c6d90a36ab92bef0a5779ee9d07d80f feat(WCLI-46): reclaim stale test roots with an explicit clean:temp (DEC-49) (#127)
 - 2026-09-29T12:13:18-05:00 8b2a588098c85b75b69b74c0d861a4ac143040d7 feat(WCLI-14): skill-file drift and the init multiselect, with DEC-46..52 recorded (#128)
+- 2026-09-29T12:18:06-05:00 55fa91fe57c77eaf7e0757a7b86a46957e35d21e docs(WCLI-38): bump profileSnapshotVersion at the first release (DEC-50) (#129)
 
 ## docs/adr
 

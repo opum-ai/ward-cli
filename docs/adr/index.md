@@ -19,4 +19,5 @@
 - [ward init asks its file choice with the peers' multiselect](0016-ward-init-asks-its-file-choice-with-the-peers-multiselect.md)
 - [The init multiselect's prompt library is a pinned dependency](0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency.md)
 - [profileSnapshotVersion bumps at the first release](0018-profilesnapshotversion-bumps-at-the-first-release.md)
+- [The spec of record is a pointer concept, not an extract](0019-the-spec-of-record-is-a-pointer-concept-not-an-extract.md)
 <!-- lore:index:end -->
