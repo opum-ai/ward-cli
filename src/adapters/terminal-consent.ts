@@ -21,10 +21,16 @@ import {
   writeSync,
 } from "node:fs";
 import type {
+  ProfileAnswer,
+  ProfileApprovalQuestion,
+  ProfileApprover,
+  ProfileQuestion,
+  ProfileRevocationQuestion,
   RegistrationAnswer,
   RegistrationApprover,
   RegistrationRequest,
 } from "../application/approvals.ts";
+import { escapeForDisplay } from "../domain/display.ts";
 
 export interface TerminalConsentParts {
   isInteractive?: () => boolean;
@@ -39,22 +45,12 @@ export function isConsentAnswer(answer: string): boolean {
   return normalized === "y" || normalized === "yes";
 }
 
-// A path is the user's own filesystem, so it can contain control bytes and
-// terminal escapes. The value shown is the value being approved, so it is
-// escaped rather than passed through: a path cannot redraw the prompt that
-// asks about it.
-export function escapeForDisplay(value: string): string {
-  let escaped = "";
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    escaped +=
-      code < 0x20 || code === 0x7f
-        ? `\\x${code.toString(16).padStart(2, "0")}`
-        : character;
-  }
-  return escaped;
-}
-
+// A path is the user's own filesystem, and a profile declaration comes from a
+// tracked, editable file, so either can contain control bytes and terminal
+// escapes. The value shown is the value being approved, so it is escaped
+// rather than passed through: it cannot redraw the prompt that asks about it.
+// The policy itself is shared with the text reports in the application layer
+// (`escapeForDisplay` in src/domain/display.ts).
 function promptFor(request: RegistrationRequest): string {
   return [
     "Ward is not registered for this checkout.",
@@ -125,6 +121,98 @@ export function createTerminalConsent(
       } catch {
         // A terminal that cannot be written to or read from cannot be
         // answered, and an unanswerable question is not consent.
+        return "unavailable";
+      }
+    },
+  };
+}
+
+// The approval question shows the normalized operation, because approving it
+// is the whole point of asking: the developer has to read what Ward would
+// send. Every value shown is escaped, so a URL or header value that contains
+// terminal control bytes cannot redraw the prompt asking about it. Headers
+// are listed one per line, and a body policy or output policy is named by
+// its normalized value rather than described.
+function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
+  const { snapshot } = question;
+  const headers =
+    snapshot.headers.length === 0
+      ? ["  headers:  none"]
+      : [
+          "  headers:",
+          ...snapshot.headers.map(
+            (header) =>
+              `    ${escapeForDisplay(header.name)}: ${escapeForDisplay(header.value)}`,
+          ),
+        ];
+  return [
+    "Ward is asking you to approve an HTTPS operation for this checkout.",
+    "",
+    `  profile:  ${escapeForDisplay(question.profile)}`,
+    `  project:  ${question.projectId}`,
+    `  checkout: ${escapeForDisplay(question.root)}`,
+    `  method:   ${snapshot.method}`,
+    `  url:      ${escapeForDisplay(snapshot.url)}`,
+    `  auth:     bearer, from the secret alias ${escapeForDisplay(snapshot.auth.secret)}`,
+    ...headers,
+    `  body:     ${snapshot.requestBody}`,
+    `  output:   ${snapshot.output}`,
+    "",
+    "Approving records exactly this operation in your vault, for this",
+    "checkout. Ward refuses the profile if any part of it changes, and you",
+    "would approve the new version. Nothing here is a secret value: the",
+    "credential is read from the vault when the profile runs.",
+    "Answer y to approve, anything else to decline. [y/N] ",
+  ].join("\n");
+}
+
+function profileRevocationPrompt(question: ProfileRevocationQuestion): string {
+  return [
+    "Ward is asking you to revoke your approval of an HTTPS operation.",
+    "",
+    `  profile:  ${escapeForDisplay(question.profile)}`,
+    `  project:  ${question.projectId}`,
+    `  checkout: ${escapeForDisplay(question.root)}`,
+    "",
+    "Revoking blocks future Ward runs of this profile from this checkout.",
+    "It revokes nothing at the credential's provider, and it cannot recall a",
+    "request Ward has already sent.",
+    "Answer y to revoke, anything else to leave it approved. [y/N] ",
+  ].join("\n");
+}
+
+function promptForProfileQuestion(question: ProfileQuestion): string {
+  return question.kind === "approve"
+    ? profileApprovalPrompt(question)
+    : profileRevocationPrompt(question);
+}
+
+// The same three answers as registration, from the same terminal and the
+// same rule: an answer Ward could not read is "unavailable", never consent
+// and never a refusal the caller may act on (spec §4.3).
+export function createTerminalProfileApprover(
+  parts: TerminalConsentParts = {},
+): ProfileApprover {
+  const isInteractive =
+    parts.isInteractive ?? (() => process.stdin.isTTY === true);
+  const writePrompt = parts.writePrompt ?? defaultWritePrompt;
+  const readAnswer = parts.readAnswer ?? readAnswerLine;
+  const available = (): boolean => {
+    try {
+      return isInteractive();
+    } catch {
+      return false;
+    }
+  };
+
+  return {
+    available,
+    ask(question): ProfileAnswer {
+      if (!available()) return "unavailable";
+      try {
+        writePrompt(promptForProfileQuestion(question));
+        return isConsentAnswer(readAnswer()) ? "approved" : "declined";
+      } catch {
         return "unavailable";
       }
     },

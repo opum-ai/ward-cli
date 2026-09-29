@@ -1,6 +1,7 @@
 // The decrypted vault's own document (spec §6.2): versioned collections for
-// projects, local bindings and secret records. It reaches storage only
-// through VaultStore.mutate, which seals each change as the next revision.
+// projects, local bindings, secret records and approved profile snapshots.
+// It reaches storage only through VaultStore.mutate, which seals each change
+// as the next revision.
 //
 // The document is Ward's own encrypted state, so this module is defense in
 // depth rather than a trust boundary: a snapshot that opens has already
@@ -13,6 +14,12 @@
 // stated rather than implied by where it sits.
 import { WardError } from "../contract/errors.ts";
 import { isOpaqueId } from "./identifiers.ts";
+import {
+  isProfileName,
+  type NormalizedProfile,
+  normalizeProfile,
+  profileSnapshotVersion,
+} from "./profile.ts";
 import {
   decodeSecretValue,
   isSecretAlias,
@@ -45,11 +52,36 @@ export interface BindingRecord {
   readonly registeredAt: string;
 }
 
+// The developer's approval of one HTTPS profile, for one binding (spec
+// §9.2, docs/adr/0003). It carries the binding's whole identity — project,
+// root, device and inode — because an approval is authority for a checkout
+// and not for a repository: a clone at the same path, or the same project
+// opened somewhere else, is a different binding and needs its own approval.
+//
+// The snapshot is the normalized operation and never a value. It is
+// re-normalized when a document is parsed, so a stored snapshot that this
+// build's normalizer would not produce is a damaged document rather than an
+// approval with unknown meaning — and `snapshotVersion` names the schema the
+// stored snapshot was written under, so a record from a build whose
+// normalizer differs is refused rather than re-read through these rules
+// (spec §6.2).
+export interface ProfileApprovalRecord {
+  readonly profile: string;
+  readonly projectId: string;
+  readonly root: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly approvedAt: string;
+  readonly snapshotVersion: number;
+  readonly snapshot: NormalizedProfile;
+}
+
 export interface VaultState {
   readonly formatVersion: number;
   readonly projects: readonly ProjectRecord[];
   readonly localBindings: readonly BindingRecord[];
   readonly secrets: readonly SecretRecord[];
+  readonly profileApprovals: readonly ProfileApprovalRecord[];
 }
 
 // The directory a binding is being matched against.
@@ -65,6 +97,7 @@ export function emptyVaultState(): VaultState {
     projects: [],
     localBindings: [],
     secrets: [],
+    profileApprovals: [],
   };
 }
 
@@ -195,6 +228,57 @@ function ownSecret(value: unknown): SecretRecord {
   };
 }
 
+// A stored approval. The snapshot is validated by running the normalizer
+// over it: a shape this build's normalizer would refuse is a damaged
+// document, and a valid one is rebuilt in canonical form, so a caller
+// comparing snapshots compares the same normalization on both sides.
+function ownProfileApproval(value: unknown): ProfileApprovalRecord {
+  if (!isRecord(value)) malformed();
+  const expected = [
+    "approvedAt",
+    "device",
+    "inode",
+    "profile",
+    "projectId",
+    "root",
+    "snapshot",
+    "snapshotVersion",
+  ];
+  const keys = Object.keys(value).sort();
+  if (keys.length !== expected.length) malformed();
+  for (const [index, key] of expected.entries())
+    if (keys[index] !== key) malformed();
+  if (!isProfileName(value.profile)) malformed();
+  if (!isOpaqueId(value.projectId)) malformed();
+  if (!isCanonicalAbsolutePath(value.root)) malformed();
+  if (!isCounter(value.device) || !isCounter(value.inode)) malformed();
+  if (!isTimestamp(value.approvedAt)) malformed();
+  // A version that is missing or is not a number is a damaged record; a
+  // version this build does not implement is a record from another build.
+  // The second is answered rather than re-normalized, because running this
+  // build's rules over a snapshot written under different ones is how an
+  // approval comes to mean something the developer never approved.
+  if (typeof value.snapshotVersion !== "number") malformed();
+  if (value.snapshotVersion !== profileSnapshotVersion)
+    throw new WardError("vault_format_unsupported");
+  let snapshot: NormalizedProfile;
+  try {
+    snapshot = normalizeProfile(value.snapshot);
+  } catch {
+    malformed();
+  }
+  return {
+    profile: value.profile,
+    projectId: value.projectId,
+    root: value.root,
+    device: value.device,
+    inode: value.inode,
+    approvedAt: value.approvedAt,
+    snapshotVersion: value.snapshotVersion,
+    snapshot,
+  };
+}
+
 // A document with no collection key is an empty collection: the skeleton
 // `ward setup` seals holds only `formatVersion`, and an older vault gains
 // the collections with its first binding rather than being refused.
@@ -213,7 +297,8 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
       key !== "formatVersion" &&
       key !== "projects" &&
       key !== "localBindings" &&
-      key !== "secrets"
+      key !== "secrets" &&
+      key !== "profileApprovals"
     )
       malformed();
   // A version that is missing or is not a number is a damaged document; a
@@ -227,6 +312,10 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
     projects: ownCollection(parsed.projects ?? [], ownProject),
     localBindings: ownCollection(parsed.localBindings ?? [], ownBinding),
     secrets: ownCollection(parsed.secrets ?? [], ownSecret),
+    profileApprovals: ownCollection(
+      parsed.profileApprovals ?? [],
+      ownProfileApproval,
+    ),
   };
 }
 
@@ -252,6 +341,41 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         createdAt,
         updatedAt,
         revision,
+      }),
+    ),
+    profileApprovals: state.profileApprovals.map(
+      ({
+        profile,
+        projectId,
+        root,
+        device,
+        inode,
+        approvedAt,
+        snapshotVersion,
+        snapshot,
+      }) => ({
+        profile,
+        projectId,
+        root,
+        device,
+        inode,
+        approvedAt,
+        snapshotVersion,
+        // Written in the same shape a manifest declares it, so one
+        // normalizer reads both and a stored snapshot cannot drift into a
+        // form only the serializer produces. The canonical order is the
+        // normalizer's sorted one, and an object preserves it.
+        snapshot: {
+          adapter: snapshot.adapter,
+          method: snapshot.method,
+          url: snapshot.url,
+          auth: { type: snapshot.auth.type, secret: snapshot.auth.secret },
+          headers: Object.fromEntries(
+            snapshot.headers.map(({ name, value }) => [name, value]),
+          ),
+          requestBody: snapshot.requestBody,
+          output: snapshot.output,
+        },
       }),
     ),
   };
@@ -302,6 +426,7 @@ export function registerCheckout(options: {
     // Carried through unchanged: registering a checkout must never drop
     // records a project already holds.
     secrets: state.secrets,
+    profileApprovals: state.profileApprovals,
   };
 }
 
@@ -354,6 +479,78 @@ export function withoutSecret(
     ...state,
     secrets: state.secrets.filter(
       (secret) => secret.projectId !== projectId || secret.alias !== alias,
+    ),
+  };
+}
+
+// The approval for one profile in one binding. All four parts of the
+// identity are matched — project, root, device, inode — so an approval can
+// never be reached from another project, another checkout, or a directory
+// that replaced the one it was made in.
+function isApprovalFor(
+  approval: ProfileApprovalRecord,
+  checkout: CheckoutIdentity,
+  projectId: string,
+  profile: string,
+): boolean {
+  return (
+    approval.profile === profile &&
+    approval.projectId === projectId &&
+    approval.root === checkout.root &&
+    approval.device === checkout.device &&
+    approval.inode === checkout.inode
+  );
+}
+
+export function findProfileApproval(
+  state: VaultState,
+  checkout: CheckoutIdentity,
+  projectId: string,
+  profile: string,
+): ProfileApprovalRecord | undefined {
+  return state.profileApprovals.find((approval) =>
+    isApprovalFor(approval, checkout, projectId, profile),
+  );
+}
+
+// Replaces the approval for the same (binding, project, profile) or appends
+// it. Reapproving replaces the snapshot rather than adding a second one, so
+// a profile has at most one approval per binding.
+export function withProfileApproval(
+  state: VaultState,
+  record: ProfileApprovalRecord,
+): VaultState {
+  return {
+    ...state,
+    profileApprovals: [
+      ...state.profileApprovals.filter(
+        (approval) =>
+          !isApprovalFor(
+            approval,
+            {
+              root: record.root,
+              device: record.device,
+              inode: record.inode,
+            },
+            record.projectId,
+            record.profile,
+          ),
+      ),
+      record,
+    ],
+  };
+}
+
+export function withoutProfileApproval(
+  state: VaultState,
+  checkout: CheckoutIdentity,
+  projectId: string,
+  profile: string,
+): VaultState {
+  return {
+    ...state,
+    profileApprovals: state.profileApprovals.filter(
+      (approval) => !isApprovalFor(approval, checkout, projectId, profile),
     ),
   };
 }

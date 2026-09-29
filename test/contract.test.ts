@@ -2,11 +2,20 @@
 // bunfig.toml's preload alone would not cover a run from another cwd.
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
-import type { RegistrationApprover } from "../src/application/approvals.ts";
+import type {
+  ProfileApprover,
+  RegistrationApprover,
+} from "../src/application/approvals.ts";
 import type { PassphraseSource } from "../src/application/backup.ts";
 import { handlers } from "../src/application/commands.ts";
 import { instructionTopics } from "../src/application/instructions.ts";
@@ -53,6 +62,34 @@ const approver: RegistrationApprover = {
   ask: () => "approved",
 };
 
+// The same, for the HTTPS profile examples. The adapter that asks a real
+// terminal has its own tests.
+const profileApprover: ProfileApprover = {
+  available: () => true,
+  ask: () => "approved",
+};
+
+// The profile the profile and check examples name, written into the manifest
+// `ward init` created for them. The declaration and the examples move
+// together: an example naming a profile the fixture does not declare fails
+// as a not-found rather than passing quietly.
+const exampleProfileDeclaration = {
+  adapter: "http",
+  method: "GET",
+  url: "https://example.invalid/status",
+  auth: { type: "bearer", secret: "example-token" },
+  output: "status",
+};
+
+function declareExampleProfile(checkout: string): void {
+  const manifestPath = join(checkout, ".ward", "project.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    profiles?: Record<string, unknown>;
+  };
+  manifest.profiles = { "example-profile": exampleProfileDeclaration };
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 // Secret values without a terminal or a pipe: what a hidden read would have
 // returned, and consent to the replacement question. The adapter that reads
 // a real terminal has its own tests.
@@ -76,6 +113,7 @@ function options(): RunOptions {
     cwd: exampleCheckout,
     passphrases,
     approver,
+    profileApprover,
     secrets,
   };
 }
@@ -122,6 +160,29 @@ async function prepareExample(name: string): Promise<RunOptions> {
         )
       ).exitCode,
     ).toBe(exitCodes.success);
+  } else if (name === "profile" || name === "check") {
+    // A vault, a registered checkout and a manifest declaring the profile
+    // the examples name. `ward check` is expected to answer "not ready" —
+    // no credential is stored — which is why 6 is a declared exit code for
+    // it; the profile examples need an approval to exist, so the revoke
+    // example has one to revoke and the approve example is a reapproval.
+    expect((await runWard(["setup", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await runWard(["init", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    declareExampleProfile(exampleCheckout);
+    if (name === "profile") {
+      expect(
+        (
+          await runWard(
+            ["profile", "approve", "example-profile", "--json"],
+            prepared,
+          )
+        ).exitCode,
+      ).toBe(exitCodes.success);
+    }
   }
   return prepared;
 }
@@ -144,11 +205,11 @@ describe("manifest", () => {
   });
 
   test("lists exactly the commands that have handlers", () => {
-    // `setup`, `init`, `status`, `doctor`, `backup`, `restore` and `secret`
-    // are dispatched by the composition root in main.ts rather than by the
-    // synchronous handler table, because they need the injected store,
-    // provider, checkout, consent, terminal passphrase or secret value
-    // source.
+    // `setup`, `init`, `status`, `doctor`, `backup`, `restore`, `secret`,
+    // `profile` and `check` are dispatched by the composition root in main.ts
+    // rather than by the synchronous handler table, because they need the
+    // injected store, provider, checkout, consent, terminal passphrase,
+    // secret value source or profile approver.
     const compositionRoot = [
       "setup",
       "init",
@@ -157,6 +218,8 @@ describe("manifest", () => {
       "backup",
       "restore",
       "secret",
+      "profile",
+      "check",
     ];
     expect(commands.map((command) => command.name).sort()).toEqual(
       [...Object.keys(handlers), ...compositionRoot].sort(),

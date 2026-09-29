@@ -187,6 +187,13 @@ export async function runRestore(options: {
         // a backup; secret records are the projects' data and are. Clearing
         // the first must not drop the second.
         localBindings: [],
+        // A profile approval is authority for one binding, so it goes with
+        // the bindings rather than surviving without one. Clearing the
+        // binding alone would be enough to make an approval unreachable
+        // today, but re-registering this same directory would make the
+        // stored approval live again — and T21 requires a restored vault's
+        // approvals to be inactive until they are reviewed explicitly.
+        profileApprovals: [],
         secrets: backup.secrets,
       }),
     );

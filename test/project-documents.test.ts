@@ -5,6 +5,10 @@
 // checked here rather than trusted.
 import { describe, expect, test } from "bun:test";
 import {
+  profileLimits,
+  profileSnapshotVersion,
+} from "../src/domain/profile.ts";
+import {
   newProjectManifest,
   parseProjectManifest,
   serializeProjectManifest,
@@ -14,6 +18,7 @@ import {
   type CheckoutIdentity,
   emptyVaultState,
   findBinding,
+  type ProfileApprovalRecord,
   parseVaultState,
   registerCheckout,
   serializeVaultState,
@@ -37,6 +42,33 @@ const secretRecord = (overrides: Partial<SecretRecord> = {}): SecretRecord => ({
   createdAt: timestamp,
   updatedAt: timestamp,
   revision: 1,
+  ...overrides,
+});
+
+// A complete, valid stored approval; each malformed case below breaks
+// exactly one field of it. The URL is canonical and within the character set
+// the profile normalizer accepts, so the record survives re-normalization.
+const snapshot = {
+  adapter: "http",
+  method: "GET",
+  url: "https://api.example.invalid/a%20b?x=1&y=2",
+  auth: { type: "bearer", secret: "example.token" },
+  headers: [],
+  requestBody: "none",
+  output: "status",
+} as const;
+
+const approvalRecord = (
+  overrides: Partial<ProfileApprovalRecord> = {},
+): ProfileApprovalRecord => ({
+  profile: "example-profile",
+  projectId,
+  root: identity.root,
+  device: identity.device,
+  inode: identity.inode,
+  approvedAt: timestamp,
+  snapshotVersion: profileSnapshotVersion,
+  snapshot: { ...snapshot },
   ...overrides,
 });
 
@@ -64,6 +96,7 @@ describe("the vault's state document", () => {
       projects: [],
       localBindings: [],
       secrets: [],
+      profileApprovals: [],
     });
     expect(parseVaultState(serializeVaultState(emptyVaultState()))).toEqual(
       emptyVaultState(),
@@ -93,6 +126,7 @@ describe("the vault's state document", () => {
           },
         ],
         secrets: [],
+        profileApprovals: [],
       }),
     );
   });
@@ -110,6 +144,43 @@ describe("the vault's state document", () => {
       ],
     };
     expect(parseVaultState(serializeVaultState(state))).toEqual(state);
+  });
+
+  test("an approval record round-trips byte for byte, with its snapshot version", () => {
+    const state = {
+      ...emptyVaultState(),
+      profileApprovals: [
+        approvalRecord({
+          snapshot: {
+            ...snapshot,
+            url: "https://api.example.invalid/other?a=1&b=%20",
+          },
+        }),
+      ],
+    };
+    const bytes = serializeVaultState(state);
+    expect(parseVaultState(bytes)).toEqual(state);
+    const document = new TextDecoder().decode(bytes);
+    expect(document).toContain('"snapshotVersion":1');
+    expect(document).toContain('"snapshot":{"adapter":"http"');
+  });
+
+  test("a snapshot version this build does not implement is a document from another build", () => {
+    // The vault's formatVersion says which build wrote the document; this
+    // says which normalizer produced the snapshot inside it. Running this
+    // build's rules over a snapshot written under other ones is how an
+    // approval comes to mean something the developer never approved, so it
+    // is refused rather than re-read.
+    expect(
+      codeOf(() =>
+        parseVaultState(
+          stateBytes({
+            formatVersion: 1,
+            profileApprovals: [approvalRecord({ snapshotVersion: 2 })],
+          }),
+        ),
+      ),
+    ).toBe("vault_format_unsupported");
   });
 
   test("registering twice keeps one project record and two bindings", () => {
@@ -227,6 +298,33 @@ describe("the vault's state document", () => {
       { formatVersion: 1, unknownCollection: [], localBindings: [] },
     ],
     [
+      "an approval record with no snapshot version",
+      {
+        formatVersion: 1,
+        profileApprovals: [
+          (() => {
+            const { snapshotVersion: _omitted, ...rest } = approvalRecord();
+            return rest;
+          })(),
+        ],
+      },
+    ],
+    [
+      "an approval whose snapshot the normalizer would not produce",
+      {
+        formatVersion: 1,
+        profileApprovals: [
+          approvalRecord({
+            snapshot: {
+              ...snapshot,
+              headers: [],
+              followRedirects: true,
+            } as unknown as ProfileApprovalRecord["snapshot"],
+          }),
+        ],
+      },
+    ],
+    [
       "a secret value that is not canonical base64",
       { formatVersion: 1, secrets: [secretRecord({ value: "AAA" })] },
     ],
@@ -297,11 +395,52 @@ describe("the tracked project manifest", () => {
     expect(parseProjectManifest(text)).toEqual(manifest);
   });
 
+  test("a manifest carrying declarations writes them back unchanged", () => {
+    // Every caller today hands this function a fresh or restored manifest,
+    // whose profiles are empty, so a serializer that dropped them would look
+    // correct until the first rewrite of a manifest that had any.
+    const profiles = {
+      deploy: {
+        adapter: "http",
+        method: "GET",
+        url: "https://api.example.invalid/status",
+        auth: { type: "bearer", secret: "example.token" },
+      },
+    };
+    const manifest = { ...newProjectManifest(projectId), profiles };
+    const text = serializeProjectManifest(manifest);
+    expect(text).toContain('"deploy"');
+    expect(parseProjectManifest(text)).toEqual(manifest);
+  });
+
   test("a manifest with no profiles key is read as having none", () => {
     const manifest = parseProjectManifest(
       JSON.stringify({ schemaVersion: 1, projectId }),
     );
     expect(manifest.profiles).toEqual({});
+  });
+
+  // A declaration inside `profiles` is deliberately NOT in this list: it is
+  // carried as written and judged by the profile commands that use it, so one
+  // unreadable profile cannot refuse the manifest every other command reads
+  // (WCLI-9). These are the faults in the profiles object itself, which is
+  // structure rather than content.
+  test("a declared profile is carried as the manifest wrote it", () => {
+    const declaration = {
+      adapter: "http",
+      method: "GET",
+      url: "https://example.com/status",
+      auth: { type: "bearer", secret: "example.token" },
+      somethingNewerWardKnows: true,
+    };
+    const manifest = parseProjectManifest(
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId,
+        profiles: { deploy: declaration },
+      }),
+    );
+    expect(manifest.profiles).toEqual({ deploy: declaration });
   });
 
   const refused: [label: string, text: string, code: string][] = [
@@ -322,9 +461,33 @@ describe("the tracked project manifest", () => {
       "project_manifest_unsupported",
     ],
     [
-      "a profile this build does not implement",
-      JSON.stringify({ schemaVersion: 1, projectId, profiles: { deploy: {} } }),
-      "project_manifest_unsupported",
+      "a profiles value that is not an object",
+      JSON.stringify({ schemaVersion: 1, projectId, profiles: [] }),
+      "project_manifest_malformed",
+    ],
+    [
+      "a profiles value that is an array",
+      JSON.stringify({ schemaVersion: 1, projectId, profiles: ["deploy"] }),
+      "project_manifest_malformed",
+    ],
+    [
+      "a profile name that is empty",
+      JSON.stringify({ schemaVersion: 1, projectId, profiles: { "": {} } }),
+      "project_manifest_malformed",
+    ],
+    [
+      "more profiles than the bounded manifest reads",
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId,
+        profiles: Object.fromEntries(
+          Array.from(
+            { length: profileLimits.maxProfilesPerManifest + 1 },
+            (_, index) => [`profile-${index}`, {}],
+          ),
+        ),
+      }),
+      "project_manifest_malformed",
     ],
   ];
   for (const [label, text, code] of refused) {

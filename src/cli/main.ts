@@ -12,8 +12,14 @@ import { createProjectFiles } from "../adapters/project-files.ts";
 import { createTerminalSecretValues } from "../adapters/secret-value.ts";
 import { acquireSetupSession } from "../adapters/setup-session.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
-import { createTerminalConsent } from "../adapters/terminal-consent.ts";
-import type { RegistrationApprover } from "../application/approvals.ts";
+import {
+  createTerminalConsent,
+  createTerminalProfileApprover,
+} from "../adapters/terminal-consent.ts";
+import type {
+  ProfileApprover,
+  RegistrationApprover,
+} from "../application/approvals.ts";
 import {
   type PassphraseSource,
   runBackup,
@@ -27,6 +33,7 @@ import {
 } from "../application/commands.ts";
 import type { KeyProvider } from "../application/key-provider.ts";
 import { initProject } from "../application/project.ts";
+import { runCheck, runProfile } from "../application/profiles.ts";
 import {
   type ReportingOptions,
   runDoctor,
@@ -77,6 +84,9 @@ export interface RunOptions {
   // tests supply one so no real terminal is needed. There is no option,
   // argument or environment path to a value, here or anywhere.
   secrets?: SecretValueSource;
+  // Who answers Ward's approval question for an HTTPS profile. Defaults to
+  // the terminal prompt; tests supply an answer.
+  profileApprover?: ProfileApprover;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
 }
@@ -330,6 +340,61 @@ async function secretCommand(
   return { kind: result.kind, data: result.data, text: result.text };
 }
 
+// The composition root for `ward profile`. Approving and revoking are the
+// developer's acts, so the approver is the terminal adapter and the vault is
+// written only after an interactive answer.
+async function profileCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const action = input.positionals[0];
+  if (action === undefined) throw new WardError("missing_argument");
+  const result = await runProfile(
+    { action, profile: input.positionals[1] },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+      approver: options.profileApprover ?? createTerminalProfileApprover(),
+      now: options.now ?? (() => new Date()),
+    },
+  );
+  return { kind: result.kind, data: result.data, text: result.text };
+}
+
+// The composition root for `ward check`. It builds the same read-only ports
+// every project command builds and has no transport port at all: the network
+// client `ward run` needs does not exist in this build (WCLI-10 adds one).
+async function checkCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const result = await runCheck(
+    { profile: input.positionals[0] },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+    },
+  );
+  return {
+    kind: result.kind,
+    data: result.data,
+    text: result.text,
+    ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+  };
+}
+
 async function dispatch(
   argv: readonly string[],
   options: RunOptions,
@@ -375,6 +440,10 @@ async function dispatch(
     exitExplicitly = run.exitExplicitly;
   } else if (command.name === "secret") {
     output = await secretCommand(parsed, options);
+  } else if (command.name === "profile") {
+    output = await profileCommand(parsed, options);
+  } else if (command.name === "check") {
+    output = await checkCommand(parsed, options);
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);
