@@ -1,12 +1,15 @@
 schema_version = 1
 name = "implementation"
-description = "Grounds a Ward implementation change in the vault format v1 and key-custody contract, the approval-authority rules, the committed platform target, and the P0 limits the change must not exceed."
+description = "Grounds a Ward implementation change in the vault format v1 and key-custody contract, the accepted ADRs the change implements, and the P0 limits it must not exceed."
 kind = "specialist"
-max_tokens = 12000
+max_tokens = 17000
 pinned = ["adr/0001-vault-storage-and-key-custody"]
 sources = [
   "adr/0003-profile-approval-authority",
   "adr/0004-committed-platform-target",
   "adr/0002-p0-threat-model-and-non-guarantees",
   "index",
+  "adr/0005-project-binding-identity",
+  "adr/0006-backup-container-and-restore-authority",
+  "adr/0007-status-and-doctor-reporting",
 ]
