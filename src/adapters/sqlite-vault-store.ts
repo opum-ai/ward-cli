@@ -351,7 +351,11 @@ function readHeader(db: Database): VaultHeader {
     vaultId: row.vault_id,
     revision: row.revision,
   });
-  return { vaultId: header.vaultId, revision: header.revision };
+  return {
+    vaultId: header.vaultId,
+    revision: header.revision,
+    formatVersion: header.formatVersion,
+  };
 }
 
 // Lengths are read before the blobs, so an oversized value in a hostile file
@@ -470,7 +474,11 @@ export function createSqliteVaultStore(options: {
             db.query(
               "INSERT INTO vault (slot, format_version, vault_id, revision, nonce, ciphertext, tag) VALUES (1, ?, ?, ?, ?, ?, ?)",
             ).run(...sealedValues(sealed));
-            return { vaultId: sealed.vaultId, revision: sealed.revision };
+            return {
+              vaultId: sealed.vaultId,
+              revision: sealed.revision,
+              formatVersion: sealed.formatVersion,
+            };
           })
           .immediate();
       });
@@ -489,6 +497,7 @@ export function createSqliteVaultStore(options: {
       return {
         vaultId: record.vaultId,
         revision: record.revision,
+        formatVersion: record.formatVersion,
         plaintext,
       } satisfies VaultSnapshot;
     },
@@ -528,7 +537,11 @@ export function createSqliteVaultStore(options: {
               )
               .run(...sealedValues(sealed), current.revision);
             if (result.changes !== 1) throw new WardError("vault_store_failed");
-            return { vaultId: sealed.vaultId, revision: sealed.revision };
+            return {
+              vaultId: sealed.vaultId,
+              revision: sealed.revision,
+              formatVersion: sealed.formatVersion,
+            };
           })
           .immediate();
       });

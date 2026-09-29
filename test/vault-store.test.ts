@@ -148,11 +148,16 @@ describe("create, header and read", () => {
     expect(store.create(VAULT_ID, key, bytes(SENTINEL))).toEqual({
       vaultId: VAULT_ID,
       revision: 1,
+      formatVersion: 1,
     });
     expect(mode(directory)).toBe(0o700);
     expect(mode(file)).toBe(0o600);
     expect(readdirSync(directory)).toEqual([vaultFileName]);
-    expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 1 });
+    expect(store.header()).toEqual({
+      vaultId: VAULT_ID,
+      revision: 1,
+      formatVersion: 1,
+    });
     const snapshot = store.read(key);
     expect(snapshot.revision).toBe(1);
     expect(snapshot.vaultId).toBe(VAULT_ID);
@@ -167,7 +172,11 @@ describe("create, header and read", () => {
     expect(
       codeOf(() => store.create(otherId, generateVaultKey(), bytes("second"))),
     ).toBe("vault_exists");
-    expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 1 });
+    expect(store.header()).toEqual({
+      vaultId: VAULT_ID,
+      revision: 1,
+      formatVersion: 1,
+    });
     expect(text(store.read(key).plaintext) === "first").toBe(true);
   });
 
@@ -221,12 +230,17 @@ describe("mutate", () => {
     expect(store.mutate(key, (p) => Buffer.concat([p, bytes("b")]))).toEqual({
       vaultId: VAULT_ID,
       revision: 2,
+      formatVersion: 1,
     });
     store.mutate(key, (p) => Buffer.concat([p, bytes("c")]));
     const snapshot = store.read(key);
     expect(snapshot.revision).toBe(3);
     expect(text(snapshot.plaintext) === "abc").toBe(true);
-    expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 3 });
+    expect(store.header()).toEqual({
+      vaultId: VAULT_ID,
+      revision: 3,
+      formatVersion: 1,
+    });
   });
 
   test("an error thrown by the change is rethrown as-is and rolls back", () => {
@@ -432,7 +446,11 @@ describe("T06: transactions", () => {
         }),
       );
       expect([...outcomes].sort()).toEqual(["created", "vault_exists"]);
-      expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 1 });
+      expect(store.header()).toEqual({
+        vaultId: VAULT_ID,
+        revision: 1,
+        formatVersion: 1,
+      });
       expect(text(store.read(key).plaintext) === "seed").toBe(true);
       // The contract pinned here is the outcome pair, not the lock timing:
       // whether the loser meets the winner's lock or an already committed
@@ -501,7 +519,11 @@ describe("T06: transactions", () => {
     const worker = spawnWorker(key, ["hold", directory]);
     await untilReady(worker);
     await killed(worker);
-    expect(store.header()).toEqual({ vaultId: VAULT_ID, revision: 1 });
+    expect(store.header()).toEqual({
+      vaultId: VAULT_ID,
+      revision: 1,
+      formatVersion: 1,
+    });
     expect(text(store.read(key).plaintext) === SENTINEL).toBe(true);
     expect(store.mutate(key, (p) => p).revision).toBe(2);
     expect(filesContaining(directory, SENTINEL)).toEqual([]);

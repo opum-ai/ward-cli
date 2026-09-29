@@ -173,6 +173,47 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "status",
+    summary:
+      "Report this checkout's project, binding, vault and key-provider state, for the current project only, without changing anything.",
+    args: [],
+    flags: [jsonFlag],
+    kind: "status.report",
+    mutates: false,
+    // Reads the vault header, the vault key and the decrypted state; writes
+    // nothing.
+    unlocksVault: true,
+    admin: false,
+    outputSensitivity: "status",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+    ],
+    examples: ["ward status", "ward status --json"],
+  },
+  {
+    name: "doctor",
+    summary:
+      "Run read-only health checks over the vault location, the key provider, document versions, this checkout's binding and the agent instruction blocks; exit 6 when a check fails.",
+    args: [],
+    flags: [jsonFlag],
+    kind: "doctor.report",
+    mutates: false,
+    unlocksVault: true,
+    admin: false,
+    outputSensitivity: "status",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.validation,
+    ],
+    examples: ["ward doctor", "ward doctor --json"],
+  },
+  {
     name: "backup",
     summary:
       "Create one passphrase-encrypted backup of the vault, in a trusted terminal. The backup opens without this machine's OS credential store item, and Ward neither keeps nor prints the passphrase.",
