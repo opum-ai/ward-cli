@@ -149,6 +149,14 @@ export interface NormalizedProfile {
 // which is a worse description of a correctly-refused record. The first bump
 // belongs to the first release, which is when snapshots begin outliving the
 // rules that wrote them (WCLI-10 review, F7).
+//
+// The operator decided that shape on 2026-09-29 (DEC-50, ADR 0018): the
+// constant stays 1 while Ward is unreleased, and the commit that cuts the
+// first release bumps it and updates this comment, so the released build
+// refuses every dev-era snapshot - it does not migrate one. This comment is
+// no longer the only place the obligation lives: it is a step in
+// docs/runbooks/cutting-a-ward-release.md and on WCLI-15's record, so the
+// person cutting the release meets it without reading this file.
 export const profileSnapshotVersion = 1;
 
 export const profileSnapshotFields = [
