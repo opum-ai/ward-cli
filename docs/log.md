@@ -25,6 +25,7 @@
 - 2026-09-29T11:59:04-05:00 351ff7e05c6d90a36ab92bef0a5779ee9d07d80f feat(WCLI-46): reclaim stale test roots with an explicit clean:temp (DEC-49) (#127)
 - 2026-09-29T12:13:18-05:00 8b2a588098c85b75b69b74c0d861a4ac143040d7 feat(WCLI-14): skill-file drift and the init multiselect, with DEC-46..52 recorded (#128)
 - 2026-09-29T12:18:06-05:00 55fa91fe57c77eaf7e0757a7b86a46957e35d21e docs(WCLI-38): bump profileSnapshotVersion at the first release (DEC-50) (#129)
+- 2026-09-29T12:23:49-05:00 e7bec34e97d663a4f94538d3e475e78e20721314 docs(WCLI-30): point the bundle at the spec of record (DEC-51) (#130)
 
 ## docs/adr
 
