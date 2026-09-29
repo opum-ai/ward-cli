@@ -623,6 +623,9 @@ describe("T06: transactions", () => {
         ),
       ).toBe("vault_busy");
       expect(called).toBe(false);
+      // Measured for WCLI-53: 67-76 ms against the 50 ms busy timeout, idle
+      // and under 2x-overcommitted CPU load, so this 2 s ceiling is more than
+      // 26x the cost it bounds and contention cannot reach it.
       expect(performance.now() - started).toBeLessThan(2_000);
     } finally {
       holder.exec("ROLLBACK");

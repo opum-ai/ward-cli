@@ -724,6 +724,10 @@ describe("the backup file adapter", () => {
     const files = createBackupFiles();
     const started = Date.now();
     expect(codeOf(() => files.read(fifo, 64))).toBe("backup_file_unreadable");
+    // Measured for WCLI-53: 0-1 ms idle and under 2x-overcommitted CPU load,
+    // so this ceiling is three orders of magnitude above the cost it bounds
+    // and contention cannot reach it. What a blocking open does instead is
+    // never return, and the harness timeout is what ends that case.
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 

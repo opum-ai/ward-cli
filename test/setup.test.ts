@@ -34,6 +34,7 @@ import { initialVaultSnapshot } from "../src/application/setup.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import { FileKeychain } from "./support/file-keychain.ts";
+import { createImmediateTimers } from "./support/immediate-timers.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
 const TEST_SERVICE = "opum.ward.test";
@@ -192,20 +193,30 @@ describe("T02: an existing vault fails closed", () => {
     expect(keychain.writeAttempts).toBe(writesBefore);
   });
 
-  test("an unresponsive store fails within the bound and demands an explicit exit", async () => {
+  test("an unresponsive store fails at the bound and demands an explicit exit", async () => {
     const { keychain, options, before, directory } = await setUp();
     keychain.mode = "hang";
     const writesBefore = keychain.writeAttempts;
-    const started = performance.now();
-    const result = await setupViaRunWard(options());
-    expect(performance.now() - started).toBeLessThan(5_000);
-    expect(result.exitCode).toBe(exitCodes.indeterminate);
-    expect(json(result.stderr).code).toBe("vault_key_unavailable");
-    expect(result.exitExplicitly).toBe(true);
-    expect(readFileSync(join(directory, vaultFileName)).equals(before)).toBe(
-      true,
-    );
-    expect(keychain.writeAttempts).toBe(writesBefore);
+    // The bound is asserted, not waited out (WCLI-53). This used to measure
+    // the 2 s provider bound against a 5 s ceiling, which is also Bun's
+    // default test timeout: the assertion raced the harness rather than
+    // reporting the property, and contention stretched the 2 s it was
+    // measuring. Firing the timer at once and asserting the delay it was
+    // given tests the same bound deterministically.
+    const timers = createImmediateTimers();
+    try {
+      const result = await setupViaRunWard(options());
+      expect(timers.delays).toEqual([2_000]);
+      expect(result.exitCode).toBe(exitCodes.indeterminate);
+      expect(json(result.stderr).code).toBe("vault_key_unavailable");
+      expect(result.exitExplicitly).toBe(true);
+      expect(readFileSync(join(directory, vaultFileName)).equals(before)).toBe(
+        true,
+      );
+      expect(keychain.writeAttempts).toBe(writesBefore);
+    } finally {
+      timers.restore();
+    }
   });
 });
 

@@ -21,6 +21,7 @@ import {
 import type { ErrorCode } from "../src/contract/errors.ts";
 import { WardError } from "../src/contract/errors.ts";
 import { generateVaultKey } from "../src/domain/envelope.ts";
+import { createImmediateTimers } from "./support/immediate-timers.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 import { realKeychainRefusal } from "./support/no-real-keychain.ts";
 
@@ -282,15 +283,27 @@ describe("every store call settles within its bound", () => {
     test(`${operation} gives up at the bound`, async () => {
       const { store, provider } = setup(150);
       store.mode = "hang";
-      const started = performance.now();
-      await rejectsWith("vault_key_unavailable", () =>
-        operation === "load"
-          ? provider.load(VAULT_ID)
-          : provider.create(VAULT_ID, generateVaultKey()),
-      );
-      const elapsed = performance.now() - started;
-      expect(elapsed).toBeGreaterThanOrEqual(140);
-      expect(elapsed).toBeLessThan(400);
+      // The bound is asserted, not waited out (WCLI-53). This test used to
+      // measure 150 ms on the wall clock and require it under 400 ms, which
+      // runner contention alone can break — run 36565512667 read 474 ms on
+      // bytes nobody had changed. Firing the timer at once and asserting the
+      // delay it was given tests the same property, that the configured
+      // bound is what ends the call, with the scheduler out of the middle.
+      const timers = createImmediateTimers();
+      try {
+        await rejectsWith("vault_key_unavailable", () =>
+          operation === "load"
+            ? provider.load(VAULT_ID)
+            : provider.create(VAULT_ID, generateVaultKey()),
+        );
+        expect(timers.delays).toEqual([150]);
+        // The call really was made and nothing else could have ended it:
+        // the store never settles, and no write was reached.
+        expect(store.readAttempts).toBe(1);
+        expect(store.writeAttempts).toBe(0);
+      } finally {
+        timers.restore();
+      }
     });
 
   test("the default bound is 10 s and is the one applied", async () => {
