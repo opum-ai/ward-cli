@@ -114,9 +114,13 @@ function parseStatus(head: Uint8Array): number | undefined {
 }
 
 // The request, as bytes (RFC 9112 §3). Assembled into one buffer rather than
-// written in pieces so there is no interleaving to reason about, and so the
-// credential's bytes are copied exactly once into a buffer the caller zeroes
-// once it has been written.
+// written in pieces so there is no interleaving to reason about, and so there
+// is one buffer holding the credential that the caller has to zero. That
+// buffer is the concatenation — the credential is also copied into the line
+// list on the way, and that intermediate copy is not zeroed. It is inside the
+// non-guarantee ADR 0002 already states (no reliable wiping of
+// garbage-collected memory) and is recorded here rather than left for a
+// reader to notice.
 function requestBytes(request: TransportRequest): Buffer | undefined {
   let url: URL;
   try {
@@ -129,22 +133,30 @@ function requestBytes(request: TransportRequest): Buffer | undefined {
   // fragment is never sent on the wire.
   const target = `${url.pathname === "" ? "/" : url.pathname}${url.search}`;
   const lines: Buffer[] = [];
-  const push = (text: string): void =>
-    void lines.push(Buffer.from(`${text}\r\n`, "latin1"));
+  // Encode once, check that encoding, then append the very buffer that was
+  // checked. The bytes validated are therefore the bytes written, which is
+  // the property this function depends on: validating an encoding the socket
+  // never sees is how a value that reads as one line here is two requests by
+  // the time a server has parsed it (WCLI-10 review, F1).
+  const push = (text: string): boolean => {
+    const line = Buffer.from(`${text}\r\n`, "latin1");
+    if (!isFieldValue(line.subarray(0, line.length - 2))) return false;
+    lines.push(line);
+    return true;
+  };
 
-  push(`${request.method} ${target} HTTP/1.1`);
+  if (!push(`${request.method} ${target} HTTP/1.1`)) return undefined;
   // `URL.host` is the authority as written: the name or bracketed literal,
   // with the port present only when it is not the scheme's default. It is
   // also what the request is *for*, which is not necessarily the address
   // being dialled — a distinction this header exists to preserve.
-  push(`Host: ${url.host}`);
+  if (!push(`Host: ${url.host}`)) return undefined;
   for (const header of request.headers) {
     // The snapshot this came from was re-normalized on read, so these are
     // already known to be one line of text. Asserted anyway: this is the
     // function that writes them to a socket, and a header value that could
     // end its own line is a request split in two.
-    if (!isFieldValue(Buffer.from(header.value, "utf8"))) return undefined;
-    push(`${header.name}: ${header.value}`);
+    if (!push(`${header.name}: ${header.value}`)) return undefined;
   }
   if (!isFieldValue(request.authorization.value)) return undefined;
   lines.push(
@@ -152,13 +164,16 @@ function requestBytes(request: TransportRequest): Buffer | undefined {
     Buffer.from(request.authorization.value),
     Buffer.from("\r\n", "latin1"),
   );
-  if (request.body !== undefined)
-    push(`Content-Length: ${request.body.length}`);
+  if (request.body !== undefined) {
+    if (!push(`Content-Length: ${request.body.length}`)) return undefined;
+  }
   // Ward reads one status line and closes. Saying so lets a server close
   // rather than wait, and leaves no pooled connection that could carry a
   // second request.
-  push("Connection: close");
-  push("");
+  if (!push("Connection: close")) return undefined;
+  // The blank line that ends the header block. Written directly rather than
+  // through `push`, which refuses an empty field and is right to.
+  lines.push(Buffer.from("\r\n", "latin1"));
   if (request.body !== undefined) lines.push(Buffer.from(request.body));
   return Buffer.concat(lines);
 }
@@ -289,6 +304,13 @@ function attempt(
       // rather than the mechanism itself — it is here because "the option was
       // passed" and "the connection was verified" are different claims, and
       // only the second one is what Ward is relying on.
+      //
+      // Measured, so it is not mistaken for the enforcement: no test reaches
+      // this branch, and none can while `rejectUnauthorized` holds — the
+      // wrong-name case above fails in the handshake and is reported as
+      // `connection-failed`. The enforcement is the option plus the SNI name;
+      // this is a second line that would hold if the option's behaviour
+      // changed underneath it (WCLI-10 review, F4).
       if (connected.authorized !== true) {
         finish({ kind: "next-address", reason: "tls-failed" });
         return;

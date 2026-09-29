@@ -167,10 +167,17 @@ function approvedSnapshot(options: {
 // Writes one audit event, re-reading the state inside the transaction. What
 // is re-checked there is re-checked because it is the authority this run is
 // about to act on and another Ward process may have changed it since the
-// read above: the binding still names this project, and the profile is still
-// approved for this binding. Spec §9.4's "pre-delivery audit failure blocks
-// execution" is this call throwing — admission has not delivered anything
-// yet, so blocking is still possible there, and is not afterwards.
+// read above: the binding still names this project, the profile is still
+// approved for this binding, and — at admission — that approval still *is*
+// the snapshot about to be executed. The last of those is passed in rather
+// than re-read, because the snapshot and the credential were both read before
+// this transaction opened: without the comparison, a re-approval landing in
+// that window would send the superseded operation while the vault's
+// authoritative record described a different one, and both audit records
+// would describe the newer state (WCLI-10 review, F2). Spec §9.4's
+// "pre-delivery audit failure blocks execution" is this call throwing —
+// admission has not delivered anything yet, so blocking is still possible
+// there, and is not afterwards.
 function writeAudit(options: {
   store: VaultStore;
   key: Uint8Array;
@@ -183,6 +190,8 @@ function writeAudit(options: {
   runId: string;
   at: string;
   newId: () => string;
+  // Present at admission only: the snapshot this run is about to execute.
+  executing?: NormalizedProfile;
 }): void {
   options.store.mutate(options.key, (plaintext) => {
     const state = parseVaultState(plaintext);
@@ -192,15 +201,18 @@ function writeAudit(options: {
       throw new WardError("binding_conflict");
     // The approval must still be there, and must still be this declaration's,
     // at the moment the run is admitted.
+    const approval = findProfileApproval(
+      state,
+      options.identity,
+      options.projectId,
+      options.profile,
+    );
+    if (approval === undefined) throw new WardError("profile_not_approved");
     if (
-      findProfileApproval(
-        state,
-        options.identity,
-        options.projectId,
-        options.profile,
-      ) === undefined
+      options.executing !== undefined &&
+      !profilesMatch(options.executing, approval.snapshot)
     )
-      throw new WardError("profile_not_approved");
+      throw new WardError("profile_approval_stale");
     const secret = findSecret(state, options.projectId, options.alias);
     if (secret === undefined) throw new WardError("secret_not_found");
     const record: AuditRecord = {
@@ -318,6 +330,7 @@ export async function runOperation(
           runId,
           at: options.now().toISOString(),
           newId: options.newId,
+          executing: snapshot,
         });
 
         const sent = await options.transport.send(request);

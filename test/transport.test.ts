@@ -292,6 +292,32 @@ describe("the connection is bound to the validated address, and TLS still names 
     expect(harness.sni.at(-1)).toBe(APPROVED);
   });
 
+  test("the name is resolved once, on a path that reaches a server", async () => {
+    // The rebinding case, counted where the count means something. A resolver
+    // that would answer differently if asked twice is only dangerous if it is
+    // asked twice, so the assertion is one resolution *and* a completed
+    // exchange: were the dial made by re-resolving the name, this count would
+    // be two. Counted on a refusal the same number would prove nothing — the
+    // resolution the case is about is the one the dial uses, and a refusal
+    // never dials (WCLI-10 review, F3).
+    let resolutions = 0;
+    const transport = createHttpsTransport({
+      resolve: async () => {
+        resolutions++;
+        return [{ address: "127.0.0.1", family: 4 }];
+      },
+      harness: { ca: certificate("ca"), addressPolicy: () => true },
+    });
+    const outcome = await send(
+      transport,
+      `https://${APPROVED}:${harness.port}/rate_limit`,
+    );
+    expect({ outcome, resolutions }).toEqual({
+      outcome: { kind: "response", httpStatus: 204 },
+      resolutions: 1,
+    });
+  });
+
   test("a certificate for a different name is refused, and no request is sent", async () => {
     const wrong = await tlsHarness(OTHER);
     const transport = transportTo([{ address: "127.0.0.1", family: 4 }], {
@@ -426,5 +452,42 @@ describe("an ambient proxy does not move the dial", () => {
       outcome: { kind: "response", httpStatus: 204 },
     });
     await proxy.close();
+  });
+});
+
+describe("what is written to the socket is what was checked", () => {
+  test("a header value that would truncate to a line break is refused, and nothing is sent", async () => {
+    // The transport's half of the same defect the profile table records by
+    // truncation (WCLI-10 review, F1). The value below holds no control byte
+    // and no control code point: U+010A is an ordinary letter until the line
+    // is encoded, and latin1 encodes it as 0x0A. The case exists because the
+    // check and the write have to agree about the *encoding*, not only about
+    // the value — the earlier version validated this string's UTF-8 bytes and
+    // wrote its latin1 ones, so this request would have left as two, the
+    // second carrying the credential to a path nobody approved.
+    const harness = await tlsHarness(APPROVED);
+    const transport = transportTo([{ address: "127.0.0.1", family: 4 }], {
+      harness: { addressPolicy: () => true },
+    });
+    const outcome = await transport.send({
+      url: `https://${APPROVED}:${harness.port}/rate_limit`,
+      method: "GET",
+      headers: [
+        {
+          name: "X-Trace",
+          value: "včĊčĊGET /admin/delete-everything HTTP/1.1",
+        },
+      ],
+      authorization: {
+        name: "Authorization",
+        value: encoder.encode(`Bearer ${SYNTHETIC}`),
+      },
+      body: undefined,
+    });
+    expect({ outcome, requests: harness.connections }).toEqual({
+      outcome: { kind: "not-sent", reason: "request-invalid" },
+      requests: [],
+    });
+    await harness.close();
   });
 });

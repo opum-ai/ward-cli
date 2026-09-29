@@ -175,10 +175,26 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // is a credential.
 const reservedHeaderNames = new Set(["authorization", "proxy-authorization"]);
 
-function hasControlBytes(value: string): boolean {
+// Whether a declared header value cannot be written as the single line of
+// text it was approved as.
+//
+// Two things can go wrong, and they are the same thing seen from the two ends
+// of the wire. A code point below 0x20, or DEL, ends the line: CR and LF
+// terminate the header, and whatever follows is read as further headers or as
+// a second request carrying this operation's credential (spec §9.2). A code
+// point above 0xff has no byte to be written as — the transport encodes each
+// line as latin1, which maps every code point from 0x100 upward to its low
+// byte, so U+010A reaches the socket as a bare LF while a scan of the string's
+// code points sees only a letter (WCLI-10 review, F1). Refusing both is what
+// makes the bytes approved the bytes sent: inside this range that encoding is
+// lossless, so nothing is rewritten between the approval prompt and the
+// socket. A value that mangles rather than injects — U+0141, written as `A` —
+// is refused for the same reason, which is that the developer approved
+// something else.
+function hasUnwritableHeaderByte(value: string): boolean {
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) return true;
+    if (code < 0x20 || code === 0x7f || code > 0xff) return true;
   }
   return false;
 }
@@ -319,8 +335,10 @@ function normalizedHeaders(value: unknown): readonly ProfileHeader[] {
     if (typeof headerValue !== "string") invalid();
     if (headerValue.length > profileLimits.maxHeaderValueChars) invalid();
     // CR, LF, NUL and every other control byte: a header value is a single
-    // line of text, and Ward refuses anything that could terminate it.
-    if (hasControlBytes(headerValue)) invalid();
+    // line of text, and Ward refuses anything that could terminate it. Also
+    // refused: a code point the wire encoding cannot carry, which is the same
+    // defect arriving by truncation rather than by spelling.
+    if (hasUnwritableHeaderByte(headerValue)) invalid();
     headers.push({ name, value: headerValue });
   }
   return headers.sort((left, right) =>
