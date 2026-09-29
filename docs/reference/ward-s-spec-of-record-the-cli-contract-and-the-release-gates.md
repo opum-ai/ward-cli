@@ -43,6 +43,6 @@ review and the WCLI-9 independent review each reported that their context pack
 could not cite the spec, so each grounded its spec claims on the dispatcher's
 brief - text no later reader can check against a source. WCLI-8's review named
 the sections it read directly (6.2, 7.1, 8); WCLI-30's record also names 14.
-This concept names the two the packet proposed and the operator approved; the
-question of widening it to a third section is recorded in ADR 0019 and was put
-back to the orchestrator rather than decided here.
+This concept names the two the packet proposed and the operator approved. The
+question of widening it to a third section was asked and answered on
+2026-09-29 (DEC-56, recorded in ADR 0019): it stays two.

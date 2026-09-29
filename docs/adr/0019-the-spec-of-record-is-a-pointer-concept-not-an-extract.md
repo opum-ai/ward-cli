@@ -29,6 +29,16 @@ the file as the source of record, names the two sections specialists actually
 cite (the gate table and the CLI contract), copies none of their text, and is
 declared in the review and verification profiles."
 
+One follow-up question - whether the concept should also name a third section
+- was answered the same day as **DEC-56** (relayed by opum-agent,
+ODOC-OP-2026-09-29-21, 18:00:08Z), again as the recommended option, in the
+operator's own selection label:
+
+> Keep the two (Recommended)
+
+Sections 8 and 14 only, exactly as DEC-51 approved; the concept is unchanged,
+and decision 5 below records the answer.
+
 ## Context
 
 `WARD_MVP_AGENT_SPEC.md` is the v0.1 implementation brief and the source of
@@ -78,13 +88,16 @@ Measured before this change, re-read rather than remembered:
    change, the only budget that needed it), and
    `scripts/check-lore-agent-sources.mjs` exits 0 with 22 concepts, none
    uncovered and no pack truncated.
-5. **One question is recorded open, not decided here.** The packet named two
-   sections; the repository's own measurements show a third being read
-   directly (§6.2 in both WCLI-8's record and WCLI-30's, §7.1 in WCLI-8's).
-   Per the orchestrator's instruction, the concept was not widened on this
-   session's own judgement; whether it should name a third section was sent
-   back to the orchestrator as an A/B on 2026-09-29 and is unanswered as this
-   is written.
+5. **The question of a third section was asked and answered: the pointer
+   keeps the two.** The packet named two sections, and the repository's own
+   measurements show a third being read directly (§6.2 in both WCLI-8's
+   record and WCLI-30's, §7.1 in WCLI-8's), so widening the concept was put
+   to the operator rather than decided here. The answer, first-party as
+   **DEC-56**, was the recommended option in the operator's own label:
+   "Keep the two (Recommended)". The concept names sections 8 and 14 only,
+   exactly as DEC-51 approved. A specialist grounding a section 6.2 or 7.1
+   claim still cites this concept, because it names the whole file as the
+   source of record and tells the reader to cite the section they read.
 
 ## Consequences
 
@@ -95,5 +108,6 @@ Measured before this change, re-read rather than remembered:
 - **The pointer can go stale in one way - numbering** - and the concept says
   what to trust when it does (the headings in the file itself). It carries no
   text that can drift, because it carries none at all.
-- **If the third section is later approved, that is an edit to this concept
-  and this record's decision 5**, not a re-litigation of the shape.
+- **The third-section question is closed (DEC-56).** Reopening it is a new
+  decision rather than a re-litigation of this record; the concept, the two
+  profiles and their packs stay as they are.
