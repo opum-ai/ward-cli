@@ -137,7 +137,7 @@ export const errorCatalog = {
   setup_in_progress: {
     type: "conflict",
     message:
-      "Another Ward setup appears to be running on this machine. Nothing was changed.",
+      "Another Ward setup appears to be running on this machine. Ward did not create a key or a vault.",
     hint: "Wait for that setup to finish, or stop the process holding it, then run `ward setup` again. If the lock file was left behind by a crash and Ward still refuses, remove the setup lock file and retry.",
   },
   setup_state_invalid: {

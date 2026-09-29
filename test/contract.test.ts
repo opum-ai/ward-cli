@@ -23,6 +23,7 @@ import type { SecretValueSource } from "../src/application/secrets.ts";
 import type { Transport } from "../src/application/transport.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
+import { errorCatalog } from "../src/contract/errors.ts";
 import { commands } from "../src/contract/manifest.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
@@ -419,5 +420,23 @@ describe("errors", () => {
       expect(envelope.error_type).toBe("usage");
       expect(envelope).not.toHaveProperty("input");
     }
+  });
+
+  // WCLI-31 (DEC-13, option A). `setup_in_progress` is raised on paths that
+  // can follow a real change — prepareVaultDirectory runs before the lock,
+  // and the off-macOS fallback's clearStaleLock removes a stale lock before
+  // the second-attempt raise — so the old sentence's "Nothing was changed"
+  // was not true everywhere it could be reported. The decided wording claims
+  // only what holds on every raise path: the key and the vault. The string
+  // is the deliverable, so the test pins it exactly; the restructure that
+  // would make a stronger claim true (creating the vault directory only
+  // after the lock is held) is out of scope by the same decision.
+  test("setup_in_progress claims only what holds on every raise path", () => {
+    expect(errorCatalog.setup_in_progress.message).toBe(
+      "Another Ward setup appears to be running on this machine. Ward did not create a key or a vault.",
+    );
+    expect(errorCatalog.setup_in_progress.message).not.toContain(
+      "Nothing was changed",
+    );
   });
 });
