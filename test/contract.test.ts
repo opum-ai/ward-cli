@@ -161,6 +161,16 @@ async function prepareExample(name: string): Promise<RunOptions> {
         )
       ).exitCode,
     ).toBe(exitCodes.success);
+  } else if (name === "audit") {
+    // A vault and a registered checkout: `ward audit` reads this project's
+    // events through the binding, so the binding has to exist. An empty
+    // history is a reportable answer, so no events are prepared.
+    expect((await runWard(["setup", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await runWard(["init", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
   } else if (name === "profile" || name === "check" || name === "run") {
     // A vault, a registered checkout and a manifest declaring the profile
     // the examples name. `ward check` is expected to answer "not ready" —
@@ -240,6 +250,7 @@ describe("manifest", () => {
       "init",
       "status",
       "doctor",
+      "audit",
       "backup",
       "restore",
       "secret",
@@ -252,7 +263,7 @@ describe("manifest", () => {
     );
   });
 
-  test("status and doctor are registered as read-only reporting commands", async () => {
+  test("status, doctor and audit are registered as read-only reporting commands", async () => {
     const data = json((await runWard(["manifest", "--json"])).stdout).data as {
       commands: {
         name: string;
@@ -264,11 +275,12 @@ describe("manifest", () => {
     for (const [name, kind] of [
       ["status", "status.report"],
       ["doctor", "doctor.report"],
+      ["audit", "audit.report"],
     ] as const) {
       const command = data.commands.find((entry) => entry.name === name);
       expect(command?.kind).toBe(kind);
-      // Both report on the vault, so both declare the unlock; neither
-      // mutates anything.
+      // All three report on the vault, so all three declare the unlock;
+      // none mutates anything.
       expect(command?.mutates).toBe(false);
       expect(command?.unlocksVault).toBe(true);
     }

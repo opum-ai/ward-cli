@@ -21,6 +21,7 @@ import type {
   ProfileApprover,
   RegistrationApprover,
 } from "../application/approvals.ts";
+import { runAudit } from "../application/audit.ts";
 import {
   type PassphraseSource,
   runBackup,
@@ -264,9 +265,9 @@ async function restoreCommand(
   };
 }
 
-// The composition roots for `ward status` and `ward doctor`. Both resolve
-// the checkout the way every project command does and build the same
-// read-only ports; neither touches the store or the provider until the
+// The composition roots for `ward status`, `ward doctor` and `ward audit`.
+// All three resolve the checkout the way every project command does and build
+// the same read-only ports; none touches the store or the provider until the
 // application layer reads through them.
 function reporting(options: RunOptions): {
   options: ReportingOptions;
@@ -314,6 +315,21 @@ async function doctorCommand(
       data: result.data,
       text: result.text,
       exitCode: result.exitCode,
+    },
+    exitExplicitly: prepared.keyProvider.abandonedCall?.() ?? false,
+  };
+}
+
+async function auditCommand(
+  options: RunOptions,
+): Promise<{ output: CommandOutput; exitExplicitly: boolean }> {
+  const prepared = reporting(options);
+  const result = await runAudit(prepared.options);
+  return {
+    output: {
+      kind: "audit.report" as const,
+      data: result.data,
+      text: result.text,
     },
     exitExplicitly: prepared.keyProvider.abandonedCall?.() ?? false,
   };
@@ -483,6 +499,10 @@ async function dispatch(
     exitExplicitly = run.exitExplicitly;
   } else if (command.name === "doctor") {
     const run = await doctorCommand(options);
+    output = run.output;
+    exitExplicitly = run.exitExplicitly;
+  } else if (command.name === "audit") {
+    const run = await auditCommand(options);
     output = run.output;
     exitExplicitly = run.exitExplicitly;
   } else if (command.name === "secret") {
