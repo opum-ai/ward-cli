@@ -181,7 +181,7 @@ Follow the fleet's semantic exit conventions where applicable: `0` success, `1` 
 | Command | Required behavior |
 |---|---|
 | `ward setup` | Trusted-terminal creation of native-keystore key and encrypted user vault. |
-| `ward init` | Idempotently create project manifest and offer explicit local registration and selected agent bridges. May offer setup when genuinely unconfigured. |
+| `ward init` | Idempotently create project manifest and offer explicit local registration and selected agent bridges. May offer setup when genuinely unconfigured. **Extended 2026-09-29 (DEC-48/DEC-52, [ADR 0016](docs/adr/0016-ward-init-asks-its-file-choice-with-the-peers-multiselect.md)):** on a terminal, with no `--claude`/`--codex` and no `--json`, which instruction files to write is a checkbox multiselect on stderr (nothing pre-checked; an empty choice writes no bridge; a cancel aborts before anything is written). Everywhere else nothing is asked and the flags write exactly the files they name. |
 | `ward init --no-register --claude --codex` | Scaffold non-secret files without granting access. Suitable for agent-driven preparation. |
 | `ward status --json` | Safe current-project and backend state; no global inventory or secret previews. |
 | `ward doctor --json` | Read-only permissions, key-provider, schema, binding, and instruction health. Never dump keys or request headers. |
@@ -202,8 +202,8 @@ Follow the fleet's semantic exit conventions where applicable: `0` success, `1` 
 | `ward audit --json` | Current-project sanitized operational events, not a tamper-proof audit claim. |
 | `ward manifest --json` | Describe capabilities, mutations, admin requirements, output sensitivity, and schemas without unlocking the vault. |
 | `ward instructions [topic]` | Print concise guidance without unlocking the vault. |
-| `ward agents --update-instructions --target claude\|codex` | Add or refresh only Ward-owned blocks. **Corrected 2026-09-29 (DEC-44, [ADR 0011](docs/adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)):** the "and selected local skill files" half is withdrawn — the skill ships from the marketplace plugin and Ward generates no local skill file, so this command manages the block and nothing else. |
-| `ward agents --check --target claude\|codex` | Detect absent, malformed, or stale Ward guidance without modifying files. |
+| `ward agents --update-instructions --target claude\|codex` | Add or refresh only Ward-owned blocks. **Corrected 2026-09-29 (DEC-44, [ADR 0011](docs/adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)):** the "and selected local skill files" half is withdrawn — the skill ships from the marketplace plugin and Ward generates no local skill file, so this command manages the block and nothing else. **Extended 2026-09-29 (DEC-47, [ADR 0015](docs/adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable.md)):** a local skill file found at the target's skill path is reported as drift, and `--force` removes it only when its bytes exactly match the packaged skill — a differing file is never removed. |
+| `ward agents --check --target claude\|codex` | Detect absent, malformed, or stale Ward guidance without modifying files. **Extended 2026-09-29 (DEC-47, [ADR 0015](docs/adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable.md)):** a local skill file present at the target's skill path is drift and exits 6, and the check names the path it looked at. |
 
 No `--value`, `--password`, `--token`, raw `get`, `reveal`, `export`, clipboard, secret-bearing URL, `eval`, shell passthrough, or secret-bearing environment option in P0. Unknown-option and usage errors must not echo supplied argument values. A parser that prints an unknown value must be wrapped or configured safely.
 
@@ -331,6 +331,8 @@ outside this session. Never self-approve or bypass Ward.
 Use `.claude/skills/ward/SKILL.md` for an explicitly selected Claude local bridge and `.agents/skills/ward/SKILL.md` for current Codex local discovery. Verify actual host behavior in smoke tests. Avoid installing duplicate skill copies when the marketplace plugin already supplies the skill.
 
 **Corrected 2026-09-29 (DEC-44, [ADR 0011](docs/adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)).** The plugin supplies the skill and Ward writes no local skill file at all, so neither path above is generated: the "explicitly selected local bridge" this paragraph describes is expressed as `ward init`'s multiselect over the two instruction files, `CLAUDE.md` and `AGENTS.md`, which are the only files a bridge writes. The duplicate-copy hazard is answered by there being no second copy to drift.
+
+**Extended 2026-09-29 (DEC-47, [ADR 0015](docs/adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable.md)).** The two paths above are still never written, and they are now judged: `ward agents --check --target <host>` reports a file present at that host's path as drift (exit 6), and `ward agents --update-instructions --force` removes it only when its bytes exactly match the packaged skill `skills/ward/SKILL.md`; a differing file is reported, never removed.
 
 ### 11.3 Skill source and distribution
 

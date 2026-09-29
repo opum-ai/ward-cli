@@ -14,4 +14,8 @@
 - [The skill ships from the plugin, and init selects the instruction files](0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)
 - [T24's Codex half is qualified by the artifacts plus a documented manual smoke](0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke.md)
 - [Stale test roots are reclaimed by an explicit command, never a sweep](0013-stale-test-roots-are-reclaimed-by-an-explicit-command-never-a-sweep.md)
+- [Ward stores no skill-source selection](0014-ward-stores-no-skill-source-selection.md)
+- [A local skill file is drift, and only an exact copy is force-removable](0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable.md)
+- [ward init asks its file choice with the peers' multiselect](0016-ward-init-asks-its-file-choice-with-the-peers-multiselect.md)
+- [The init multiselect's prompt library is a pinned dependency](0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency.md)
 <!-- lore:index:end -->

@@ -11,8 +11,10 @@ import { observeMachine } from "../adapters/machine.ts";
 import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
 import { createTerminalSecretValues } from "../adapters/secret-value.ts";
+import { packagedSkillContent } from "../adapters/skill-content.ts";
 import { acquireSetupSession } from "../adapters/setup-session.ts";
 import { createHttpsTransport } from "../adapters/https-transport.ts";
+import { createTerminalInstructionChoice } from "../adapters/init-prompt.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
 import {
   createTerminalConsent,
@@ -28,6 +30,7 @@ import {
   runBackup,
   runRestore,
 } from "../application/backup.ts";
+import type { InstructionFileChooser } from "../application/instruction-choice.ts";
 import {
   type CommandInput,
   type CommandOutput,
@@ -85,6 +88,11 @@ export interface RunOptions {
   // Who answers Ward's registration question. Defaults to the terminal
   // prompt; tests supply an answer.
   approver?: RegistrationApprover;
+  // Who answers `ward init`'s instruction-file multiselect, when the run
+  // offers it (DEC-48/DEC-52: a terminal, no --claude/--codex, no --json).
+  // Defaults to the terminal; tests supply a choice so no real terminal is
+  // needed.
+  instructionFiles?: InstructionFileChooser;
   // Where a backup passphrase comes from. Defaults to the terminal with echo
   // suppressed; tests and qualification probes supply one. There is no
   // option, argument or environment path to it, here or anywhere.
@@ -172,6 +180,21 @@ async function initCommand(
   const targets: AgentTarget[] = [];
   if (input.flags.has("--claude")) targets.push("claude");
   if (input.flags.has("--codex")) targets.push("codex");
+  // DEC-48/DEC-52: with no target flag, on a terminal, and without --json,
+  // the files are chosen through the multiselect the peer CLIs ask; a
+  // script, a pipe, --json or an explicit flag gets the non-interactive path
+  // and is never prompted. A cancel aborts the whole run here, before
+  // initProject writes anything - deliberately not "select nothing", which
+  // would carry on to the registration question the developer interrupted.
+  if (targets.length === 0 && !input.flags.has("--json")) {
+    const chooser =
+      options.instructionFiles ?? createTerminalInstructionChoice();
+    if (chooser.available()) {
+      const chosen = await chooser.choose();
+      if (chosen === undefined) throw new WardError("init_cancelled");
+      targets.push(...chosen);
+    }
+  }
 
   const result = await initProject({
     checkout,
@@ -206,6 +229,8 @@ function agentsCommand(
   if (check === update) throw new WardError("agent_form_invalid");
   if (update && input.flags.has("--require-installed"))
     throw new WardError("agent_option_unexpected");
+  if (check && input.flags.has("--force"))
+    throw new WardError("agent_option_unexpected");
   const target = input.flags.get("--target");
   if (typeof target !== "string" || !isAgentTarget(target))
     throw new WardError("agent_target_unknown");
@@ -216,6 +241,7 @@ function agentsCommand(
   if (check) {
     const result = checkAgentBridge(target, files, {
       requireInstalled: input.flags.has("--require-installed"),
+      packagedSkill: packagedSkillContent,
     });
     return {
       kind: "agents.status",
@@ -224,7 +250,10 @@ function agentsCommand(
       exitCode: result.exitCode,
     };
   }
-  const result = updateAgentBridge(target, files);
+  const result = updateAgentBridge(target, files, {
+    force: input.flags.has("--force"),
+    packagedSkill: packagedSkillContent,
+  });
   return { kind: "agents.updated", data: result.data, text: result.text };
 }
 

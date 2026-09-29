@@ -29,6 +29,7 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
+    "@clack/prompts": "1.8.0",
     "@napi-rs/keyring": "2.1.0"
   }
 }

@@ -71,8 +71,15 @@ checkout.
    a checkout may want one, both, or neither.
 3. **`ward agents` continues to manage Ward's block and nothing else.** Its
    `--check` judges the block, and `--update-instructions` writes it; neither
-   command touches a skill file. This is what PR #118 landed, and DEC-44
+   command writes a skill file. This is what PR #118 landed, and DEC-44
    confirms it rather than changing it.
+
+   **Refined 2026-09-29 (DEC-47, [ADR 0015](0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable.md)).**
+   Neither command *writes* a skill file, and `--check` now *judges* one found
+   at the host's skill path: presence is drift and exits 6, and
+   `--update-instructions --force` removes a copy only when its bytes exactly
+   match the packaged skill. Reporting a file is not writing it, and removal
+   is confined to an exact copy under an explicit `--force`.
 
 ## Consequences
 

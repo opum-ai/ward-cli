@@ -104,14 +104,14 @@ export const commands: CommandSpec[] = [
   {
     name: "agents",
     summary:
-      "Judge or refresh Ward's own guidance block in one agent host's instruction file (CLAUDE.md for claude, AGENTS.md for codex). Reads no vault, and touches only the bytes between Ward's markers.",
+      "Judge or refresh Ward's own guidance block in one agent host's instruction file (CLAUDE.md for claude, AGENTS.md for codex), and judge the host's local skill path, where Ward writes nothing and a found file is drift. Reads no vault.",
     args: [],
     flags: [
       {
         name: "--check",
         takesValue: false,
         summary:
-          "Report whether the block is absent, stale or current, without changing a file. Stale or malformed guidance exits 6.",
+          "Report whether the block is absent, stale or current, and whether a local skill file is present, without changing a file. Stale or malformed guidance, or a present local skill file, exits 6.",
       },
       {
         name: "--require-installed",
@@ -126,6 +126,12 @@ export const commands: CommandSpec[] = [
           "Add or refresh the block, leaving every other byte of the file as it was.",
       },
       {
+        name: "--force",
+        takesValue: false,
+        summary:
+          "With --update-instructions: remove the local skill file at the target's skill path when its bytes exactly match the packaged skill. A differing file is reported, never removed.",
+      },
+      {
         name: "--target",
         takesValue: true,
         summary: "Which host to act on: claude or codex. Required.",
@@ -134,9 +140,11 @@ export const commands: CommandSpec[] = [
     ],
     kind: "agents.status",
     resultKinds: ["agents.updated"],
-    // Only --update-instructions writes, and it writes one instruction file;
-    // --check changes nothing. `mutates` describes what a caller would be
-    // authorizing, which for this command is a file nobody's access depends on.
+    // Only --update-instructions writes, and it writes one instruction file -
+    // plus, under --force, removes a local skill file whose bytes exactly
+    // match the packaged skill; --check changes nothing. `mutates` describes
+    // what a caller would be authorizing, which for this command is files
+    // nobody's access depends on.
     mutates: true,
     unlocksVault: false,
     // Not admin: the block is public guidance, and preparing a checkout for
@@ -185,7 +193,7 @@ export const commands: CommandSpec[] = [
   {
     name: "init",
     summary:
-      "Create this repository's Ward project manifest, add Ward's guidance block to CLAUDE.md and/or AGENTS.md, and register this checkout with the developer's vault. Registration is confirmed by the developer in an interactive terminal; --no-register prepares the project files without granting access.",
+      "Create this repository's Ward project manifest, add Ward's guidance block to CLAUDE.md and/or AGENTS.md, and register this checkout with the developer's vault. On an interactive terminal with no target flag, which files to write is a multiselect; --claude/--codex, --json or a non-terminal run take the non-interactive path instead. Registration is confirmed by the developer in an interactive terminal; --no-register prepares the project files without granting access.",
     args: [],
     flags: [
       {
@@ -197,12 +205,14 @@ export const commands: CommandSpec[] = [
       {
         name: "--claude",
         takesValue: false,
-        summary: "Add or refresh Ward's block in CLAUDE.md.",
+        summary:
+          "Add or refresh Ward's block in CLAUDE.md, and skip the interactive file choice.",
       },
       {
         name: "--codex",
         takesValue: false,
-        summary: "Add or refresh Ward's block in AGENTS.md.",
+        summary:
+          "Add or refresh Ward's block in AGENTS.md, and skip the interactive file choice.",
       },
       jsonFlag,
     ],
