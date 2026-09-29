@@ -20,6 +20,7 @@
 - 2026-09-29T09:50:54-05:00 74015e86f9756e2747f21fc80cbced849596d1cb fix(WCLI-52): answer the review — make the output assertion measure, and the second code
 - 2026-09-29T09:58:00-05:00 e08c848d9bc770321a5f88469280fb777b89a618 fix(WCLI-52): refuse a backup of a state document that does not parse (#110)
 - 2026-09-29T10:32:41-05:00 e54539439299847ac8adad9b925ea3d9fa26cdaa test(WCLI-53): assert the store-call bound instead of waiting it out (#112)
+- 2026-09-29T10:38:14-05:00 8fc98a1437d51b987515ad56cab7a9d9335cd415 chore(WCLI-58): handoff note on recycle at the WCLI-53 / WCLI-14 boundary (#114)
 
 ## docs/adr
 

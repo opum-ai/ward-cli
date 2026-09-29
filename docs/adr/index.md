@@ -11,4 +11,6 @@
 - [Agent profile source coverage](0008-agent-profile-source-coverage.md)
 - [Hand-rolled status-only HTTPS transport](0009-hand-rolled-status-only-https-transport.md)
 - [One vault state document format](0010-refuse-a-vault-state-document-from-another-format.md)
+- [The skill ships from the plugin, and init selects the instruction files](0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)
+- [T24's Codex half is qualified by the artifacts plus a documented manual smoke](0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke.md)
 <!-- lore:index:end -->

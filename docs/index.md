@@ -25,4 +25,5 @@ entry point and the only one that carries `okf_version`.
 
 <!-- lore:index:begin -->
 - [adr](adr/index.md)
+- [runbooks](runbooks/index.md)
 <!-- lore:index:end -->
