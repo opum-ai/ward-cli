@@ -110,6 +110,16 @@ describe("the prompt shows the value it is asking about", () => {
     expect(escapeForDisplay("tag󠀁char")).toBe("tag\\u{e0001}char");
   });
 
+  // The neighbours of the ranges above: U+009B is the eight-bit CSI, U+0085
+  // a next-line request, and U+2028 ends a line in some renderers. None of
+  // them prints, and a value Ward shows is shown as text.
+  test("C1 controls and separators are escaped as well", () => {
+    expect(escapeForDisplay("a\u009bb")).toBe("a\\x9bb");
+    expect(escapeForDisplay("a\u0085b")).toBe("a\\x85b");
+    expect(escapeForDisplay("a b")).toBe("a\\u2028b");
+    expect(escapeForDisplay("a b")).toBe("a\\u2029b");
+  });
+
   test("an escaping root cannot redraw the prompt", () => {
     const { approver, prompts } = consent({ interactive: true, answer: "y" });
     approver.ask({ projectId: request.projectId, root: "/tmp/a\u001b[2Kb" });

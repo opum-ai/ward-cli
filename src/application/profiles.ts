@@ -547,7 +547,9 @@ async function approveProfile(
       "",
       `  profile:   ${name}`,
       `  project:   ${projectId}`,
-      `  checkout:  ${options.checkout.root}`,
+      // A path is the developer's own filesystem and can carry control or
+      // format bytes, exactly as the prompt this was answered on assumes.
+      `  checkout:  ${escapeForDisplay(options.checkout.root)}`,
       `  approved:  ${approvedAt}`,
       "",
       "Ward runs this operation only while the declared profile still matches",

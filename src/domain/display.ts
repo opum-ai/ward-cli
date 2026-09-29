@@ -11,19 +11,21 @@
 //
 // Escaping is the policy and it is pure — no I/O, no state — which is why it
 // lives in the domain layer rather than beside either renderer. Escaped are
-// every code point below 0x20, DEL, and Unicode's Format (Cf) category: the
-// bidi overrides and zero-width characters among them, which a terminal may
-// honour without printing anything. Each becomes a printable escape, so what
-// is shown is readable and cannot act on the terminal that shows it.
-const formatCharacter = /\p{Cf}/u;
+// every code point below 0x20, DEL, the C1 range (0x80 to 0x9f, where the
+// eight-bit CSI U+009B sits), Unicode's Format (Cf) category — the bidi
+// overrides and zero-width characters among them — and the line and
+// paragraph separators. Each becomes a printable escape, so what is shown is
+// readable and cannot act on the terminal that shows it: every code point
+// that can move a cursor, end a line or reverse text is shown as text.
+const invisibleCharacter = /[\p{Cf}\p{Zl}\p{Zp}]/u;
 
 export function escapeForDisplay(value: string): string {
   let escaped = "";
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f)
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f))
       escaped += `\\x${code.toString(16).padStart(2, "0")}`;
-    else if (formatCharacter.test(character))
+    else if (invisibleCharacter.test(character))
       escaped +=
         code <= 0xffff
           ? `\\u${code.toString(16).padStart(4, "0")}`

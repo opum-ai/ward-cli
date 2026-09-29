@@ -118,6 +118,15 @@ export interface NormalizedProfile {
 // — an approval made after a schema change does not have to wait for every
 // older one to be rewritten — and a collection-level version would have to
 // claim a uniformity it could not guarantee.
+//
+// Bump this in the same change that alters what `normalizeProfile` accepts.
+// A build whose rules differ re-normalizes a stored snapshot it did not
+// write, and if the record's version still matches it will read the result
+// as an approval the developer gave — so the version must not match. The
+// golden table in test/profile.test.ts fails on any change to the accepted
+// or refused set and exists to make that bump unavoidable rather than
+// remembered: a change that trips it either bumps this number or says in
+// writing why it does not have to.
 export const profileSnapshotVersion = 1;
 
 export const profileSnapshotFields = [
@@ -184,8 +193,11 @@ const percentEscapePattern = /%[0-9A-Fa-f]{2}/g;
 
 // The authority, introduced by exactly `https://`. A special-scheme URL in
 // any other spelling — `https:/host/x`, `https:host/x` — is given an
-// authority by the parser here and refused by this build's own HTTP client,
-// which would make the approval describe an operation Ward cannot send.
+// authority by this parser and read as a path by parsers that require the
+// two slashes, so the two would name different destinations. This build has
+// no HTTP client yet (WCLI-10 adds one), so what the divergence costs is
+// determined there; what it means here is that the declaration does not say
+// which destination it names, and Ward refuses what it cannot state.
 const httpsAuthorityPattern = /^https:\/\//i;
 
 // The URL, as the canonical form of the operation Ward would perform.
@@ -196,11 +208,10 @@ const httpsAuthorityPattern = /^https:\/\//i;
 // — is a path separator to this parser, which judges the host
 // `api.example.invalid`, and part of the user-info to others, which dial
 // `evil.example`: the host the developer was shown is not the host another
-// client would reach. And `https:/host/x` is accepted here but refused by
-// this build's fetch, so the record would describe an operation Ward itself
-// cannot send. A backslash is outside the character set below and the
-// single-slash form fails the authority pattern, so both are refused before
-// anything is stored.
+// client would reach. And the single-slash form above is invented into an
+// authority here and read as a path elsewhere. A backslash is outside the
+// character set below and the single-slash form fails the authority pattern,
+// so both are refused before anything is stored.
 //
 // What passes is stored as `URL`'s canonical href — host and scheme case
 // folded, an empty path made `/`, a default port dropped — which is exactly
@@ -208,14 +219,16 @@ const httpsAuthorityPattern = /^https:\/\//i;
 // string the developer approved and the string Ward would send are one
 // string rather than two the validator hoped were equal.
 //
-// Everything outside the origin must survive parsing unchanged. Case folding
-// and a dropped default port are rewrites any parser agrees on: they name the
-// same origin. A path is not like that. `/%2e%2e/x` becomes `/x` here, and
-// `/a/../b` becomes `/b`, while a client that does not decode encoded dots,
-// or a server or filter in between that decodes them differently, can address
-// another resource — so a declaration whose path the parser rewrites is
-// refused as well, and Ward stores only a path it would request byte for
-// byte. The one addition allowed is the `/` this parser gives an empty path.
+// Everything the developer wrote must then survive parsing, and only the
+// documented folds may differ — case, and a default port. The authority is
+// checked against the one the parser read, and the path, query and fragment
+// must come through unchanged. Both halves exist because the parser rewrites
+// more than it looks like it does, and each rewrite makes the record say
+// something the declaration does not: `0x7f000001` and `2130706433` are read
+// as `127.0.0.1`, an empty `@` is dropped, `:080` becomes `:80`, and
+// `/%2e%2e/x` and `/a/../b` both become `/x` and `/b`. A declaration whose
+// bytes name a destination only this parser agrees on is refused, and what
+// is stored is a URL the developer could have written.
 function normalizedUrl(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -235,21 +248,29 @@ function normalizedUrl(value: unknown): string {
   if (!urlCharactersPattern.test(value)) invalid();
   if (value.replace(percentEscapePattern, "").includes("%")) invalid();
   if (!httpsAuthorityPattern.test(value)) invalid();
-  // The declaration's own path, query and fragment: everything after the
-  // authority. `https://` is 8 characters and an authority cannot contain
-  // `/`, `?` or `#`, so the first of those three after the scheme is where
-  // the authority ends — whether or not it also carries user-info, which is
-  // refused below on its own account.
+  // What the developer wrote, split where the authority ends: `https://` is
+  // 8 characters, and an authority cannot contain `/`, `?` or `#`, so the
+  // first of those three after the scheme is the boundary. A trailing `?` or
+  // `#` with nothing after it is part of the suffix, which is why the suffix
+  // below is taken from the parser's own href rather than rebuilt from
+  // `pathname`, `search` and `hash`: those drop an empty query and fragment.
   const afterScheme = value.slice("https://".length);
   const suffixAt = afterScheme.search(/[/?#]/);
+  const declaredAuthority =
+    suffixAt === -1 ? afterScheme : afterScheme.slice(0, suffixAt);
   const declaredSuffix = suffixAt === -1 ? "" : afterScheme.slice(suffixAt);
-  const parsedSuffix = `${url.pathname}${url.search}${url.hash}`;
+  if (url.hostname === "") invalid();
+  // The authority the parser read, against the authority the developer
+  // wrote, case-folded, with a declared `:443` the one fold allowed. The
+  // comparison is also what refuses user-info — `user:pass@host` and the
+  // empty `@host` alike — which spec §9.3 keeps out of the operation
+  // entirely, because a credential written into a URL sits outside the
+  // header path this contract exists to keep credentials inside.
+  const declaredOrigin = declaredAuthority.replace(/:443$/i, "").toLowerCase();
+  if (declaredOrigin !== url.host.toLowerCase()) invalid();
+  const parsedSuffix = url.href.slice(`https://${url.host}`.length);
   if (parsedSuffix !== declaredSuffix && parsedSuffix !== `/${declaredSuffix}`)
     invalid();
-  // A user-info URL carries a credential outside the header path this
-  // contract exists to keep credentials inside (spec §9.3).
-  if (url.username !== "" || url.password !== "") invalid();
-  if (url.hostname === "") invalid();
   return url.href;
 }
 

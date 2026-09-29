@@ -274,8 +274,6 @@ function harness() {
   };
 }
 
-type Harness = ReturnType<typeof harness>;
-
 const json = (stdout: string) =>
   JSON.parse(stdout) as { kind: string; data: Record<string, unknown> };
 const errorCode = (stderr: string) =>
@@ -482,6 +480,41 @@ describe("the profile declaration", () => {
       },
       "profile_invalid",
     ],
+    // The same rule on the authority: each of these is a spelling this
+    // parser reads as another host than the one written, so the declaration
+    // would not say what the stored record says.
+    [
+      "a URL with a hexadecimal IPv4 authority",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://0x7f000001/admin",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with a decimal IPv4 authority",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://2130706433/admin",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with an empty user-info field",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://@api.example.invalid/admin",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with a leading-zero port",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://api.example.invalid:080/x",
+      },
+      "profile_invalid",
+    ],
     [
       "a header value with a line break",
       {
@@ -585,7 +618,57 @@ describe("the profile declaration", () => {
     expect(stored("https://api.example.invalid?q=%2e")).toBe(
       "https://api.example.invalid/?q=%2e",
     );
+    // An empty query or fragment is legal and unambiguous, and the parser
+    // keeps it; only the components drop it, which is why the comparison is
+    // taken from the href.
+    for (const url of [
+      "https://api.example.invalid/x?",
+      "https://api.example.invalid/x#",
+    ])
+      expect(stored(url)).toBe(url);
   });
+
+  // The accepted set is exactly what profileSnapshotVersion versions, so a
+  // change to it has to be visible: any verdict here flipping is the prompt
+  // to bump that constant, or to say in writing why it does not have to be
+  // bumped. The table records verdicts rather than canonical forms, so a new
+  // spelling is an added row and not a rewrite.
+  const spellings: [url: string, accepted: boolean][] = [
+    ["https://api.example.invalid/rate_limit", true],
+    ["https://api.example.invalid", true],
+    ["https://API.example.invalid:443/x", true],
+    ["https://api.example.invalid:8443/x", true],
+    ["https://api.example.invalid/x?", true],
+    ["https://api.example.invalid/x#frag", true],
+    ["https://api.example.invalid/a%20b", true],
+    ["https://api.example.invalid./x", true],
+    ["https://[::1]:8443/x", true],
+    ["http://api.example.invalid/", false],
+    ["https:/api.example.invalid/x", false],
+    ["https://api.example.invalid\\@evil.example/steal", false],
+    ["https://api.example.invalid/a b", false],
+    ["https://api.example.invalid/café", false],
+    ["https://api.example.invalid/100%zz", false],
+    ["https://user:pass@api.example.invalid/", false],
+    ["https://@api.example.invalid/admin", false],
+    ["https://0x7f000001/admin", false],
+    ["https://2130706433/admin", false],
+    ["https://api.example.invalid:080/x", false],
+    ["https://api.example.invalid/%2e%2e/x", false],
+    ["https://api.example.invalid/a/../x", false],
+  ];
+
+  for (const [url, accepted] of spellings) {
+    test(`${url} is ${accepted ? "accepted" : "refused"}`, () => {
+      let refused = false;
+      try {
+        normalizeProfile({ ...declaration(), url });
+      } catch {
+        refused = true;
+      }
+      expect(refused).toBe(!accepted);
+    });
+  }
 
   test("a declaration without a secret value anywhere in it", () => {
     // The snapshot carries an alias, never a value: this is the shape the
@@ -1488,6 +1571,31 @@ describe("a profile name from the manifest cannot act on the terminal", () => {
   });
 });
 
+describe("a checkout path cannot act on the terminal either", () => {
+  // The prompt escapes the path it asks about; the result that confirms the
+  // approval prints the same path. A directory is the developer's own
+  // filesystem and can carry control bytes like any other value Ward shows.
+  test("approving from a directory with control bytes escapes the path it prints", async () => {
+    const h = harness();
+    const checkout = join(root, `repo-\u001b]0;PWNED\u0007${++cases}`);
+    mkdirSync(checkout);
+    mkdirSync(join(checkout, ".git"));
+    expect((await h.ward(checkout, ["setup", "--json"])).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await h.ward(checkout, ["init", "--json"])).exitCode).toBe(
+      exitCodes.success,
+    );
+    writeDeclaration(checkout, PROFILE, declaration());
+    const result = await h.ward(checkout, ["profile", "approve", PROFILE]);
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(result.stdout).toContain("checkout:");
+    expect(result.stdout).not.toContain("\u001b");
+    expect(result.stdout).not.toContain("\u0007");
+    expect(result.stdout).toContain("\\x1b]0;PWNED\\x07");
+  });
+});
+
 describe("the readiness path cannot reach a transport", () => {
   // The case above patches globalThis.fetch, which is one way to make a
   // request and not the only one: a captured fetch reference, node:https and
@@ -1502,6 +1610,7 @@ describe("the readiness path cannot reach a transport", () => {
   // not see a transport acquired by a string a program builds at run time.
   const transports = [
     "node:http",
+    "node:http2",
     "node:https",
     "node:net",
     "node:tls",
@@ -1534,9 +1643,14 @@ describe("the readiness path cannot reach a transport", () => {
       .map((name) => join(layer, name));
     const read = await closureOfEntries(entries);
     // Positive control: the walk read the layer it describes, and the file
-    // the readiness answer comes from is inside the closure.
-    expect(read.size).toBeGreaterThanOrEqual(entries.length);
+    // the readiness answer comes from is inside the closure. The pinned
+    // count is the point — `read.size >= entries.length` alone passes if the
+    // walk follows a single import edge, which is why it was measured: 26
+    // files when this was written (13 application entries, 12 files behind
+    // them, package.json). A walk that suddenly reads fewer has broken, and
+    // a growing layer is expected to raise this number deliberately.
     expect(entries.length).toBeGreaterThan(0);
+    expect(read.size).toBeGreaterThanOrEqual(26);
     const paths = [...read.keys()];
     expect(paths.some((path) => path.endsWith("/profiles.ts"))).toBe(true);
     expect(paths.some((path) => path.endsWith("/domain/profile.ts"))).toBe(
