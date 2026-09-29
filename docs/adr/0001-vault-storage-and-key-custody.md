@@ -176,9 +176,14 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
     snapshot, applies a synchronous change, seals the next revision and updates the row. Because
     the change is synchronous, no network request can run while the write transaction is open.
   - Concurrent Ward processes wait for the lock. Past the busy timeout they report `vault_busy`,
-    and nothing is changed. A writer killed at any point leaves the last committed snapshot, which
-    the next connection restores from the journal. A create commits the schema and its first row
-    together, so an interrupted create leaves an empty file that reads as no vault.
+    and the vault is not changed. This sentence read "and nothing is changed" until WCLI-27 scoped
+    it, which DEC-10 measured false in two paths: `ward init` writes the project files before it
+    registers the checkout, and `ward restore` stores the key before it creates the vault, so a
+    busy vault is reached by runs that had already changed something else. The claim is scoped to
+    the vault because that is what the rollback above can carry; it is not a claim about the run.
+    A writer killed at any point leaves the last committed snapshot, which the next connection
+    restores from the journal. A create commits the schema and its first row together, so an
+    interrupted create leaves an empty file that reads as no vault.
   - The directory must be mode 0700 and the database and any sidecar mode 0600, all owned by the
     current user and none a symbolic link. A looser mode is refused, never repaired. Links above
     the vault directory, such as a home reached through a link, are resolved. SQLite opens the
