@@ -1,0 +1,12 @@
+{
+  "name": "opum-ward",
+  "version": "0.0.0",
+  "description": "Local-first secret management for agentic engineering: drive the ward CLI for project-scoped credential readiness and approved secret-consuming operations, consuming a credential without its value ever entering the agent session. Cut from the same ward-cli repository and tag as the CLI itself, so the skill can never describe a contract the installed CLI does not have.",
+  "author": {
+    "name": "Opum AI",
+    "url": "https://github.com/opum-ai"
+  },
+  "homepage": "https://github.com/opum-ai/ward-cli",
+  "repository": "https://github.com/opum-ai/ward-cli",
+  "keywords": ["ward", "secrets", "credentials", "security", "cli"]
+}

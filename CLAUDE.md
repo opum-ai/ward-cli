@@ -23,9 +23,10 @@ blocks, and cross-links stay coherent.
 
 Ward (`ward`): a local-first secret-management CLI for agentic engineering, part of the Opum
 product family. An agent names a credential and an approved operation; Ward consumes the
-credential without returning its value to the agent. The repository currently holds the
-design, not an implementation: `WARD_MVP_AGENT_SPEC.md` is the v0.1 implementation brief and
-`SKILL.md` is a proposed v0.1 agent skill that matches no shipped CLI yet.
+credential without returning its value to the agent. The repository holds the design record and
+the implementation it specifies: `WARD_MVP_AGENT_SPEC.md` is the v0.1 implementation brief, and
+the agent skill lives at `skills/ward/SKILL.md`, packaged here as the `opum-ward` plugin. No
+Ward release has shipped yet.
 
 @~/.claude/opum-fleet-operating.md
 
