@@ -463,6 +463,71 @@ describe("T06: transactions", () => {
     { timeout: 30_000 },
   );
 
+  // The premise WCLI-35's settledLayout rests on, pinned where it can be
+  // observed directly: layoutOf is three reads, and three statements outside
+  // a transaction can see the file at three different moments — a commit
+  // landing between them hands back a state that never existed (the table
+  // present, the header fields not yet). Inside one transaction the same
+  // commit cannot land: the writer waits for the reader's snapshot to end, so
+  // every read in the transaction is the same moment. If SQLite or the driver
+  // ever stops honouring that, the store's one-snapshot read would silently
+  // stop being one, and this case goes red.
+  test("a commit can land between bare reads and cannot land inside a read transaction", () => {
+    const { directory, file } = fresh();
+    mkdirSync(directory, { mode: 0o700 });
+    const writer = new Database(file);
+    try {
+      writer.exec("PRAGMA journal_mode = DELETE");
+      writer.exec("BEGIN IMMEDIATE");
+      writer.exec("PRAGMA user_version = 1");
+      writer.exec("CREATE TABLE vault (slot INTEGER PRIMARY KEY, body BLOB)");
+
+      // Bare reads, one commit between them: the first sees the file before
+      // the commit, the second after it.
+      const bare = new Database(file);
+      try {
+        expect(bare.query("PRAGMA user_version").get()).toEqual({
+          user_version: 0,
+        });
+        writer.exec("COMMIT");
+        expect(bare.query("SELECT name FROM sqlite_schema").all()).toEqual([
+          { name: "vault" },
+        ]);
+      } finally {
+        bare.close();
+      }
+
+      // One transaction: the writer's next commit cannot land inside it, and
+      // both reads answer from the same moment.
+      writer.exec("BEGIN IMMEDIATE");
+      writer.exec("PRAGMA user_version = 2");
+      const reader = new Database(file);
+      try {
+        const seen = reader
+          .transaction(() => {
+            const first = reader.query("PRAGMA user_version").get();
+            let refused: unknown;
+            try {
+              writer.exec("COMMIT");
+            } catch (error) {
+              refused = error;
+            }
+            const second = reader.query("PRAGMA user_version").get();
+            return { first, second, refused };
+          })
+          .deferred();
+        expect(seen.first).toEqual({ user_version: 1 });
+        expect(seen.second).toEqual({ user_version: 1 });
+        expect(seen.refused).toBeInstanceOf(Error);
+        writer.exec("COMMIT");
+      } finally {
+        reader.close();
+      }
+    } finally {
+      writer.close();
+    }
+  });
+
   test("a writer that cannot get the lock within the bound reports vault_busy", () => {
     const { file, store } = fresh(50);
     const key = generateVaultKey();
