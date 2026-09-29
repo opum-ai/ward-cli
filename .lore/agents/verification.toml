@@ -14,4 +14,6 @@ sources = [
   "adr/0005-project-binding-identity",
   "adr/0006-backup-container-and-restore-authority",
   "adr/0007-status-and-doctor-reporting",
+  "adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke",
+  "runbooks/release-smoke-t24-s-manual-half",
 ]

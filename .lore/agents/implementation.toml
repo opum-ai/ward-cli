@@ -2,7 +2,7 @@ schema_version = 1
 name = "implementation"
 description = "Grounds a Ward implementation change in the vault format v1 and key-custody contract, the accepted ADRs the change implements, and the P0 limits it must not exceed."
 kind = "specialist"
-max_tokens = 17000
+max_tokens = 20000
 pinned = ["adr/0001-vault-storage-and-key-custody"]
 sources = [
   "adr/0003-profile-approval-authority",
@@ -14,4 +14,5 @@ sources = [
   "adr/0007-status-and-doctor-reporting",
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
+  "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
 ]

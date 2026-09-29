@@ -202,7 +202,7 @@ Follow the fleet's semantic exit conventions where applicable: `0` success, `1` 
 | `ward audit --json` | Current-project sanitized operational events, not a tamper-proof audit claim. |
 | `ward manifest --json` | Describe capabilities, mutations, admin requirements, output sensitivity, and schemas without unlocking the vault. |
 | `ward instructions [topic]` | Print concise guidance without unlocking the vault. |
-| `ward agents --update-instructions --target claude\|codex` | Add or refresh only Ward-owned blocks and selected local skill files. |
+| `ward agents --update-instructions --target claude\|codex` | Add or refresh only Ward-owned blocks. **Corrected 2026-09-29 (DEC-44, [ADR 0011](docs/adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)):** the "and selected local skill files" half is withdrawn — the skill ships from the marketplace plugin and Ward generates no local skill file, so this command manages the block and nothing else. |
 | `ward agents --check --target claude\|codex` | Detect absent, malformed, or stale Ward guidance without modifying files. |
 
 No `--value`, `--password`, `--token`, raw `get`, `reveal`, `export`, clipboard, secret-bearing URL, `eval`, shell passthrough, or secret-bearing environment option in P0. Unknown-option and usage errors must not echo supplied argument values. A parser that prints an unknown value must be wrapped or configured safely.
@@ -329,6 +329,8 @@ outside this session. Never self-approve or bypass Ward.
 ```
 
 Use `.claude/skills/ward/SKILL.md` for an explicitly selected Claude local bridge and `.agents/skills/ward/SKILL.md` for current Codex local discovery. Verify actual host behavior in smoke tests. Avoid installing duplicate skill copies when the marketplace plugin already supplies the skill.
+
+**Corrected 2026-09-29 (DEC-44, [ADR 0011](docs/adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files.md)).** The plugin supplies the skill and Ward writes no local skill file at all, so neither path above is generated: the "explicitly selected local bridge" this paragraph describes is expressed as `ward init`'s multiselect over the two instruction files, `CLAUDE.md` and `AGENTS.md`, which are the only files a bridge writes. The duplicate-copy hazard is answered by there being no second copy to drift.
 
 ### 11.3 Skill source and distribution
 
