@@ -528,6 +528,55 @@ describe("T06: transactions", () => {
     }
   });
 
+  // The store's use of that one-snapshot read cannot be observed
+  // behaviourally: the mixed read needs a commit to land between two of
+  // layoutOf's three statements, and there is no hook inside create() to
+  // pause between them (see the note in the serialization case above). So it
+  // is pinned at the source, the way the store layout contract is
+  // (setup.test.ts, ADR 0001): a revert of the pre-lock checks to the bare
+  // reads reddens here, instead of only resurfacing as a statistical CI
+  // flake.
+  test("the pre-lock layout reads go through the one-snapshot helper", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "..", "src", "adapters", "sqlite-vault-store.ts"),
+      "utf8",
+    );
+    // The pre-lock reads are the ones before the journal heal; the
+    // in-transaction re-checks sit after it. Anchoring on that position is
+    // what stops a swap of the settled and bare forms between the two — the
+    // edit that would reinstate the defect while both spellings still appear
+    // in the file.
+    const at = (needle: string) => source.indexOf(needle);
+    const before = (needle: string, anchor: number) =>
+      at(needle) !== -1 && anchor !== -1 && at(needle) < anchor;
+    const firstHeal = at("healJournalMode(db);");
+    const lastHeal = source.lastIndexOf("healJournalMode(db);");
+    const pins: Array<[string, boolean]> = [
+      [
+        "settledLayout is a deferred transaction over layoutOf",
+        /function settledLayout\(db: Database\): "empty" \| "ward" \{\s*(?:\/\/[^\n]*\n\s*)*return db\.transaction\(\(\) => layoutOf\(db\)\)\.deferred\(\);\s*\}/.test(
+          source,
+        ),
+      ],
+      [
+        "requireSettledVault takes its answer from settledLayout",
+        /function requireSettledVault\(db: Database\): void \{\s*(?:\/\/[^\n]*\n\s*)*if \(settledLayout\(db\) !== "ward"\) throw new WardError\("vault_not_found"\);\s*\}/.test(
+          source,
+        ),
+      ],
+      [
+        "create's pre-lock check reads the settled layout before the journal heal",
+        before('settledLayout(db) === "ward"', firstHeal),
+      ],
+      [
+        "mutate's pre-lock check reads the settled vault before the journal heal",
+        before("requireSettledVault(db)", lastHeal),
+      ],
+    ];
+    const missing = pins.filter(([, ok]) => !ok).map(([name]) => name);
+    expect(missing).toEqual([]);
+  });
+
   test("a writer that cannot get the lock within the bound reports vault_busy", () => {
     const { file, store } = fresh(50);
     const key = generateVaultKey();
