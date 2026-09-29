@@ -253,6 +253,54 @@ export const errorCatalog = {
       "The secret changed while this command was running, so Ward did not write it.",
     hint: "Run the command again to see the current state and confirm a replacement.",
   },
+  // HTTPS profiles (spec §9.1-9.2, §8, docs/adr/0003). None of these echoes
+  // a profile name, a URL, a header value or an alias: a declaration came
+  // from a file Ward did not write, and a message is not a place to quote it.
+  profile_action_unknown: {
+    type: "usage",
+    message: "Unknown profile action.",
+    hint: "Use list, approve or revoke. Run `ward help profile` for usage.",
+  },
+  profile_name_invalid: {
+    type: "usage",
+    message:
+      "A profile name must start with a letter, be at most 64 characters, and use only letters, digits, dot, underscore or dash.",
+  },
+  profile_not_found: {
+    type: "not_found",
+    message:
+      "No profile with that name is declared in this project's manifest.",
+    hint: "Profiles are declared under `profiles` in .ward/project.json. List this project's profiles with `ward profile list`.",
+  },
+  profile_not_approved: {
+    type: "not_found",
+    message:
+      "This checkout has no approval for that profile, so there is nothing to revoke.",
+    hint: "List this project's profiles and their approval state with `ward profile list`.",
+  },
+  profile_requires_terminal: {
+    type: "denied",
+    message:
+      "Approving or revoking a profile needs an interactive terminal, and this run has none to ask on.",
+    hint: "Run `ward profile approve` or `ward profile revoke` yourself in a terminal. An agent cannot approve an operation for itself; the developer approves it.",
+  },
+  profile_invalid: {
+    type: "validation",
+    message: "The profile declaration is not valid, so Ward did not act on it.",
+    hint: "Check the profile's fields in .ward/project.json. Ward validates the whole declaration before it asks anyone to approve it.",
+  },
+  profile_unsupported: {
+    type: "validation",
+    message:
+      "The profile declaration uses an operation this version of Ward does not support, so Ward did not act on it.",
+    hint: "This build implements HTTPS with Bearer authentication, one of DELETE, GET, HEAD, PATCH, POST or PUT, a request body of none or json-stdin, and status-only output. An authentication scheme it does not implement yet is refused rather than approximated.",
+  },
+  profile_changed: {
+    type: "conflict",
+    message:
+      "The profile changed while this command was running, so Ward did not record the approval.",
+    hint: "Run the command again to review the profile as it is now.",
+  },
   vault_state_malformed: {
     type: "validation",
     message:

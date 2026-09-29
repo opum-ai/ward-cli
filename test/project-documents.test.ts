@@ -4,6 +4,7 @@
 // the state is sealed but written by an earlier Ward — so every field is
 // checked here rather than trusted.
 import { describe, expect, test } from "bun:test";
+import { profileLimits } from "../src/domain/profile.ts";
 import {
   newProjectManifest,
   parseProjectManifest,
@@ -64,6 +65,7 @@ describe("the vault's state document", () => {
       projects: [],
       localBindings: [],
       secrets: [],
+      profileApprovals: [],
     });
     expect(parseVaultState(serializeVaultState(emptyVaultState()))).toEqual(
       emptyVaultState(),
@@ -93,6 +95,7 @@ describe("the vault's state document", () => {
           },
         ],
         secrets: [],
+        profileApprovals: [],
       }),
     );
   });
@@ -304,6 +307,29 @@ describe("the tracked project manifest", () => {
     expect(manifest.profiles).toEqual({});
   });
 
+  // A declaration inside `profiles` is deliberately NOT in this list: it is
+  // carried as written and judged by the profile commands that use it, so one
+  // unreadable profile cannot refuse the manifest every other command reads
+  // (WCLI-9). These are the faults in the profiles object itself, which is
+  // structure rather than content.
+  test("a declared profile is carried as the manifest wrote it", () => {
+    const declaration = {
+      adapter: "http",
+      method: "GET",
+      url: "https://example.com/status",
+      auth: { type: "bearer", secret: "example.token" },
+      somethingNewerWardKnows: true,
+    };
+    const manifest = parseProjectManifest(
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId,
+        profiles: { deploy: declaration },
+      }),
+    );
+    expect(manifest.profiles).toEqual({ deploy: declaration });
+  });
+
   const refused: [label: string, text: string, code: string][] = [
     ["not JSON at all", "{", "project_manifest_malformed"],
     [
@@ -322,9 +348,33 @@ describe("the tracked project manifest", () => {
       "project_manifest_unsupported",
     ],
     [
-      "a profile this build does not implement",
-      JSON.stringify({ schemaVersion: 1, projectId, profiles: { deploy: {} } }),
-      "project_manifest_unsupported",
+      "a profiles value that is not an object",
+      JSON.stringify({ schemaVersion: 1, projectId, profiles: [] }),
+      "project_manifest_malformed",
+    ],
+    [
+      "a profiles value that is an array",
+      JSON.stringify({ schemaVersion: 1, projectId, profiles: ["deploy"] }),
+      "project_manifest_malformed",
+    ],
+    [
+      "a profile name that is empty",
+      JSON.stringify({ schemaVersion: 1, projectId, profiles: { "": {} } }),
+      "project_manifest_malformed",
+    ],
+    [
+      "more profiles than the bounded manifest reads",
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId,
+        profiles: Object.fromEntries(
+          Array.from(
+            { length: profileLimits.maxProfilesPerManifest + 1 },
+            (_, index) => [`profile-${index}`, {}],
+          ),
+        ),
+      }),
+      "project_manifest_malformed",
     ],
   ];
   for (const [label, text, code] of refused) {

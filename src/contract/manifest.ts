@@ -318,6 +318,63 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "profile",
+    summary:
+      "List this project's HTTPS profiles, or approve and revoke one. A manifest declares a request; the developer's approval, given in a trusted terminal, is what authorizes an operation.",
+    args: [
+      { name: "action", required: true },
+      { name: "name", required: false },
+    ],
+    flags: [jsonFlag],
+    kind: "profile.list",
+    resultKinds: ["profile.approve", "profile.revoke"],
+    mutates: true,
+    unlocksVault: true,
+    // Not marked admin: listing is safe for an agent, and what holds the line
+    // on approving or revoking is the interactive terminal the question needs
+    // (the same reasoning `ward init` and `ward secret` record).
+    admin: false,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: [
+      "ward profile list",
+      "ward profile approve example-profile",
+      "ward profile revoke example-profile",
+    ],
+  },
+  {
+    name: "check",
+    summary:
+      "Report whether this checkout is ready to run a declared profile — the binding, the approval and the stored credential — with no network I/O. Exit 6 when it is not ready.",
+    args: [{ name: "profile", required: false }],
+    flags: [jsonFlag],
+    kind: "check.report",
+    mutates: false,
+    unlocksVault: true,
+    admin: false,
+    outputSensitivity: "status",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: ["ward check", "ward check example-profile"],
+  },
+  {
     name: "help",
     summary: "Show usage for Ward or one command.",
     args: [{ name: "command", required: false }],
