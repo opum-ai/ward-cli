@@ -106,6 +106,19 @@ export async function runBackup(options: {
     // writer changes.
     const snapshot = options.store.read(key);
     plaintext = snapshot.plaintext;
+    // A backup is written only when restore can open it (WCLI-52). The read
+    // above authenticates the envelope and refuses a vault this build cannot
+    // open at all; this parse refuses one whose document decrypts and does
+    // not parse, before the KDF, the seal and the file, so `ward backup`
+    // never creates a file that `ward restore` would refuse. It answers what
+    // every other read of the state document answers:
+    // `vault_state_malformed`, or `vault_format_unsupported` for a document
+    // carrying a stored approval whose snapshot version this build does not
+    // implement — the second site DEC-38 left standing. What it costs is
+    // recorded in ADR 0010: preserving the bytes of a damaged vault means
+    // copying the vault file, not taking a Ward backup, because this build
+    // has no recovery surface for one.
+    parseVaultState(plaintext);
     const kdf = newBackupKdf();
     derived = deriveBackupKey(passphrase, kdf);
     const sealed = sealBackup(

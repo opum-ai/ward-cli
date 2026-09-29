@@ -121,11 +121,24 @@ than a format gate.**
   and authenticates the envelope before it seals anything, so a vault this
   build cannot read is refused before a backup file exists, rather than
   producing a file that restore then refuses. WCLI-49 tracked that asymmetry
-  and is closed as moot. One gap is unchanged and is recorded rather than
-  tidied away: a state document that decrypts but whose shape this build does
-  not write still backs up, because `runBackup` seals the plaintext without
-  parsing it. That is now a defect in the backup path rather than a format
-  case, and no task covers it.
+  and is closed as moot. The document half was recorded here as a gap left
+  open, because `runBackup` sealed the plaintext without parsing it; **WCLI-52
+  closed it the same way the envelope half was closed.** `runBackup` now
+  parses the plaintext after opening it and before the KDF, the seal and the
+  file, so a state document that decrypts and does not parse — bytes that are
+  not JSON, or a key set this build does not write — answers
+  `vault_state_malformed` and creates no file, and one carrying a stored
+  approval whose snapshot version this build does not implement is refused
+  with the catalogue's other answer, `vault_format_unsupported`, the same code
+  `ward restore` gives it. Where before an unparseable document backed up with
+  exit 0 and a file `ward restore` refused, under text promising that
+  "recovery from a lost key or a damaged vault needs this file and its
+  passphrase". The cost is deliberate and is the reason no softer answer was
+  taken: **preserving the bytes of a damaged vault means copying the vault
+  file, not taking a Ward backup.** The no-recovery-surface decision above is
+  what leaves nothing else to offer — Ward cannot honour such a file, so a
+  warning beside it would leave the file itself as the promise. Ward deletes
+  nothing, so the vault's own bytes stay on disk for whoever wants them.
 - **A denied vault looks different in the two reports, by design.** `ward
   doctor` fails its `schema` check; `ward status` exits 0. The reason that
   suggests itself is wrong, and an earlier version of this document gave it:
