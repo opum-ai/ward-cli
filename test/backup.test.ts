@@ -36,7 +36,10 @@ import { exitCodes } from "../src/contract/envelope.ts";
 import {
   backupAssociatedData,
   backupLimits,
+  deriveBackupKey,
+  encodeBackup,
   newBackupKdf,
+  sealBackup,
 } from "../src/domain/backup.ts";
 import { generateVaultKey } from "../src/domain/envelope.ts";
 import { decodeSecretValue } from "../src/domain/secret.ts";
@@ -614,18 +617,19 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
       },
       snapshotVersion: 2,
     };
-    const origin = await machineHolding(
-      encoder.encode(
-        JSON.stringify({
-          formatVersion: 1,
-          projects: [],
-          localBindings: [],
-          secrets: [],
-          auditRecords: [],
-          profileApprovals: [approval],
-        }),
-      ),
+    const document = encoder.encode(
+      JSON.stringify({
+        formatVersion: 1,
+        projects: [],
+        localBindings: [],
+        secrets: [],
+        auditRecords: [],
+        profileApprovals: [approval],
+      }),
     );
+    const DEC_30 =
+      "This vault was written by a different version of Ward, and this build cannot read it. Ward did not change it.";
+    const origin = await machineHolding(document);
     const path = backupPath();
     const attempted = await runWard(
       ["backup", "--output", path],
@@ -636,12 +640,40 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
     expect(JSON.parse(attempted.stderr)).toEqual({
       error_type: "validation",
       code: "vault_format_unsupported",
-      message:
-        "This vault was written by a different version of Ward, and this build cannot read it. Ward did not change it.",
+      message: DEC_30,
       principal: null,
     });
     expect(existsSync(path)).toBe(false);
     expect(attempted.stdout).not.toContain("Backup written");
+
+    // And the symmetry is measured rather than claimed from the shared call:
+    // a container holding this same document and sealed by the domain is
+    // what `ward restore` refuses, with the same code and the same sentence.
+    const kdf = newBackupKdf();
+    const container = join(root, `wcli52-approval-${++cases}.json`);
+    writeFileSync(
+      container,
+      encodeBackup(
+        sealBackup(
+          deriveBackupKey(encoder.encode(PASSPHRASE), kdf),
+          { vaultId: randomUUID(), revision: 1, kdf },
+          document,
+        ),
+      ),
+    );
+    const destination = machine();
+    const restored = await runWard(
+      ["restore", "--input", container, "--json"],
+      destination.options(worktree()),
+    );
+    expect(restored.exitCode).toBe(exitCodes.validation);
+    expect(JSON.parse(restored.stderr)).toEqual({
+      error_type: "validation",
+      code: "vault_format_unsupported",
+      message: DEC_30,
+      principal: null,
+    });
+    expect(destination.header()).toBeUndefined();
   });
 
   test("the same construction over a parseable document still writes, and it restores", async () => {
