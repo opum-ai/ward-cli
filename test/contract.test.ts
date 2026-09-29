@@ -242,10 +242,10 @@ describe("manifest", () => {
 
   test("lists exactly the commands that have handlers", () => {
     // `setup`, `init`, `status`, `doctor`, `backup`, `restore`, `secret`,
-    // `profile` and `check` are dispatched by the composition root in main.ts
-    // rather than by the synchronous handler table, because they need the
-    // injected store, provider, checkout, consent, terminal passphrase,
-    // secret value source or profile approver.
+    // `profile`, `check` and `agents` are dispatched by the composition root
+    // in main.ts rather than by the synchronous handler table, because they
+    // need the injected store, provider, checkout, consent, terminal
+    // passphrase, secret value source or profile approver.
     const compositionRoot = [
       "setup",
       "init",
@@ -258,6 +258,7 @@ describe("manifest", () => {
       "profile",
       "check",
       "run",
+      "agents",
     ];
     expect(commands.map((command) => command.name).sort()).toEqual(
       [...Object.keys(handlers), ...compositionRoot].sort(),

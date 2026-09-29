@@ -102,6 +102,65 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "agents",
+    summary:
+      "Judge or refresh Ward's own guidance block in one agent host's instruction file (CLAUDE.md for claude, AGENTS.md for codex). Reads no vault, and touches only the bytes between Ward's markers.",
+    args: [],
+    flags: [
+      {
+        name: "--check",
+        takesValue: false,
+        summary:
+          "Report whether the block is absent, stale or current, without changing a file. Stale or malformed guidance exits 6.",
+      },
+      {
+        name: "--require-installed",
+        takesValue: false,
+        summary:
+          "With --check: make an absent block exit 6 as well, for a checkout that has adopted the bridge.",
+      },
+      {
+        name: "--update-instructions",
+        takesValue: false,
+        summary:
+          "Add or refresh the block, leaving every other byte of the file as it was.",
+      },
+      {
+        name: "--target",
+        takesValue: true,
+        summary: "Which host to act on: claude or codex. Required.",
+      },
+      jsonFlag,
+    ],
+    kind: "agents.status",
+    resultKinds: ["agents.updated"],
+    // Only --update-instructions writes, and it writes one instruction file;
+    // --check changes nothing. `mutates` describes what a caller would be
+    // authorizing, which for this command is a file nobody's access depends on.
+    mutates: true,
+    unlocksVault: false,
+    // Not admin: the block is public guidance, and preparing a checkout for
+    // agent work is the whole point of a bridge. Nothing here grants access;
+    // that is `ward init`'s registration, in a terminal.
+    admin: false,
+    outputSensitivity: "public",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.conflict,
+      exitCodes.validation,
+    ],
+    // Only the read-only form appears here, and that is a constraint rather
+    // than a preference: non-disclosure.test.ts runs every example of every
+    // command that does not unlock the vault, in this repository's own root,
+    // and requires it to exit 0. An example that writes would create an
+    // instruction file in the checkout running the suite, and one with
+    // --require-installed would fail on this repository, which has not
+    // adopted the bridge. The writing form is documented by its flag above.
+    examples: ["ward agents --check --target claude"],
+  },
+  {
     name: "setup",
     summary:
       "Create the vault key in the OS credential store and the encrypted vault. Run this once, yourself, in a trusted terminal; never on an agent's behalf.",
