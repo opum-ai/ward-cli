@@ -48,8 +48,11 @@ import { exitCodes } from "../src/contract/envelope.ts";
 import { decodeSecretValue } from "../src/domain/secret.ts";
 import {
   differingProfileFields,
+  type NormalizedProfile,
   normalizeProfile,
   profileLimits,
+  type ProfileSnapshotField,
+  profileSnapshotFields,
   profilesMatch,
 } from "../src/domain/profile.ts";
 import {
@@ -767,6 +770,45 @@ describe("T13: a changed declaration cannot reuse an approval", () => {
       url: "https://api.example.invalid/RATE_LIMIT",
     });
     expect(differingProfileFields(elsewhere, approved)).toEqual(["url"]);
+  });
+
+  test("every field a snapshot declares is compared", () => {
+    // T13's completeness, made mechanical. A field added to the snapshot
+    // without a comparison is an approval that survives a change it should
+    // not, and nothing else here would notice. The output policy is the arm
+    // no declaration can reach while this build implements one policy (F7 of
+    // the first review), so it is measured here or nowhere — the values that
+    // no normalizer would produce stand for the state a later build's
+    // normalizer could.
+    const base = normalizeProfile(declaration());
+    const changed: [ProfileSnapshotField, NormalizedProfile][] = [
+      [
+        "adapter",
+        {
+          ...base,
+          adapter: "shell" as unknown as NormalizedProfile["adapter"],
+        },
+      ],
+      ["method", { ...base, method: "POST" }],
+      ["url", { ...base, url: `${base.url}/other` }],
+      ["auth", { ...base, auth: { type: "bearer", secret: "other.token" } }],
+      [
+        "headers",
+        { ...base, headers: [{ name: "Accept", value: "text/plain" }] },
+      ],
+      ["requestBody", { ...base, requestBody: "json-stdin" }],
+      [
+        "output",
+        { ...base, output: "body" as unknown as NormalizedProfile["output"] },
+      ],
+    ];
+    for (const [field, value] of changed)
+      expect(differingProfileFields(value, base)).toEqual([field]);
+    // The list above is every field the snapshot declares: a new one fails
+    // this case until someone decides how it is compared.
+    expect(changed.map(([field]) => field).sort()).toEqual(
+      [...profileSnapshotFields].sort(),
+    );
   });
 });
 
@@ -1510,11 +1552,21 @@ describe("the readiness path cannot reach a transport", () => {
           source.includes(`\`${specifier}\``)
         )
           offenders.push(`${path}: names ${specifier}`);
-      // A bare call, with `//` comments stripped so prose cannot trip it.
+      // The word, not only a call: a reference captured now and called later
+      // (`const request = fetch`) never appears with an argument beside it,
+      // and a name this test does not recognize is the case it cannot see.
+      // `//` comments are stripped so prose cannot trip it.
       const code = source.replace(/^\s*\/\/.*$/gm, "");
-      if (/\bfetch\s*\(/.test(code)) offenders.push(`${path}: calls fetch`);
-      if (/\bBun\.(spawn|spawnSync|\$)/.test(code))
-        offenders.push(`${path}: spawns a process`);
+      for (const name of [
+        "fetch",
+        "WebSocket",
+        "XMLHttpRequest",
+        "EventSource",
+      ])
+        if (new RegExp(`\\b${name}\\b`).test(code))
+          offenders.push(`${path}: names ${name}`);
+      if (/\bBun\.(spawn|spawnSync|\$|connect|listen)/.test(code))
+        offenders.push(`${path}: reaches Bun's process or socket API`);
     }
     expect(offenders).toEqual([]);
   });
