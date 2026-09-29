@@ -8,11 +8,16 @@
 //   filtered to it. Another project's events are not shown, not counted and
 //   not summarised (spec §8's "no global inventory").
 // - Nothing outside the record. An audit record's fields are Ward-owned
-//   identifiers, a closed phase and outcome, a profile name and a timestamp
-//   (domain/vault-state.ts), and this report renders them as stored. There
-//   are no free-text fields and no value fields, so there is nothing here a
-//   caller could smuggle a secret through, and this module reads no secret
-//   and no key material beyond the vault key.
+//   identifiers, a closed phase and outcome, a profile name, a timestamp, the
+//   OS identity Ward observed and the two labels the caller asserted
+//   (domain/vault-state.ts), and this report renders them as stored. Two of
+//   those a caller supplies, so this is no longer a report of Ward-owned
+//   values only — what still holds, and is what matters here, is that nothing
+//   is free text: a label is bounded by the alias grammar, so it is at most 64
+//   characters of letters, digits, dot, underscore and dash, and the observed
+//   identity is bounded to printable characters. Ward never writes a
+//   credential value into either. And this module reads no secret and no key
+//   material beyond the vault key.
 // - Read-only. Every fact comes from a project file read, `store.header`,
 //   `keyProvider.load` and `store.read`; nothing here can write.
 //
@@ -78,9 +83,19 @@ export interface AuditResult {
 // One event, as stored. Every field is printed; nothing is truncated and
 // nothing is summarised, because a summarised audit line is a claim about
 // what was dropped.
+//
+// The two absences read differently on purpose. A missing machine is Ward
+// saying it observed no identity; a missing label is the caller saying it
+// asserted none. Printing one word for both would collapse an observation and
+// an assertion into the same thing, which is the distinction these fields
+// exist to keep.
 function eventLine(event: AuditRecord): string {
   const outcome = event.outcome ?? "-";
-  return `${event.at}  ${event.phase}  ${outcome}  ${event.profile}  run ${event.runId}  secret ${event.secretId}`;
+  const machine =
+    event.machine === null
+      ? "not-recorded"
+      : `${event.machine.user}@${event.machine.host}`;
+  return `${event.at}  ${event.phase}  ${outcome}  ${event.profile}  run ${event.runId}  secret ${event.secretId}  machine ${machine}  actor ${event.actorLabel ?? "none"}  task ${event.taskLabel ?? "none"}`;
 }
 
 function auditText(report: AuditReport): string {

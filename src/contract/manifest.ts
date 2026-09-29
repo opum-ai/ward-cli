@@ -404,7 +404,21 @@ export const commands: CommandSpec[] = [
     summary:
       "Execute exactly the operation this checkout approved for a profile and report a status-only outcome. Ward sends the approved snapshot, follows no redirect, retries nothing on its own, connects only to a public destination, and returns no body, header or upstream message.",
     args: [{ name: "profile", required: true }],
-    flags: [jsonFlag],
+    flags: [
+      jsonFlag,
+      {
+        name: "--actor-label",
+        takesValue: true,
+        summary:
+          "Record what the caller asserts about who it is, on this run's audit events. Bounded by the alias grammar; self-asserted correlation metadata, never authorization.",
+      },
+      {
+        name: "--task-label",
+        takesValue: true,
+        summary:
+          "Record what the caller asserts about what this run belongs to, on this run's audit events. Bounded by the alias grammar; self-asserted correlation metadata, never authorization.",
+      },
+    ],
     kind: "run.result",
     // It writes the run's own admission and completion events and changes
     // nothing else: no credential is created, changed or deleted by a run,
@@ -429,7 +443,11 @@ export const commands: CommandSpec[] = [
       exitCodes.validation,
       exitCodes.indeterminate,
     ],
-    examples: ["ward run example-profile", "ward run example-profile --json"],
+    examples: [
+      "ward run example-profile",
+      "ward run example-profile --json",
+      "ward run example-profile --actor-label example-agent --task-label example-task",
+    ],
   },
   {
     name: "help",

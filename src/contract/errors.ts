@@ -54,9 +54,17 @@ export const errorCatalog = {
     type: "validation",
     message: "The vault key is not a 32-byte key.",
   },
+  // One code for every site that raises it: the sealed envelope's version,
+  // a stored profile snapshot's version, and the vault state document's
+  // version. The sentence is true at all three without naming which one, and
+  // it states the non-modification guarantee the way the rest of this catalog
+  // does. It carries no hint and no version numbers: DEC-25 left a vault from
+  // another build with no recovery path, so there is no command to point at,
+  // and DEC-30 A fixed this exact wording (WCLI-11, DEC-26 A).
   vault_format_unsupported: {
     type: "validation",
-    message: "The vault record uses a format this version of Ward cannot read.",
+    message:
+      "This vault was written by a different version of Ward, and this build cannot read it. Ward did not change it.",
   },
   vault_record_malformed: {
     type: "validation",
@@ -305,6 +313,17 @@ export const errorCatalog = {
   // code or a next step and never a destination, a header, an upstream
   // message or a status text: a run's diagnostics travel through an agent's
   // transcript, and spec §9.4 keeps a run's output to Ward-owned values.
+  // `ward run --actor-label` and `--task-label` (WCLI-11, DEC-33 option A). A
+  // label is bounded by the alias grammar, and this is the refusal for a value
+  // outside it — one code for both flags, named for its subject the way
+  // secret_alias_invalid and profile_name_invalid are. It is a usage fault
+  // rather than a validation one because the value is the caller's own
+  // argument, and it is answered before the vault is opened.
+  run_label_invalid: {
+    type: "usage",
+    message:
+      "A run label must start with a letter, be at most 64 characters, and use only letters, digits, dot, underscore or dash.",
+  },
   profile_approval_stale: {
     type: "denied",
     message:

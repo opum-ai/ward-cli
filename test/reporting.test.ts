@@ -43,6 +43,7 @@ import { WardError } from "../src/contract/errors.ts";
 import {
   parseVaultState,
   serializeVaultState,
+  vaultStateFormatVersion,
 } from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
@@ -518,10 +519,16 @@ describe("ward doctor", () => {
     });
 
     // A state document from another build is refused by the same parse the
-    // real reads run.
+    // real reads run. The version is one this build does not write — stated
+    // relative to the format this build does write, so the case keeps meaning
+    // "a build that is not this one" rather than pinning a number that a bump
+    // would quietly turn into this build's own (WCLI-11 regenerated this
+    // fixture; it read `2`, which was a future version until format 2 landed).
     writeFileSync(manifestPath, manifest);
     h.store.mutate(h.key(), () =>
-      new TextEncoder().encode(JSON.stringify({ formatVersion: 2 })),
+      new TextEncoder().encode(
+        JSON.stringify({ formatVersion: vaultStateFormatVersion + 1 }),
+      ),
     );
     const future = await doctorOf(h, checkout);
     expect(future.result.exitCode).toBe(exitCodes.validation);

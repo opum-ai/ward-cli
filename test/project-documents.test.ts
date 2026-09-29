@@ -20,10 +20,12 @@ import {
   type CheckoutIdentity,
   emptyVaultState,
   findBinding,
+  observedMachine,
   type ProfileApprovalRecord,
   parseVaultState,
   registerCheckout,
   serializeVaultState,
+  vaultStateFormatVersion,
   withAuditRecord,
 } from "../src/domain/vault-state.ts";
 
@@ -93,9 +95,11 @@ const stateBytes = (value: unknown) =>
 
 describe("the vault's state document", () => {
   test("the skeleton setup seals parses as empty collections", () => {
-    const state = parseVaultState(stateBytes({ formatVersion: 1 }));
+    const state = parseVaultState(
+      stateBytes({ formatVersion: vaultStateFormatVersion }),
+    );
     expect(state).toEqual({
-      formatVersion: 1,
+      formatVersion: vaultStateFormatVersion,
       projects: [],
       localBindings: [],
       secrets: [],
@@ -118,7 +122,7 @@ describe("the vault's state document", () => {
     expect(parseVaultState(bytes)).toEqual(state);
     expect(new TextDecoder().decode(bytes)).toBe(
       JSON.stringify({
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         projects: [{ id: projectId, createdAt: timestamp }],
         localBindings: [
           {
@@ -149,6 +153,9 @@ describe("the vault's state document", () => {
     phase: "admission",
     outcome: null,
     at: timestamp,
+    machine: { user: "example-user", host: "example-host" },
+    actorLabel: null,
+    taskLabel: null,
     ...over,
   });
 
@@ -181,6 +188,80 @@ describe("the vault's state document", () => {
     );
   });
 
+  // The observation side, which had no test: every case that asserted on a
+  // machine until now injected one through the run path's port, so the grammar
+  // that decides what may be recorded and the funnel that applies it were both
+  // unexercised (WCLI-11 review, F5).
+  test("an observed identity is recorded in the grammar a record may hold, and is absent otherwise", () => {
+    expect(observedMachine("dev-user", "build-host")).toEqual({
+      user: "dev-user",
+      host: "build-host",
+    });
+
+    // Refused, each for its own reason. An absent value and a value that
+    // cannot be one reach the same answer, because a record has one way to
+    // say Ward observed no identity.
+    const refused: [label: string, user: unknown, host: unknown][] = [
+      ["an absent user", undefined, "build-host"],
+      ["an empty user", "", "build-host"],
+      ["a user over the bound", "u".repeat(257), "build-host"],
+      ["a C0 control", "user\u0000", "build-host"],
+      ["DEL", "user\u007f", "build-host"],
+      // The three the first grammar admitted and a reviewer measured by
+      // running it: a C1 control, a Unicode line separator and a bidi
+      // override. Each would have been recorded and printed.
+      ["a C1 control", "user\u0085", "build-host"],
+      ["a line separator", "user\u2028", "build-host"],
+      ["a bidi override", "user\u202E", "build-host"],
+      ["a zero-width joiner", "user\u200D", "build-host"],
+    ];
+    for (const [label, user, host] of refused)
+      expect({ label, recorded: observedMachine(user, host) }).toEqual({
+        label,
+        recorded: null,
+      });
+
+    // The positive control for the loop: the same call with ordinary
+    // characters in the same positions still records, so the nulls above are
+    // the grammar refusing specific characters rather than the call failing.
+    expect(observedMachine("user", "build-host")).not.toBeNull();
+  });
+
+  test("a machine outside the grammar is written as absent, never written broken", () => {
+    // The run path takes this value from an injected port, so the serializer
+    // is the boundary that has to hold: a record written with a value the
+    // reader refuses would be a vault this build cannot open, and there is no
+    // repair command for one (WCLI-11 review, F3).
+    const read = parseVaultState(
+      serializeVaultState({
+        ...emptyVaultState(),
+        auditRecords: [
+          {
+            ...auditRecord(),
+            machine: { user: "u".repeat(300), host: "build-host" },
+          },
+        ],
+      }),
+    );
+    expect(read.auditRecords[0]?.machine).toBeNull();
+
+    // The positive control: the same record with a value inside the grammar
+    // keeps it, so the null above is the grammar's answer rather than the
+    // serializer dropping the field on every path.
+    const kept = parseVaultState(
+      serializeVaultState({
+        ...emptyVaultState(),
+        auditRecords: [
+          { ...auditRecord(), machine: { user: "user", host: "build-host" } },
+        ],
+      }),
+    );
+    expect(kept.auditRecords[0]?.machine).toEqual({
+      user: "user",
+      host: "build-host",
+    });
+  });
+
   test("an audit record carrying an outcome it could not have is malformed", () => {
     const cases: [label: string, value: Record<string, unknown>][] = [
       // An admission is written before there is an outcome.
@@ -195,7 +276,7 @@ describe("the vault's state document", () => {
     ];
     for (const [label, over] of cases) {
       const document = {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         auditRecords: [{ ...auditRecord(), ...over }],
       };
       expect({
@@ -256,7 +337,7 @@ describe("the vault's state document", () => {
       codeOf(() =>
         parseVaultState(
           stateBytes({
-            formatVersion: 1,
+            formatVersion: vaultStateFormatVersion,
             profileApprovals: [approvalRecord({ snapshotVersion: 2 })],
           }),
         ),
@@ -307,12 +388,12 @@ describe("the vault's state document", () => {
     ["a missing format version", { projects: [], localBindings: [] }],
     [
       "a projects value that is not an array",
-      { formatVersion: 1, projects: {} },
+      { formatVersion: vaultStateFormatVersion, projects: {} },
     ],
     [
       "a binding with a relative root",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         localBindings: [
           {
             ...identity,
@@ -326,7 +407,7 @@ describe("the vault's state document", () => {
     [
       "a binding root with a trailing slash",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         localBindings: [
           {
             ...identity,
@@ -340,7 +421,7 @@ describe("the vault's state document", () => {
     [
       "a binding root with a parent segment",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         localBindings: [
           {
             ...identity,
@@ -354,7 +435,7 @@ describe("the vault's state document", () => {
     [
       "a device with a leading zero",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         localBindings: [
           { projectId, ...identity, device: "0167", registeredAt: timestamp },
         ],
@@ -363,25 +444,29 @@ describe("the vault's state document", () => {
     [
       "a project id that is not an opaque id",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         projects: [{ id: "project-1", createdAt: timestamp }],
       },
     ],
     [
       "a timestamp that is not ISO-8601",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         projects: [{ id: projectId, createdAt: "yesterday" }],
       },
     ],
     [
       "an unknown collection",
-      { formatVersion: 1, unknownCollection: [], localBindings: [] },
+      {
+        formatVersion: vaultStateFormatVersion,
+        unknownCollection: [],
+        localBindings: [],
+      },
     ],
     [
       "an approval record with no snapshot version",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         profileApprovals: [
           (() => {
             const { snapshotVersion: _omitted, ...rest } = approvalRecord();
@@ -393,7 +478,7 @@ describe("the vault's state document", () => {
     [
       "an approval whose snapshot the normalizer would not produce",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         profileApprovals: [
           approvalRecord({
             snapshot: {
@@ -407,16 +492,22 @@ describe("the vault's state document", () => {
     ],
     [
       "a secret value that is not canonical base64",
-      { formatVersion: 1, secrets: [secretRecord({ value: "AAA" })] },
+      {
+        formatVersion: vaultStateFormatVersion,
+        secrets: [secretRecord({ value: "AAA" })],
+      },
     ],
     [
       "an empty secret value",
-      { formatVersion: 1, secrets: [secretRecord({ value: "" })] },
+      {
+        formatVersion: vaultStateFormatVersion,
+        secrets: [secretRecord({ value: "" })],
+      },
     ],
     [
       "a secret value over the 64 KiB limit",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         secrets: [
           secretRecord({
             value: Buffer.from(new Uint8Array(64 * 1024 + 1)).toString(
@@ -428,16 +519,22 @@ describe("the vault's state document", () => {
     ],
     [
       "a secret alias outside the grammar",
-      { formatVersion: 1, secrets: [secretRecord({ alias: "9not-an-alias" })] },
+      {
+        formatVersion: vaultStateFormatVersion,
+        secrets: [secretRecord({ alias: "9not-an-alias" })],
+      },
     ],
     [
       "a secret revision below one",
-      { formatVersion: 1, secrets: [secretRecord({ revision: 0 })] },
+      {
+        formatVersion: vaultStateFormatVersion,
+        secrets: [secretRecord({ revision: 0 })],
+      },
     ],
     [
       "a secret record with a field missing",
       {
-        formatVersion: 1,
+        formatVersion: vaultStateFormatVersion,
         secrets: [
           {
             id: projectId,
@@ -451,6 +548,100 @@ describe("the vault's state document", () => {
         ],
       },
     ],
+    [
+      "an audit record whose machine is not an object",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [{ ...auditRecord(), machine: "somewhere" }],
+      },
+    ],
+    [
+      "an audit record whose machine names an unknown key",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [
+          {
+            ...auditRecord(),
+            machine: {
+              user: "example-user",
+              host: "example-host",
+              role: "dev",
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "an audit record whose observed user is empty",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [
+          { ...auditRecord(), machine: { user: "", host: "example-host" } },
+        ],
+      },
+    ],
+    [
+      "an audit record whose observed host carries a control character",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [
+          {
+            ...auditRecord(),
+            machine: { user: "example-user", host: "example\u0000host" },
+          },
+        ],
+      },
+    ],
+    [
+      "an audit record whose observed host carries a C1 control",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [
+          {
+            ...auditRecord(),
+            machine: { user: "example-user", host: "host\u0085" },
+          },
+        ],
+      },
+    ],
+    [
+      "an audit record whose observed user carries a bidi override",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [
+          {
+            ...auditRecord(),
+            machine: { user: "user\u202E", host: "example-host" },
+          },
+        ],
+      },
+    ],
+    [
+      "an audit record whose observed host is over the bound",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [
+          {
+            ...auditRecord(),
+            machine: { user: "example-user", host: "h".repeat(257) },
+          },
+        ],
+      },
+    ],
+    [
+      "an audit record with an actor label outside the alias grammar",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [{ ...auditRecord(), actorLabel: "9not-a-label" }],
+      },
+    ],
+    [
+      "an audit record with a task label that is not a string",
+      {
+        formatVersion: vaultStateFormatVersion,
+        auditRecords: [{ ...auditRecord(), taskLabel: 7 }],
+      },
+    ],
   ];
   for (const [label, value] of malformed) {
     test(`${label} is refused`, () => {
@@ -460,9 +651,55 @@ describe("the vault's state document", () => {
     });
   }
 
+  // The genuine format-1 fixture, kept verbatim rather than deleted: this is
+  // what the previous build actually wrote, down to an audit record carrying
+  // exactly the eight keys format 1 had and no machine and no labels. It is
+  // here to pin that the version is the gate — the refusal is the version's
+  // answer about these bytes, not a reader failing to make sense of them
+  // (WCLI-11, DEC-19 B; DEC-25 is why nothing raises it).
+  const formatOneDocument = {
+    formatVersion: 1,
+    projects: [{ id: projectId, createdAt: timestamp }],
+    localBindings: [],
+    secrets: [],
+    profileApprovals: [],
+    auditRecords: [
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        runId: "22222222-2222-4222-8222-222222222222",
+        projectId,
+        profile: "example-profile",
+        secretId: "33333333-3333-4333-8333-333333333333",
+        phase: "admission",
+        outcome: null,
+        at: timestamp,
+      },
+    ],
+  };
+
+  test("a genuine format-1 document is refused by its version, and nothing reads it", () => {
+    expect(codeOf(() => parseVaultState(stateBytes(formatOneDocument)))).toBe(
+      "vault_format_unsupported",
+    );
+    // The positive control for "nothing reads it": the same document under the
+    // version this build writes is refused for its record instead. Two
+    // demonstrably different answers about the same bytes, which is what makes
+    // the first one a reading of the version rather than of the contents.
+    expect(
+      codeOf(() =>
+        parseVaultState(
+          stateBytes({
+            ...formatOneDocument,
+            formatVersion: vaultStateFormatVersion,
+          }),
+        ),
+      ),
+    ).toBe("vault_state_malformed");
+  });
+
   test("a format version this build does not implement is named as such", () => {
     expect(
-      codeOf(() => parseVaultState(stateBytes({ formatVersion: 2 }))),
+      codeOf(() => parseVaultState(stateBytes({ formatVersion: 3 }))),
     ).toBe("vault_format_unsupported");
   });
 });

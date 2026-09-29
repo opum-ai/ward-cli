@@ -66,6 +66,17 @@ const PROFILE = "example-profile";
 const ALIAS = "example.token";
 const HOST = "api.example.invalid";
 const PATH = "/rate_limit";
+// What this suite's runs observe as their machine identity. Supplied rather
+// than read, so the records a case asserts on carry values the case chose and
+// no test depends on the host it runs on. Both are distinct from HOST above,
+// which is the destination: the destination must never appear in a record and
+// the observed machine must, so a case that conflated them would pass for the
+// wrong reason.
+const MACHINE_USER = "run-suite-user";
+const MACHINE_HOST = "run-suite-host";
+// The labels a case asserts are recorded. Both satisfy the alias grammar.
+const ACTOR_LABEL = "example-agent";
+const TASK_LABEL = "example-task";
 const DECLARATION: Record<string, unknown> = {
   adapter: "http",
   method: "GET",
@@ -251,13 +262,17 @@ function harness() {
     now: () => new Date(clock),
     newId: () => `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`,
     transport,
+    machine: () => ({ user: MACHINE_USER, host: MACHINE_HOST }),
   });
 
   const ward = (cwd: string, args: string[]) => runWard(args, options(cwd));
 
   // The same operation, with the store the caller controls. Everything else
   // is identical to what `runWard` composes.
-  const operate = (checkout: string): Promise<unknown> => {
+  const operate = (
+    checkout: string,
+    input: { actorLabel?: string; taskLabel?: string } = {},
+  ): Promise<unknown> => {
     const identity = locateCheckout(checkout);
     const operation: OperationOptions = {
       checkout: identity,
@@ -267,8 +282,16 @@ function harness() {
       transport,
       now: () => new Date(clock),
       newId: () => `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`,
+      observeMachine: () => ({ user: MACHINE_USER, host: MACHINE_HOST }),
     };
-    return runOperation({ profile: PROFILE }, operation);
+    return runOperation(
+      {
+        profile: PROFILE,
+        actorLabel: input.actorLabel,
+        taskLabel: input.taskLabel,
+      },
+      operation,
+    );
   };
 
   function worktree(): string {
@@ -872,5 +895,138 @@ describe("T19: audit persistence failures, measured at the vault", () => {
     // moved exactly once — a failed completion that still bumped it would be
     // the vault claiming a record it does not hold.
     expect(h.header()?.revision).toBe((before?.revision ?? 0) + 1);
+  });
+});
+
+describe("WCLI-11: the audit field set a run records", () => {
+  test("the observed machine and the asserted labels are on both events", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    const result = await h.ward(checkout, [
+      "run",
+      PROFILE,
+      "--actor-label",
+      ACTOR_LABEL,
+      "--task-label",
+      TASK_LABEL,
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(exitCodes.success);
+
+    const records = forRun(h.state(), runIdOf(result));
+    expect(records.map((record) => record.phase)).toEqual([
+      "admission",
+      "completion",
+    ]);
+    // Both events carry all three, and the admission — written before the
+    // credential leaves — carries them too: a field set that only appeared on
+    // the completion would be missing from the record that exists when the
+    // run is interrupted.
+    for (const record of records) {
+      expect(record.machine).toEqual({
+        user: MACHINE_USER,
+        host: MACHINE_HOST,
+      });
+      expect(record.actorLabel).toBe(ACTOR_LABEL);
+      expect(record.taskLabel).toBe(TASK_LABEL);
+    }
+  });
+
+  test("a run given no labels records the absence rather than a value", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    const result = await h.ward(checkout, ["run", PROFILE, "--json"]);
+    expect(result.exitCode).toBe(exitCodes.success);
+
+    const records = forRun(h.state(), runIdOf(result));
+    expect(records.map((record) => record.actorLabel)).toEqual([null, null]);
+    expect(records.map((record) => record.taskLabel)).toEqual([null, null]);
+    // The positive control: the machine is still observed on both, so the two
+    // nulls above are the caller asserting nothing rather than the run
+    // recording nothing at all.
+    expect(records.map((record) => record.machine)).toEqual([
+      { user: MACHINE_USER, host: MACHINE_HOST },
+      { user: MACHINE_USER, host: MACHINE_HOST },
+    ]);
+  });
+
+  test("a label outside the alias grammar is refused before the vault is opened", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    const readsBefore = h.keychain.readAttempts;
+
+    const result = await h.ward(checkout, [
+      "run",
+      PROFILE,
+      "--actor-label",
+      "9not-a-label",
+      "--json",
+    ]);
+    // The sentence DEC-33 option A fixed, written out rather than read back
+    // from the catalog: an assertion that read the catalog would pass on any
+    // wording at all, which is the failure it exists to catch.
+    expect({
+      exit: result.exitCode,
+      code: JSON.parse(result.stderr).code,
+      message: JSON.parse(result.stderr).message,
+    }).toEqual({
+      exit: exitCodes.usage,
+      code: "run_label_invalid",
+      message:
+        "A run label must start with a letter, be at most 64 characters, and use only letters, digits, dot, underscore or dash.",
+    });
+    // Nothing was admitted, nothing was sent, and answering the argument
+    // fault cost no credential-store read: a usage fault is answered before
+    // the vault is opened, so it cannot raise a prompt on a locked keychain.
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+    expect(h.keychain.readAttempts).toBe(readsBefore);
+    // The refusal names the grammar the label failed, not the label itself.
+    expect(result.stderr).not.toContain("9not-a-label");
+  });
+
+  test("a task label outside the grammar is refused too, so the bound is not one flag's", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    const result = await h.ward(checkout, [
+      "run",
+      PROFILE,
+      "--task-label",
+      "has spaces",
+      "--json",
+    ]);
+    expect({
+      exit: result.exitCode,
+      code: JSON.parse(result.stderr).code,
+    }).toEqual({ exit: exitCodes.usage, code: "run_label_invalid" });
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+  });
+
+  test("a label is not authorization: a labelled run with no approval is still refused", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    expect(
+      (await h.ward(checkout, ["profile", "revoke", PROFILE, "--json"]))
+        .exitCode,
+    ).toBe(exitCodes.success);
+
+    // The labels are the only thing this run adds. If anything downstream
+    // read one as authority, this is the run where it would show.
+    const result = await h.ward(checkout, [
+      "run",
+      PROFILE,
+      "--actor-label",
+      ACTOR_LABEL,
+      "--task-label",
+      TASK_LABEL,
+      "--json",
+    ]);
+    expect({
+      exit: result.exitCode,
+      code: JSON.parse(result.stderr).code,
+    }).toEqual({ exit: exitCodes.notFound, code: "profile_not_approved" });
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
   });
 });

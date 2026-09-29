@@ -12,6 +12,7 @@
 - 2026-09-28T20:21:13-05:00 53fbbc8b311297ea2cf03380666d7038cbb6435e WCLI-25: keep the four lore agent source lists current
 - 2026-09-28T20:52:05-05:00 3e4064729f20950cd2ac783798994979297657a5 WCLI-25: keep the four lore agent source lists current (#43)
 - 2026-09-29T01:11:17-05:00 c4c646df5b692b4ef486202889881399ee63705d docs(WCLI-10): record the transport decision as ADR 0009
+- 2026-09-29T01:22:37-05:00 58d0604c5bfe2d3863aa8b10fe2e3368371b53a9 WCLI-10: the status-only HTTPS transport (#67)
 
 ## docs/adr
 
