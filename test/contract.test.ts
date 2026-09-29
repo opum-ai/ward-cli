@@ -20,6 +20,7 @@ import type { PassphraseSource } from "../src/application/backup.ts";
 import { handlers } from "../src/application/commands.ts";
 import { instructionTopics } from "../src/application/instructions.ts";
 import type { SecretValueSource } from "../src/application/secrets.ts";
+import type { Transport } from "../src/application/transport.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
@@ -160,7 +161,7 @@ async function prepareExample(name: string): Promise<RunOptions> {
         )
       ).exitCode,
     ).toBe(exitCodes.success);
-  } else if (name === "profile" || name === "check") {
+  } else if (name === "profile" || name === "check" || name === "run") {
     // A vault, a registered checkout and a manifest declaring the profile
     // the examples name. `ward check` is expected to answer "not ready" —
     // no credential is stored — which is why 6 is a declared exit code for
@@ -173,7 +174,7 @@ async function prepareExample(name: string): Promise<RunOptions> {
       exitCodes.success,
     );
     declareExampleProfile(exampleCheckout);
-    if (name === "profile") {
+    if (name === "profile" || name === "run") {
       expect(
         (
           await runWard(
@@ -182,6 +183,30 @@ async function prepareExample(name: string): Promise<RunOptions> {
           )
         ).exitCode,
       ).toBe(exitCodes.success);
+    }
+    if (name === "run") {
+      // The credential the approved declaration names, and a transport. An
+      // example is a line a developer could type, and typing it here must
+      // not reach the network: the transport answers with a status and
+      // nothing else, which is the whole of what a run returns.
+      expect(
+        (
+          await runWard(
+            [
+              "secret",
+              "set",
+              exampleProfileDeclaration.auth.secret,
+              "--stdin",
+              "--json",
+            ],
+            prepared,
+          )
+        ).exitCode,
+      ).toBe(exitCodes.success);
+      const statusOnly: Transport = {
+        send: async () => ({ kind: "response", httpStatus: 200 }),
+      };
+      prepared.transport = statusOnly;
     }
   }
   return prepared;
@@ -220,6 +245,7 @@ describe("manifest", () => {
       "secret",
       "profile",
       "check",
+      "run",
     ];
     expect(commands.map((command) => command.name).sort()).toEqual(
       [...Object.keys(handlers), ...compositionRoot].sort(),

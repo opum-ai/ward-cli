@@ -15,6 +15,8 @@ import {
 } from "../src/domain/project-manifest.ts";
 import type { SecretRecord } from "../src/domain/secret.ts";
 import {
+  type AuditRecord,
+  auditHistoryLimit,
   type CheckoutIdentity,
   emptyVaultState,
   findBinding,
@@ -22,6 +24,7 @@ import {
   parseVaultState,
   registerCheckout,
   serializeVaultState,
+  withAuditRecord,
 } from "../src/domain/vault-state.ts";
 
 const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
@@ -97,6 +100,7 @@ describe("the vault's state document", () => {
       localBindings: [],
       secrets: [],
       profileApprovals: [],
+      auditRecords: [],
     });
     expect(parseVaultState(serializeVaultState(emptyVaultState()))).toEqual(
       emptyVaultState(),
@@ -127,8 +131,85 @@ describe("the vault's state document", () => {
         ],
         secrets: [],
         profileApprovals: [],
+        auditRecords: [],
       }),
     );
+  });
+
+  // The audit events `ward run` writes. They are in this document because
+  // they are the one collection an agent's operation adds to, so their shape
+  // is part of what a damaged document has to be caught in rather than a
+  // detail of the run.
+  const auditRecord = (over: Partial<AuditRecord> = {}): AuditRecord => ({
+    id: "11111111-1111-4111-8111-111111111111",
+    runId: "22222222-2222-4222-8222-222222222222",
+    projectId,
+    profile: "example-profile",
+    secretId: "33333333-3333-4333-8333-333333333333",
+    phase: "admission",
+    outcome: null,
+    at: timestamp,
+    ...over,
+  });
+
+  test("an audit pair round-trips, and the history stays inside its bound", () => {
+    const state = {
+      ...emptyVaultState(),
+      auditRecords: [
+        auditRecord(),
+        auditRecord({ phase: "completion", outcome: "succeeded" }),
+      ],
+    };
+    expect(parseVaultState(serializeVaultState(state))).toEqual(state);
+
+    let bounded = emptyVaultState();
+    for (let index = 0; index < auditHistoryLimit + 1; index++)
+      bounded = withAuditRecord(
+        bounded,
+        auditRecord({
+          id: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
+        }),
+      );
+    expect(bounded.auditRecords.length).toBe(auditHistoryLimit);
+    // The oldest goes, not the newest: a bound that dropped what just
+    // happened would lose the event a reader is most likely to want.
+    expect(bounded.auditRecords.at(-1)?.id).toBe(
+      `11111111-1111-4111-8111-${String(auditHistoryLimit).padStart(12, "0")}`,
+    );
+    expect(bounded.auditRecords[0]?.id).toBe(
+      `11111111-1111-4111-8111-${String(1).padStart(12, "0")}`,
+    );
+  });
+
+  test("an audit record carrying an outcome it could not have is malformed", () => {
+    const cases: [label: string, value: Record<string, unknown>][] = [
+      // An admission is written before there is an outcome.
+      [
+        "an admission with an outcome",
+        { phase: "admission", outcome: "succeeded" },
+      ],
+      ["an unknown outcome", { phase: "completion", outcome: "probably-fine" }],
+      ["an unknown phase", { phase: "delivery", outcome: null }],
+      ["a non-UUID secret id", { secretId: "not-a-uuid" }],
+      ["a non-profile name", { profile: "../escape" }],
+    ];
+    for (const [label, over] of cases) {
+      const document = {
+        formatVersion: 1,
+        auditRecords: [{ ...auditRecord(), ...over }],
+      };
+      expect({
+        label,
+        throws: (() => {
+          try {
+            parseVaultState(stateBytes(document));
+            return false;
+          } catch {
+            return true;
+          }
+        })(),
+      }).toEqual({ label, throws: true });
+    }
   });
 
   test("a secret record round-trips byte for byte", () => {

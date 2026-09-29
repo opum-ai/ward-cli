@@ -11,6 +11,7 @@ import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
 import { createTerminalSecretValues } from "../adapters/secret-value.ts";
 import { acquireSetupSession } from "../adapters/setup-session.ts";
+import { createHttpsTransport } from "../adapters/https-transport.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
 import {
   createTerminalConsent,
@@ -34,6 +35,8 @@ import {
 import type { KeyProvider } from "../application/key-provider.ts";
 import { initProject } from "../application/project.ts";
 import { runCheck, runProfile } from "../application/profiles.ts";
+import { runOperation } from "../application/run.ts";
+import type { Transport } from "../application/transport.ts";
 import {
   type ReportingOptions,
   runDoctor,
@@ -89,6 +92,15 @@ export interface RunOptions {
   profileApprover?: ProfileApprover;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
+  // The identifiers Ward writes into records it creates. Defaults to
+  // `crypto.randomUUID`; tests supply a sequence so the ids they assert on
+  // are the ids they expect.
+  newId?: () => string;
+  // The network client `ward run` sends through. Defaults to the in-process
+  // HTTPS transport; tests substitute one, which is the only way a test can
+  // reach a request path without a network. There is no command-line,
+  // configuration or environment path to it.
+  transport?: Transport;
 }
 
 function failure(error: WardError): RunResult {
@@ -368,8 +380,9 @@ async function profileCommand(
 }
 
 // The composition root for `ward check`. It builds the same read-only ports
-// every project command builds and has no transport port at all: the network
-// client `ward run` needs does not exist in this build (WCLI-10 adds one).
+// every project command builds and no transport port at all: readiness is
+// answered from the vault and the manifest, and this command has no way to
+// reach the network even by mistake.
 async function checkCommand(
   input: CommandInput,
   options: RunOptions,
@@ -385,6 +398,40 @@ async function checkCommand(
       keyProvider:
         options.keyProvider ??
         createKeychainKeyProvider({ service: keychainService }),
+    },
+  );
+  return {
+    kind: result.kind,
+    data: result.data,
+    text: result.text,
+    ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+  };
+}
+
+// The composition root for `ward run`. Unlike every other command's, it
+// builds a transport — the in-process HTTPS client by default, and whatever
+// the caller supplied when a test is exercising the run path without a
+// network. Nothing here reads the clock or generates an identifier on its
+// own: both are handed to the application, so the records this command
+// writes carry the values its caller can predict.
+async function runCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const result = await runOperation(
+    { profile: input.positionals[0] },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+      transport: options.transport ?? createHttpsTransport(),
+      now: options.now ?? (() => new Date()),
+      newId: options.newId ?? randomUUID,
     },
   );
   return {
@@ -444,6 +491,8 @@ async function dispatch(
     output = await profileCommand(parsed, options);
   } else if (command.name === "check") {
     output = await checkCommand(parsed, options);
+  } else if (command.name === "run") {
+    output = await runCommand(parsed, options);
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);

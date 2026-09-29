@@ -375,6 +375,38 @@ export const commands: CommandSpec[] = [
     examples: ["ward check", "ward check example-profile"],
   },
   {
+    name: "run",
+    summary:
+      "Execute exactly the operation this checkout approved for a profile and report a status-only outcome. Ward sends the approved snapshot, follows no redirect, retries nothing on its own, connects only to a public destination, and returns no body, header or upstream message.",
+    args: [{ name: "profile", required: true }],
+    flags: [jsonFlag],
+    kind: "run.result",
+    // It writes the run's own admission and completion events and changes
+    // nothing else: no credential is created, changed or deleted by a run,
+    // and the profile's approval and snapshot are read and not rewritten.
+    // `mutates` describes what a caller would be authorizing, and a run
+    // authorizes an external operation rather than a change to this vault.
+    mutates: false,
+    unlocksVault: true,
+    // Not admin. Spec §15's vertical slice ends at an agent performing
+    // `ward run`, and what holds the line on authority is upstream of it:
+    // the developer's approval, checked against the stored snapshot before a
+    // byte is sent.
+    admin: false,
+    outputSensitivity: "status",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: ["ward run example-profile", "ward run example-profile --json"],
+  },
+  {
     name: "help",
     summary: "Show usage for Ward or one command.",
     args: [{ name: "command", required: false }],

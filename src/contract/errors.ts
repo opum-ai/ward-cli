@@ -301,6 +301,60 @@ export const errorCatalog = {
       "The profile changed while this command was running, so Ward did not record the approval.",
     hint: "Run the command again to review the profile as it is now.",
   },
+  // Running an approved profile (spec §9.3-§9.4). Every message here names a
+  // code or a next step and never a destination, a header, an upstream
+  // message or a status text: a run's diagnostics travel through an agent's
+  // transcript, and spec §9.4 keeps a run's output to Ward-owned values.
+  profile_approval_stale: {
+    type: "denied",
+    message:
+      "The declared profile no longer matches what this checkout approved, so Ward did not run it.",
+    hint: "A change to the destination, method, authentication reference, headers, body policy or output policy needs approval again. `ward check` names the fields that differ; a developer approves in a terminal with `ward profile approve <name>`.",
+  },
+  run_credential_invalid: {
+    type: "validation",
+    message:
+      "The stored credential cannot be written into an HTTP header, so Ward did not send it.",
+    hint: "A credential Ward sends belongs on one line of text: it must be non-empty and carry no control bytes. Store a value the provider issued for a Bearer header with `ward secret set <alias>`.",
+  },
+  run_auth_unsupported: {
+    type: "validation",
+    message:
+      "The approved operation uses an authentication scheme this version of Ward does not implement, so Ward did not run it.",
+  },
+  run_body_unsupported: {
+    type: "validation",
+    message:
+      "This profile is approved to accept a request body from stdin, which this version of Ward does not implement, so Ward did not run it.",
+    hint: "This build sends no request body. It refuses an approved body policy it cannot honour rather than sending the request without the body the endpoint expects.",
+  },
+  run_destination_refused: {
+    type: "denied",
+    message:
+      "The approved destination is not a public address, so Ward did not connect to it.",
+    hint: "Ward connects only to public destinations: loopback, private, link-local, multicast and metadata addresses are refused, in their IPv4 and IPv6 spellings alike. A local or private service needs an adapter Ward does not have yet.",
+  },
+  run_destination_unresolved: {
+    type: "validation",
+    message:
+      "The approved destination could not be resolved, so Ward sent nothing.",
+    hint: "Check the destination and this machine's network and name resolution.",
+  },
+  run_connection_failed: {
+    type: "validation",
+    message:
+      "Ward could not connect to the approved destination, so it sent nothing.",
+  },
+  run_tls_failed: {
+    type: "validation",
+    message:
+      "The approved destination's certificate was not valid for it, so Ward sent nothing.",
+  },
+  run_request_invalid: {
+    type: "validation",
+    message:
+      "The approved operation could not be turned into a request Ward would send, so it sent nothing.",
+  },
   vault_state_malformed: {
     type: "validation",
     message:
