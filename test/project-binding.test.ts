@@ -14,6 +14,7 @@
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -813,5 +814,51 @@ describe("T22: init preserves every file it does not own", () => {
     expect(second.projectId).toBe(first.projectId);
     expect(second.manifest).toBe("present");
     expect(readFileSync(manifestPath(checkout), "utf8")).toBe(text);
+  });
+});
+
+// WCLI-27. `ward init` writes the manifest and *then* each selected bridge
+// file, and each of those writes is a separate temp-file-and-rename, so a
+// later target failing leaves an earlier one landed. A message that answered
+// such a failure with an unqualified "Nothing was changed" was therefore
+// false in exactly this path, and the fix (DEC-10 option A) narrowed the
+// claim to the one file Ward was denied rather than reordering the writes.
+// So the test asserts both halves: that the earlier write really did land —
+// without which the string would be being changed for no reason — and the
+// text that is now reported.
+describe("WCLI-27: a failed write reports a claim scoped to the file it failed on", () => {
+  test("a later target failing after the manifest landed does not claim the run changed nothing", async () => {
+    const h = harness();
+    const checkout = worktree("late-target-unwritable");
+    // The manifest's directory is inside the checkout and writable; the
+    // checkout root itself is not, so the manifest lands, the instruction
+    // file that follows it cannot be written, and the failure is reported
+    // after a real change.
+    mkdirSync(join(checkout, ".ward"));
+    chmodSync(checkout, 0o555);
+    let result: Awaited<ReturnType<typeof h.init>>;
+    try {
+      result = await h.init(checkout, ["--no-register", "--claude"]);
+    } finally {
+      // Restored even when the assertions below throw, so the shared
+      // afterAll can remove the tree.
+      chmodSync(checkout, 0o755);
+    }
+
+    expect(result.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(result.stderr)).toBe("project_file_unwritable");
+
+    // The premise, measured: a file in the repository has changed. This is
+    // what the old "Nothing was changed" text denied, and an assertion that
+    // only checked the message would still pass if the write order changed
+    // and the string became true for a different reason.
+    expect(existsSync(manifestPath(checkout))).toBe(true);
+    expect(existsSync(join(checkout, "CLAUDE.md"))).toBe(false);
+
+    // What the message does claim: the project file Ward was denied. Not
+    // the run, and not any other file.
+    const reported = JSON.parse(result.stderr) as { message: string };
+    expect(reported.message).toContain("Ward did not change it.");
+    expect(reported.message).not.toContain("Nothing was changed");
   });
 });
