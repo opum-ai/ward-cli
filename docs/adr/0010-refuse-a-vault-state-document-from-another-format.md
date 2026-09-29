@@ -81,10 +81,18 @@ than a format gate.**
   now rather than repealed: there is no second format to migrate from. Ward
   still has no `ward migrate`, no read-out into a fresh vault, and no domain
   function that rewrites a document from another build.
-- **`ward doctor` no longer reports a state document as unsupported.** Its
-  `schema` check answers `state_malformed` for a document this build did not
-  write, which is the answer a damaged document gets and the only one there is
-  now.
+- **`ward doctor` answers two ways, and the difference is the record.** A
+  document whose *own* version this build did not write fails the `schema`
+  check as `state_malformed`, the answer a damaged document gets. A stored
+  profile approval whose `snapshotVersion` this build does not implement fails
+  it as `state_unsupported`, because the document parsed and one record inside
+  it did not. The second is not a leftover of the version gate: it is the
+  retained authority check above reaching the report, and removing that
+  handling would make both reports throw out of their read instead of
+  answering. A first draft of this rewrite deleted it on the assumption that
+  one format made it unreachable, which was false — the code still reaches the
+  reporting path from the approval site, and the removal was measured and
+  reverted (WCLI-51 review, F1).
 
 ## Consequences
 
@@ -119,8 +127,13 @@ than a format gate.**
   parsing it. That is now a defect in the backup path rather than a format
   case, and no task covers it.
 - **A denied vault looks different in the two reports, by design.** `ward
-  doctor` fails its `schema` check with `state_malformed`; `ward status` still
-  exits 0 and says nothing, because it never reads the state document at all.
-  That asymmetry is ADR 0007's, not this decision's, and one format does not
-  change it — a vault damaged today is as invisible to status as a vault from
-  another build was yesterday.
+  doctor` fails its `schema` check; `ward status` exits 0. The reason that
+  suggests itself is wrong, and an earlier version of this document gave it:
+  status *does* read the state document — that read is what produces the
+  `binding` row. It exits 0 because `bindingStatus` maps a state that is not
+  present to `unknown`
+  ([ADR 0007](0007-status-and-doctor-reporting.md)), which is the report
+  saying it could not judge rather than that it did not look. One format does
+  not change that, and it is also why the remedy for a stored approval this
+  build cannot read is a report and not a thrown envelope: both reports answer
+  whatever the read returned.

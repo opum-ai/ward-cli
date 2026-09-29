@@ -95,9 +95,12 @@ describe("the refusal that remains, and the one that is gone", () => {
 
   test("both remaining sites raise the code with that sentence", () => {
     // A stored profile snapshot's version: valid in every other respect, so
-    // the version is the only thing left that can refuse it. The state
-    // document's own version is this build's, so nothing above it in the
-    // reader can be what refuses.
+    // the version is the only thing left that can refuse it. The snapshot
+    // below is a complete canonical one, and that is load-bearing rather than
+    // decoration — an unnormalizable value here would give the same record a
+    // second reason to be refused, and the assertion would stop isolating the
+    // version (WCLI-51 review, F3). The state document's own version is this
+    // build's, so nothing above it in the reader can be refusing either.
     expect(
       refusalOf(() =>
         parseVaultState(
@@ -112,7 +115,15 @@ describe("the refusal that remains, and the one that is gone", () => {
                 inode: "8429931",
                 approvedAt: timestamp,
                 snapshotVersion: 99,
-                snapshot: {},
+                snapshot: {
+                  adapter: "http",
+                  method: "GET",
+                  url: "https://api.example.invalid/a%20b?x=1&y=2",
+                  auth: { type: "bearer", secret: "example.token" },
+                  headers: [],
+                  requestBody: "none",
+                  output: "status",
+                },
               },
             ],
           }),

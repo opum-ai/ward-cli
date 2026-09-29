@@ -14,6 +14,7 @@
 - 2026-09-29T01:11:17-05:00 c4c646df5b692b4ef486202889881399ee63705d docs(WCLI-10): record the transport decision as ADR 0009
 - 2026-09-29T01:22:37-05:00 58d0604c5bfe2d3863aa8b10fe2e3368371b53a9 WCLI-10: the status-only HTTPS transport (#67)
 - 2026-09-29T06:16:11-05:00 d187fe72b23e17ce94b270b3b5df1ad472933ffc WCLI-11: vault state format 2, the full audit field set, and the refusal that replaces recovery (#93)
+- 2026-09-29T06:50:14-05:00 537c23e55cbfd5e0574171774e13441199ff5f7e refactor(WCLI-51): one vault format at version 1, no compatibility surface
 
 ## docs/adr
 
