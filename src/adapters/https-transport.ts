@@ -159,8 +159,19 @@ function requestBytes(request: TransportRequest): Buffer | undefined {
     if (!push(`${header.name}: ${header.value}`)) return undefined;
   }
   if (!isFieldValue(request.authorization.value)) return undefined;
+  // The credential's line is the one place a value is written as bytes rather
+  // than through `push`, so its name is checked separately, and encoded and
+  // checked the same way. Nothing in the product sets this field to anything
+  // but `Authorization` — domain/authorization.ts is its only constructor —
+  // but an unchecked name is a header line a CRLF could end early, and the
+  // check costs a comparison (WCLI-10 review, F6).
+  const authorizationName = Buffer.from(
+    `${request.authorization.name}: `,
+    "latin1",
+  );
+  if (!isFieldValue(authorizationName)) return undefined;
   lines.push(
-    Buffer.from(`${request.authorization.name}: `, "latin1"),
+    authorizationName,
     Buffer.from(request.authorization.value),
     Buffer.from("\r\n", "latin1"),
   );

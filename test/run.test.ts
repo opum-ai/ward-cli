@@ -46,10 +46,13 @@ import type {
 import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
+import { encodeSecretValue } from "../src/domain/secret.ts";
 import {
   type AuditRecord,
   parseVaultState,
+  serializeVaultState,
   type VaultState,
+  withSecret,
 } from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
@@ -152,12 +155,38 @@ function harness() {
   // spec §9.4's persistence rule are measured rather than argued.
   let failWritesFrom: number | undefined;
 
+  // Fire a rotation immediately before a chosen write. That is what a
+  // concurrent `ward secret set` landing in a run's window looks like from
+  // inside this process, and the window is the point: the run has already
+  // read and decoded the credential by then, so the value it is about to
+  // deliver is no longer the one the vault holds. The count is the same one
+  // `failWritesFrom` uses, so a test names which write it means the same way.
+  let rotateBeforeWrite: number | undefined;
+  const rotateSecret = (): void => {
+    sqlite.mutate(key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const existing = current.secrets.find((secret) => secret.alias === ALIAS);
+      if (existing === undefined) throw new Error("no secret to rotate");
+      return serializeVaultState(
+        withSecret(current, {
+          ...existing,
+          value: encodeSecretValue(encoder.encode("rotated-value")),
+          revision: existing.revision + 1,
+        }),
+      );
+    });
+  };
+
   const controlled: VaultStore = {
     header: () => sqlite.header(),
     create: (vaultId, key, plaintext) => sqlite.create(vaultId, key, plaintext),
     read: (key) => sqlite.read(key),
     mutate: (key, change) => {
       writes++;
+      if (rotateBeforeWrite !== undefined && writes === rotateBeforeWrite) {
+        rotateBeforeWrite = undefined;
+        rotateSecret();
+      }
       if (failWritesFrom !== undefined && writes >= failWritesFrom)
         throw new Error("the vault could not be written");
       return sqlite.mutate(key, change);
@@ -285,6 +314,9 @@ function harness() {
       value: Record<string, unknown>,
     ) => writeDeclaration(checkout, name, value),
     failWritesFrom: setFailWritesFrom,
+    rotateBefore: (write: number) => {
+      rotateBeforeWrite = write;
+    },
     writes: () => writes,
   };
 }
@@ -523,6 +555,24 @@ describe("the approved snapshot is what runs", () => {
       exit: exitCodes.notFound,
       code: "secret_not_found",
     });
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+  });
+
+  test("a credential rotated between the read and the admission is refused before the transport", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    // The next write is the admission, so rotating immediately before it puts
+    // the change inside the window this run opened when it read and decoded
+    // the credential — after that read, before the admission commits. The run
+    // must not deliver a value the vault no longer holds, and it must not
+    // leave an audit pair describing a state that never existed (WCLI-10
+    // review, F2).
+    h.rotateBefore(h.writes() + 1);
+    const error = (await h.operate(checkout).catch((e: unknown) => e)) as {
+      code?: string;
+    };
+    expect(error.code).toBe("secret_changed");
     expect(h.transport.count).toBe(0);
     expect(h.state().auditRecords.length).toBe(0);
   });

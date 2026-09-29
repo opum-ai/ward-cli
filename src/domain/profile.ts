@@ -136,6 +136,19 @@ export interface NormalizedProfile {
 // snapshot predates this build, because WCLI-9 is the first build to write
 // one and it is unreleased. The version exists for the records that will
 // outlive the rules; there are none yet to protect.
+//
+// **Considered again at WCLI-10, which narrowed the set** — a declared header
+// value may no longer carry a code point the wire encoding cannot represent —
+// and it still does not bump, on a reason the paragraph above does not supply
+// on its own. The rule at the top exists to stop a build reading a
+// differently-interpreted record as an approval the developer gave; this
+// change can only ever *refuse* more, never accept more, so a snapshot it
+// newly rejects fails closed at parse and there is no interpretation to get
+// wrong in either direction. The cost accepted here is the error a developer
+// sees on such a vault: malformed rather than unsupported-by-another-build,
+// which is a worse description of a correctly-refused record. The first bump
+// belongs to the first release, which is when snapshots begin outliving the
+// rules that wrote them (WCLI-10 review, F7).
 export const profileSnapshotVersion = 1;
 
 export const profileSnapshotFields = [

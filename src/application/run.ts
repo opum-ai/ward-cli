@@ -190,8 +190,10 @@ function writeAudit(options: {
   runId: string;
   at: string;
   newId: () => string;
-  // Present at admission only: the snapshot this run is about to execute.
+  // Present at admission only: what this run is about to execute, and the
+  // credential it is about to deliver.
   executing?: NormalizedProfile;
+  executingSecret?: { readonly id: string; readonly revision: number };
 }): void {
   options.store.mutate(options.key, (plaintext) => {
     const state = parseVaultState(plaintext);
@@ -215,6 +217,18 @@ function writeAudit(options: {
       throw new WardError("profile_approval_stale");
     const secret = findSecret(state, options.projectId, options.alias);
     if (secret === undefined) throw new WardError("secret_not_found");
+    // The credential's bytes were decoded before this transaction opened, so
+    // its revision is what says the value about to be delivered is still the
+    // value the vault holds. Without this, a rotation landing in that window
+    // sends the superseded credential to the approved endpoint while the
+    // vault holds the replacement — and the two audit records cannot show it,
+    // because a rotation keeps the record's id (WCLI-10 review, F2).
+    if (
+      options.executingSecret !== undefined &&
+      (secret.id !== options.executingSecret.id ||
+        secret.revision !== options.executingSecret.revision)
+    )
+      throw new WardError("secret_changed");
     const record: AuditRecord = {
       id: options.newId(),
       runId: options.runId,
@@ -331,6 +345,7 @@ export async function runOperation(
           at: options.now().toISOString(),
           newId: options.newId,
           executing: snapshot,
+          executingSecret: { id: secret.id, revision: secret.revision },
         });
 
         const sent = await options.transport.send(request);

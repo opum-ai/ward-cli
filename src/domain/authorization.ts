@@ -17,7 +17,8 @@
 // as a second request, at a destination the developer approved for something
 // else entirely. NUL and the other control bytes are what a parser may treat
 // as a terminator. So the rule is the same one the approved snapshot already
-// applies to its declared headers (`hasControlBytes` in domain/profile.ts):
+// applies to its declared headers (`hasUnwritableHeaderByte` in
+// domain/profile.ts):
 // no byte below 0x20 and no DEL. The two move together deliberately — a
 // build that widened this one without widening that one would have a
 // declaration grammar stricter than its credential path, which is the kind
