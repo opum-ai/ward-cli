@@ -24,7 +24,6 @@ import {
 } from "../domain/secret.ts";
 import {
   type CheckoutIdentity,
-  findBinding,
   findSecret,
   parseVaultState,
   secretsFor,
@@ -33,9 +32,10 @@ import {
   withoutSecret,
   withSecret,
 } from "../domain/vault-state.ts";
+import { boundProject, requireBinding } from "./binding.ts";
 import type { KeyProvider } from "./key-provider.ts";
 import type { ProjectFiles } from "./project-files.ts";
-import { type Checkout, readCheckout } from "./project.ts";
+import { readCheckout } from "./project.ts";
 import type { VaultStore } from "./vault-store.ts";
 
 // Where a secret value comes from. The hidden path is a person on a
@@ -167,20 +167,6 @@ function deleteText(alias: string, projectId: string): string {
   ].join("\n");
 }
 
-// The manifest's project and the vault's binding must agree, and the binding
-// is what decides access. A missing manifest and a missing binding are the
-// same answer: this checkout is not registered. A binding for a project the
-// manifest does not name is a conflict.
-function boundProject(checkout: Checkout, state: VaultState): string {
-  const manifest = checkout.manifest;
-  if (manifest === undefined) throw new WardError("project_not_registered");
-  const binding = findBinding(state, checkout.identity);
-  if (binding === undefined) throw new WardError("project_not_registered");
-  if (binding.projectId !== manifest.projectId)
-    throw new WardError("binding_conflict");
-  return binding.projectId;
-}
-
 // Opens the vault for this checkout and hands the action the key, the parsed
 // state and the project the binding authorises. The key is zeroed on every
 // path out, and the read's plaintext is zeroed as soon as it has been parsed.
@@ -255,22 +241,6 @@ function inspectSecret(bound: BoundVault, alias: string): SecretResult {
   };
 }
 
-// The same authority decision, repeated inside a write transaction, so a
-// change that raced another writer cannot act on a state the earlier read no
-// longer describes.
-function boundProjectOf(
-  options: SecretOptions,
-  plaintext: Uint8Array,
-  expectedProjectId: string,
-): VaultState {
-  const state = parseVaultState(plaintext);
-  const binding = findBinding(state, options.checkout);
-  if (binding === undefined) throw new WardError("project_not_registered");
-  if (binding.projectId !== expectedProjectId)
-    throw new WardError("binding_conflict");
-  return state;
-}
-
 function deleteSecret(
   bound: BoundVault,
   alias: string,
@@ -279,7 +249,11 @@ function deleteSecret(
   const record = findSecret(bound.state, bound.projectId, alias);
   if (record === undefined) throw new WardError("secret_not_found");
   options.store.mutate(bound.key, (plaintext) => {
-    const current = boundProjectOf(options, plaintext, bound.projectId);
+    // The authority decision, repeated inside the transaction so a change
+    // that raced another writer cannot act on a state the earlier read no
+    // longer describes.
+    const current = parseVaultState(plaintext);
+    requireBinding(current, options.checkout, bound.projectId);
     if (findSecret(current, bound.projectId, alias) === undefined)
       throw new WardError("secret_not_found");
     return serializeVaultState(withoutSecret(current, bound.projectId, alias));
@@ -328,7 +302,11 @@ async function setSecret(
     // whether an existing record's identity is kept.
     let written: SecretRecord | undefined;
     options.store.mutate(bound.key, (plaintext) => {
-      const current = boundProjectOf(options, plaintext, bound.projectId);
+      // The authority decision, repeated inside the transaction so a change
+      // that raced another writer cannot act on a state the earlier read no
+      // longer describes.
+      const current = parseVaultState(plaintext);
+      requireBinding(current, options.checkout, bound.projectId);
       const previous = findSecret(current, bound.projectId, alias);
       // The confirmation belongs to the state the value was read against. An
       // alias that appeared in between was never covered by it, so the write

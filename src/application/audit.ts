@@ -31,12 +31,12 @@ import {
   type AuditRecord,
   auditHistoryLimit,
   type CheckoutIdentity,
-  findBinding,
   parseVaultState,
   type VaultState,
 } from "../domain/vault-state.ts";
+import { boundProject, requireManifest } from "./binding.ts";
 import type { KeyProvider } from "./key-provider.ts";
-import { type Checkout, readCheckout } from "./project.ts";
+import { readCheckout } from "./project.ts";
 import type { ProjectFiles } from "./project-files.ts";
 import type { VaultStore } from "./vault-store.ts";
 
@@ -73,21 +73,6 @@ export interface AuditReport {
 export interface AuditResult {
   readonly data: AuditReport;
   readonly text: string;
-}
-
-// The manifest's project and the vault's binding must agree, and the binding
-// is what decides which project's events this checkout may read. A missing
-// manifest and a missing binding are the same answer: this checkout is not
-// registered. A binding for a project the manifest does not name is a
-// conflict, and the other project is not named.
-function boundProject(checkout: Checkout, state: VaultState): string {
-  const manifest = checkout.manifest;
-  if (manifest === undefined) throw new WardError("project_not_registered");
-  const binding = findBinding(state, checkout.identity);
-  if (binding === undefined) throw new WardError("project_not_registered");
-  if (binding.projectId !== manifest.projectId)
-    throw new WardError("binding_conflict");
-  return binding.projectId;
 }
 
 // One event, as stored. Every field is printed; nothing is truncated and
@@ -128,8 +113,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditResult> {
   // with no manifest is not registered, and that answer must not depend on
   // whether a vault or a key happens to exist, nor cost a credential-store
   // read to reach.
-  if (checkout.manifest === undefined)
-    throw new WardError("project_not_registered");
+  requireManifest(checkout);
   const header = options.store.header();
   if (header === undefined) throw new WardError("vault_not_found");
   const key = await options.keyProvider.load(header.vaultId);

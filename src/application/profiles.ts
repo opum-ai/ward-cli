@@ -38,7 +38,6 @@ import {
 } from "../domain/project-manifest.ts";
 import {
   type CheckoutIdentity,
-  findBinding,
   findProfileApproval,
   findSecret,
   type ProfileApprovalRecord,
@@ -49,6 +48,13 @@ import {
   withProfileApproval,
 } from "../domain/vault-state.ts";
 import type { ProfileApprover } from "./approvals.ts";
+import {
+  type BindingAuthority,
+  bindingAuthority,
+  boundProject,
+  requireBinding,
+  requireManifest,
+} from "./binding.ts";
 import type { KeyProvider } from "./key-provider.ts";
 import { type Checkout, readCheckout } from "./project.ts";
 import type { ProjectFiles } from "./project-files.ts";
@@ -166,38 +172,6 @@ async function withOpenVault<T>(
   }
 }
 
-function manifestOf(checkout: Checkout): ProjectManifest {
-  if (checkout.manifest === undefined)
-    throw new WardError("project_not_registered");
-  return checkout.manifest;
-}
-
-// The manifest names the project; the vault's binding is the authority. A
-// missing binding is "unbound" rather than an error, because reporting it is
-// what `ward check` is for. A binding for a different project than the
-// manifest names is a conflict, never a fallback.
-type Authority =
-  | { readonly kind: "bound"; readonly projectId: string }
-  | { readonly kind: "unbound" };
-
-function authorityFor(
-  checkout: Checkout,
-  state: VaultState,
-  identity: CheckoutIdentity,
-): Authority {
-  const manifest = manifestOf(checkout);
-  const binding = findBinding(state, identity);
-  if (binding === undefined) return { kind: "unbound" };
-  if (binding.projectId !== manifest.projectId)
-    throw new WardError("binding_conflict");
-  return { kind: "bound", projectId: binding.projectId };
-}
-
-function requireBound(authority: Authority): string {
-  if (authority.kind !== "bound") throw new WardError("project_not_registered");
-  return authority.projectId;
-}
-
 // One profile's readiness, from the manifest and the vault alone. A
 // declaration Ward refuses — or a name it cannot address — is reported as an
 // invalid declaration rather than thrown: the other profiles in the same
@@ -207,7 +181,7 @@ function readinessFor(options: {
   manifest: ProjectManifest;
   state: VaultState;
   identity: CheckoutIdentity;
-  authority: Authority;
+  authority: BindingAuthority;
 }): ProfileReadiness {
   const { name, manifest, state, identity, authority } = options;
   const declared = Object.hasOwn(manifest.profiles, name)
@@ -286,12 +260,8 @@ function readinessReport(options: {
   identity: CheckoutIdentity;
   profile: string | undefined;
 }): ReadinessReport {
-  const manifest = manifestOf(options.checkout);
-  const authority = authorityFor(
-    options.checkout,
-    options.state,
-    options.identity,
-  );
+  const manifest = requireManifest(options.checkout);
+  const authority = bindingAuthority(options.checkout, options.state);
   const profiles = selectedProfiles(manifest, options.profile).map((name) =>
     readinessFor({
       name,
@@ -458,10 +428,7 @@ function writeApproval(
 ): void {
   options.store.mutate(key, (plaintext) => {
     const state = parseVaultState(plaintext);
-    const binding = findBinding(state, options.checkout);
-    if (binding === undefined) throw new WardError("project_not_registered");
-    if (binding.projectId !== projectId)
-      throw new WardError("binding_conflict");
+    requireBinding(state, options.checkout, projectId);
     return serializeVaultState(change(state));
   });
 }
@@ -493,7 +460,7 @@ async function approveProfile(
   projectId: string,
   options: ProfileOptions,
 ): Promise<ProfileResult> {
-  const manifest = manifestOf(opened.checkout);
+  const manifest = requireManifest(opened.checkout);
   if (!Object.hasOwn(manifest.profiles, name))
     throw new WardError("profile_not_found");
   const snapshot = normalizeProfile(manifest.profiles[name]);
@@ -668,12 +635,7 @@ export async function runProfile(
   }
   const name = requireProfileName(input.profile);
   return withOpenVault(options, options.checkout, async (opened) => {
-    const authority = authorityFor(
-      opened.checkout,
-      opened.state,
-      options.checkout,
-    );
-    const projectId = requireBound(authority);
+    const projectId = boundProject(opened.checkout, opened.state);
     return action === "approve"
       ? await approveProfile(name, opened, projectId, options)
       : await revokeProfile(name, opened, projectId, options);
