@@ -122,11 +122,20 @@ export interface NormalizedProfile {
 // Bump this in the same change that alters what `normalizeProfile` accepts.
 // A build whose rules differ re-normalizes a stored snapshot it did not
 // write, and if the record's version still matches it will read the result
-// as an approval the developer gave — so the version must not match. The
-// golden table in test/profile.test.ts fails on any change to the accepted
-// or refused set and exists to make that bump unavoidable rather than
-// remembered: a change that trips it either bumps this number or says in
-// writing why it does not have to.
+// as an approval the developer gave — so the version must not match.
+//
+// The golden table in test/profile.test.ts is a prompt, not a proof: it
+// fails whenever a verdict it records changes, and it cannot see a change
+// that touches none of its rows — measured, by a mutation that newly
+// accepted a percent-encoded host with every case still green. So the table
+// carries one row per class the URL rules decide, and a change to those
+// rules that the table does not catch is exactly what this paragraph is for.
+//
+// This stays 1 while the accepted set is still being settled, and the reason
+// is a fact about the stored data rather than about the rules: no compiled
+// snapshot predates this build, because WCLI-9 is the first build to write
+// one and it is unreleased. The version exists for the records that will
+// outlive the rules; there are none yet to protect.
 export const profileSnapshotVersion = 1;
 
 export const profileSnapshotFields = [

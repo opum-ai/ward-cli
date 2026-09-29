@@ -651,8 +651,17 @@ describe("the profile declaration", () => {
     ["https://api.example.invalid/100%zz", false],
     ["https://user:pass@api.example.invalid/", false],
     ["https://@api.example.invalid/admin", false],
+    // One row per class the authority comparison carries alone, because the
+    // table can only see what it records: a percent-encoded host, the IPv4
+    // spellings that shorten or re-base the address, and an uncompressed
+    // IPv6 literal, which every parser reads alike and which this build
+    // refuses anyway rather than fold — the fold list is case and `:443`,
+    // and widening it is a decision for a build that needs the literal.
+    ["https://%61pi.example.invalid/x", false],
     ["https://0x7f000001/admin", false],
     ["https://2130706433/admin", false],
+    ["https://127.1/admin", false],
+    ["https://[0:0:0:0:0:0:0:1]/x", false],
     ["https://api.example.invalid:080/x", false],
     ["https://api.example.invalid/%2e%2e/x", false],
     ["https://api.example.invalid/a/../x", false],
