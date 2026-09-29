@@ -387,18 +387,23 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
 // that a name observed from the OS is one this build will always read back.
 const maxObservedChars = 256;
 
-// One value Ward observed from the OS. Empty, over-long and control-bearing
-// values are refused: the first two cannot be what a platform reported, and a
-// control character is a value that could rewrite the line `ward audit` prints
-// it on.
+// Everything a name Ward prints may not contain. Empty and over-long values
+// cannot be what a platform reported; the rest is the set of characters that
+// are not text a line can carry, named by Unicode general category so the
+// code and this sentence cannot drift: Cc is the controls, C0 and DEL and the
+// C1 block together; Cf is the format characters, whose bidi overrides are
+// the ones that could make `ward audit`'s line read as the reverse of what it
+// says; and Zl and Zp are the two line separators, which a line cannot carry
+// for the plainer reason that they end it. Tested as one class over the whole
+// value because the claim is about the whole value. The first version of this
+// grammar refused only C0 and DEL, and a reviewer measured U+0085, U+2028 and
+// U+202E passing it (WCLI-11 review, F4).
+const unprintable = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
 function isObservedString(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (value.length === 0 || value.length > maxObservedChars) return false;
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) return false;
-  }
-  return true;
+  return !unprintable.test(value);
 }
 
 function isObservedMachine(value: unknown): value is ObservedMachine {
@@ -411,9 +416,15 @@ function isObservedMachine(value: unknown): value is ObservedMachine {
 
 // The observed identity as a record may carry it, or null when the OS said
 // nothing this build can record. The caller observes — reading the platform is
-// an adapter's job, not this module's — and passes what it read through here,
-// so the grammar that decides what a record may hold lives in one place and
-// the write path cannot produce a document this module's own reader refuses.
+// an adapter's job, not this module's — and passes what it read through here.
+//
+// This is the one grammar for the value, and the serializer runs the value
+// through it again rather than trusting what it is handed (see the audit
+// branch of serializeVaultState). That second funnel is load-bearing: the run
+// path takes an identity from an injected port, and a value outside the
+// grammar that reached the document would be refused by this module's own
+// reader on the way back in, with no repair command for a vault in that state
+// (WCLI-11 review, F3).
 export function observedMachine(
   user: unknown,
   host: unknown,
@@ -488,9 +499,11 @@ function ownAuditRecord(value: unknown): AuditRecord {
   };
 }
 
-// A document with no collection key is an empty collection: the skeleton
-// `ward setup` seals holds only `formatVersion`, and an older vault gains
-// the collections with its first binding rather than being refused.
+// A missing collection key is an empty collection, so a document carrying
+// only `formatVersion` parses as an empty vault rather than being refused.
+// That tolerance is about a missing key inside this format, and not about
+// another format: the version below is read without it and refuses first, so
+// no document from a different build reaches these defaults.
 export function parseVaultState(plaintext: Uint8Array): VaultState {
   let parsed: unknown;
   try {
@@ -613,9 +626,14 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         at,
         // Written as an object or as null, never omitted: this document's
         // reader compares key sets exactly, and JSON drops a key whose value
-        // is undefined.
+        // is undefined. The value goes back through the grammar rather than
+        // being trusted — a caller can hand this one in from an injected port
+        // — so this path cannot serialize a record the reader would refuse.
+        // A value that fails becomes null, which is what the record says when
+        // the OS gave no answer, and is true of this value too: Ward has no
+        // identity here that it can record.
         machine:
-          machine === null ? null : { user: machine.user, host: machine.host },
+          machine === null ? null : observedMachine(machine.user, machine.host),
         actorLabel,
         taskLabel,
       }),

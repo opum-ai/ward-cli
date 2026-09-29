@@ -64,10 +64,30 @@ rule as the decision, not as a gap still to be filled.**
 **`vaultStateFormatVersion` is 2, and the version is the only format gate.**
 
 - A vault document this build writes opens on every path. A format-1 document
-  is refused on every ordinary path that reads the vault — `ward run`,
-  `ward audit`, `ward check`, `ward secret` — and `ward status` and
-  `ward doctor` report it as `unsupported` rather than reading it, which is
-  what those two commands are for.
+  is refused by every command that reads the vault's contents — `ward run`,
+  `ward audit`, `ward check` and `ward secret` all answer exit 6 with the
+  sentence above, each measured.
+- `ward doctor` reports it rather than refusing: its `schema` check fails with
+  `state_unsupported`, which is the state document's verdict kept distinct
+  from `vault_unsupported` for the envelope.
+- **`ward status` does not report it, because it never reads the state
+  document.** By [ADR 0007](0007-status-and-doctor-reporting.md) status
+  answers from the sealed header alone so that it works without the key, and
+  the header is unchanged here — so a format-1 vault reads as `present` with
+  the record's format version, and the word `unsupported` appears nowhere in
+  the report. A review measured this and it is the correction to an earlier
+  version of this document, which claimed status reported it. Filed as WCLI-48
+  alongside the printed version number, which has the same root: two format
+  versions now exist and the report names one of them.
+- **`ward backup` succeeds on a format-1 vault** and that is not yet
+  settled either way. `src/application/backup.ts` seals the plaintext without
+  parsing it, so the command exits 0 and writes a durable file whose restore
+  then refuses with the sentence above — measured: backup 0, restore 6. The
+  argument for leaving it: the container stays encrypted, and refusing would
+  remove the only way to preserve a vault this build cannot read. The argument
+  against: the command's own output invites the reader to treat that file as
+  recovery material, and it is not. Filed as WCLI-49, and it is a decision for
+  the coordinator rather than one this document should settle quietly.
 - A missing or non-numeric `formatVersion` is still `vault_state_malformed`.
   A damaged document and a document from another build call for different
   things and must not converge on one answer.
@@ -113,8 +133,11 @@ passing one are different facts.
 - **The audit history is not carried forward on any path.** A restore is the
   one place records cross a vault boundary
   ([ADR 0006](0006-backup-container-and-restore-authority.md)) and it carries
-  whatever the backup's own state document holds; a backup taken from a
-  format-1 vault is refused on the same terms as the vault itself.
+  whatever the backup's own state document holds, so a format-1 backup file is
+  refused on the same terms as the vault it came from. It can still be
+  *created* — `ward backup` seals the plaintext without parsing it, so it
+  exits 0 on a vault nothing else will read. Whether it should is open, not
+  decided here; see the `ward backup` bullet under Decision.
 - **Two absences in `ward audit` read differently on purpose.** A missing
   machine is Ward saying it observed no identity; a missing label is the caller
   saying it asserted none. The report prints `not-recorded` for the first and
@@ -132,4 +155,8 @@ passing one are different facts.
   comment no longer claims every field is Ward-owned: what still holds, and is
   what matters, is that nothing is free text. A label is at most 64 characters
   of letters, digits, dot, underscore and dash, and the observed identity is
-  bounded to printable characters.
+  bounded to printable characters: C0, DEL, the C1 block, the two Unicode line
+  separators and every Cf format character are refused, so a name cannot break
+  or reverse the line `ward audit` prints it on. The first version of that
+  grammar refused only C0 and DEL, and a review measured U+0085, U+2028 and
+  U+202E passing it; the constraint and the claim now agree.

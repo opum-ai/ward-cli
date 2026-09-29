@@ -150,6 +150,14 @@ describe("the refusals a format-2 build gives", () => {
       });
   });
 
+  // WHAT THIS PROVES, AND WHAT IT DOES NOT. It proves that no command is
+  // named for a recovery and that the state module exports nothing named like
+  // one. It cannot prove that no rewrite path exists under another name, in
+  // another module, or behind a flag: a raise-format function exported from
+  // anywhere else and called from anywhere else would keep this green. The
+  // absence rests on the rest of this file's behavioral cases plus a grep, and
+  // this test is the cheap structural half rather than the proof — recorded
+  // because a checked box stops the next reader looking (WCLI-11 review, F6).
   test("no migration and no read-out surface exists (DEC-25)", () => {
     // The command list first, because that is what a user would reach for.
     const names = commands.map((command) => command.name);
