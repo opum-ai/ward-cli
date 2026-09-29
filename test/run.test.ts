@@ -21,6 +21,7 @@
 // rest go through the real command line.
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import {
   mkdirSync,
   mkdtempSync,
@@ -34,7 +35,10 @@ import { join } from "node:path";
 import { locateCheckout } from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
-import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
+import {
+  createSqliteVaultStore,
+  vaultFileName,
+} from "../src/adapters/sqlite-vault-store.ts";
 import type { ProfileApprover } from "../src/application/approvals.ts";
 import { type OperationOptions, runOperation } from "../src/application/run.ts";
 import type { SecretValueSource } from "../src/application/secrets.ts";
@@ -135,7 +139,11 @@ let cases = 0;
 function harness() {
   const directory = join(mkdtempSync(join(root, `vault-${++cases}-`)), ".ward");
   const keychain = new MemoryKeychain();
-  const sqlite = createSqliteVaultStore({ directory });
+  // A short busy timeout: the T19 cases at the end of this file hold the
+  // vault's write lock from a second connection to make the real store fail,
+  // and a bounded wait is what keeps them quick. Nothing else here contends
+  // for the lock, so the timeout cannot change any other answer.
+  const sqlite = createSqliteVaultStore({ directory, busyTimeoutMs: 250 });
   const keyProvider = createKeychainKeyProvider({
     service: "opum.ward.run",
     entry: keychain.entry,
@@ -301,6 +309,9 @@ function harness() {
 
   return {
     directory,
+    // The sealed header, so a case can assert the revision a failed write
+    // did or did not move.
+    header: () => sqlite.header(),
     ward,
     ready,
     state,
@@ -634,5 +645,89 @@ describe("admission precedes delivery, and completion follows it", () => {
       "admission",
     ]);
     h.failWritesFrom(undefined);
+  });
+});
+
+// A second connection holding the vault's write lock, which is what a
+// concurrent Ward process mid-write looks like to the store: the next write
+// waits out its busy timeout and is refused rather than lost.
+function holdVaultLock(directory: string): { release: () => void } {
+  const db = new Database(join(directory, vaultFileName));
+  db.exec("BEGIN IMMEDIATE");
+  return {
+    release: () => {
+      db.exec("ROLLBACK");
+      db.close();
+    },
+  };
+}
+
+describe("T19: audit persistence failures, measured at the vault", () => {
+  // The cases above fail the store through the wrapper, before SQLite is
+  // called at all — so what they observe is the run path's handling, not the
+  // store's own failure. These drive the real store into failure instead, by
+  // holding the vault's write lock from a second connection, and then read
+  // the vault back: after a refused admission it is exactly where it was,
+  // and after a refused completion it holds exactly the admission and no
+  // more. The delivered-once counts are asserted here too, because a vault
+  // read alone cannot say whether a credential left the process.
+  test("a pre-delivery write the vault refuses blocks delivery and leaves the vault where it was", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    const before = h.header();
+    const lock = holdVaultLock(h.directory);
+    let error: { code?: string };
+    try {
+      error = (await h.operate(checkout).catch((e: unknown) => e)) as {
+        code?: string;
+      };
+    } finally {
+      lock.release();
+    }
+    expect(error.code).toBe("vault_busy");
+    // Nothing was delivered, and the vault holds neither an admission nor a
+    // completion: the failed write rolled back whole, revision included.
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+    expect(h.header()?.revision).toBe(before?.revision);
+  });
+
+  test("a post-delivery write the vault refuses is reported, and the admission is all the vault holds", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    const before = h.header();
+    // Take the lock at the moment the credential leaves: the completion
+    // write is the next thing the run does, and it is the one that fails.
+    let lock: { release: () => void } | undefined;
+    h.transport.onSend = () => {
+      lock = holdVaultLock(h.directory);
+    };
+    try {
+      const result = (await h.operate(checkout)) as {
+        data: Record<string, unknown>;
+        exitCode: number;
+      };
+      expect({
+        outcome: result.data.outcome,
+        httpStatus: result.data.httpStatus,
+        auditRecorded: result.data.auditRecorded,
+        exit: result.exitCode,
+      }).toEqual({
+        outcome: "succeeded",
+        httpStatus: 200,
+        auditRecorded: false,
+        exit: exitCodes.validation,
+      });
+      expect(h.transport.count).toBe(1);
+    } finally {
+      lock?.release();
+    }
+    expect(h.state().auditRecords.map((record) => record.phase)).toEqual([
+      "admission",
+    ]);
+    // The admission is the one write that landed, so the sealed revision
+    // moved exactly once — a failed completion that still bumped it would be
+    // the vault claiming a record it does not hold.
+    expect(h.header()?.revision).toBe((before?.revision ?? 0) + 1);
   });
 });
