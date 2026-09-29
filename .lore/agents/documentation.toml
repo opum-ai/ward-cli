@@ -14,4 +14,5 @@ sources = [
   "adr/0007-status-and-doctor-reporting",
   "adr/0008-agent-profile-source-coverage",
   "adr/0009-hand-rolled-status-only-https-transport",
+  "adr/0010-refuse-a-vault-state-document-from-another-format",
 ]
