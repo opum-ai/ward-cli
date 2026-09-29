@@ -9,4 +9,8 @@ sources = [
   "adr/0002-p0-threat-model-and-non-guarantees",
   "adr/0003-profile-approval-authority",
   "adr/0004-committed-platform-target",
+  "adr/0005-project-binding-identity",
+  "adr/0006-backup-container-and-restore-authority",
+  "adr/0007-status-and-doctor-reporting",
+  "adr/0008-agent-profile-source-coverage",
 ]

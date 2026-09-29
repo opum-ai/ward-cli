@@ -8,4 +8,5 @@
 - [Project binding identity](0005-project-binding-identity.md)
 - [Backup container and restore authority](0006-backup-container-and-restore-authority.md)
 - [Status and doctor reporting](0007-status-and-doctor-reporting.md)
+- [Agent profile source coverage](0008-agent-profile-source-coverage.md)
 <!-- lore:index:end -->

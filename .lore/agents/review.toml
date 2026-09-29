@@ -1,6 +1,6 @@
 schema_version = 1
 name = "review"
-description = "Reviews a Ward change against the P0 threat model and its stated non-guarantees, the vault format and key-custody contract, and the profile-approval authority, so a review enforces the bounds Ward has written down rather than strengthening them."
+description = "Reviews a Ward change against the P0 threat model and its stated non-guarantees, the accepted ADRs the change implements, and the profile-approval authority, so a review enforces the bounds Ward has written down rather than strengthening them."
 kind = "specialist"
 max_tokens = 10000
 pinned = ["adr/0002-p0-threat-model-and-non-guarantees"]
@@ -9,4 +9,7 @@ sources = [
   "adr/0003-profile-approval-authority",
   "adr/0004-committed-platform-target",
   "index",
+  "adr/0005-project-binding-identity",
+  "adr/0006-backup-container-and-restore-authority",
+  "adr/0007-status-and-doctor-reporting",
 ]

@@ -52,14 +52,30 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
+      # Installed once, so every step below runs the same bytes the same way.
+      # The Tracker job resolves its CLI the same way, and for the same reason.
+      - name: Install the pinned Lore CLI
+        run: |
+          set -euo pipefail
+          npm install --global "@opum-ai/lore@${LORE_VERSION}"
+          installed="$(lore --version)"
+          if [ "$installed" != "$LORE_VERSION" ]; then
+            echo "::error::lore installed ${installed}, wanted ${LORE_VERSION}"
+            exit 1
+          fi
       - name: Validate OKF documents
-        run: npx --yes "@opum-ai/lore@${LORE_VERSION}" validate --strict
+        run: lore validate --strict
       - name: Check Lore coherence
-        run: npx --yes "@opum-ai/lore@${LORE_VERSION}" check --strict
+        run: lore check --strict
       # The lore:agents block in CLAUDE.md drifts on its own when the CLI moves
       # underneath the committed copy; nothing else would notice.
       - name: Lore agent bridge is current
-        run: npx --yes "@opum-ai/lore@${LORE_VERSION}" agents --check
+        run: lore agents --check
+      # A concept no profile declares is absent from every specialist evidence
+      # set, and every other gate stays green over it (ADR 0008); this is the
+      # one that notices.
+      - name: Every concept is a specialist profile source
+        run: node scripts/check-lore-agent-sources.mjs
 
   # Two assertions about the tracker, in separate steps so a red names which
   # one failed. The Quest version is read out of CLAUDE.md's managed block
