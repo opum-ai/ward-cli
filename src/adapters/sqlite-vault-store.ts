@@ -339,6 +339,27 @@ function requireVault(db: Database): void {
   if (layoutOf(db) !== "ward") throw new WardError("vault_not_found");
 }
 
+// The layout, read in one transaction. layoutOf reads three things, and three
+// statements outside a transaction can see the file at three different
+// moments: a concurrent create whose commit lands between them hands back a
+// state that never existed — its table present, its header fields not yet —
+// which layoutOf refuses as unrecognized instead of answering. One read
+// transaction holds one snapshot, and the committing writer waits for it
+// rather than landing inside it (WCLI-35).
+//
+// For the pre-lock reads only: inside a write transaction the layout is
+// already settled by the lock, and plain layoutOf is the correct call there.
+function settledLayout(db: Database): "empty" | "ward" {
+  return db.transaction(() => layoutOf(db)).deferred();
+}
+
+// requireVault's pre-lock reading: the same answer, taken in one snapshot
+// (settledLayout), for the same reason create reads its layout that way
+// (WCLI-35).
+function requireSettledVault(db: Database): void {
+  if (settledLayout(db) !== "ward") throw new WardError("vault_not_found");
+}
+
 function readHeader(db: Database): VaultHeader {
   const row = db
     .query(
@@ -459,11 +480,14 @@ export function createSqliteVaultStore(options: {
       const location = locate(options.directory);
       prepare(location, uid);
       // The layout check runs before the journal heal, so a foreign database
-      // is refused untouched. The schema, the row and the file's identity
+      // is refused untouched, and it is read in one snapshot (settledLayout):
+      // a concurrent create mid-commit used to hand back a half-laid-down
+      // file that was refused as unrecognized instead of answered
+      // vault_exists (WCLI-35). The schema, the row and the file's identity
       // commit together or not at all, and a second create waits on the lock
       // and then finds the vault.
       return withConnection(location, (db) => {
-        if (layoutOf(db) === "ward") throw new WardError("vault_exists");
+        if (settledLayout(db) === "ward") throw new WardError("vault_exists");
         healJournalMode(db);
         return db
           .transaction(() => {
@@ -504,9 +528,10 @@ export function createSqliteVaultStore(options: {
 
     mutate(key, change: VaultChange) {
       // The layout check and the journal heal run before the immediate
-      // transaction; the transaction itself re-checks the layout.
+      // transaction; the transaction itself re-checks the layout. The
+      // pre-lock read is taken in one snapshot, like create's (WCLI-35).
       return withVault((db) => {
-        requireVault(db);
+        requireSettledVault(db);
         healJournalMode(db);
         return db
           .transaction(() => {

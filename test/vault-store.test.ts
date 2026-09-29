@@ -463,6 +463,145 @@ describe("T06: transactions", () => {
     { timeout: 30_000 },
   );
 
+  // The premise WCLI-35's settledLayout rests on, pinned where it can be
+  // observed directly: layoutOf is three reads, and three statements outside
+  // a transaction can see the file at three different moments — a commit
+  // landing between them hands back a state that never existed (the table
+  // present, the header fields not yet). Inside one transaction the same
+  // commit cannot land: the writer waits for the reader's snapshot to end, so
+  // every read in the transaction is the same moment. If SQLite or the driver
+  // ever stops honouring that, the store's one-snapshot read would silently
+  // stop being one, and this case goes red.
+  test("a commit can land between bare reads and cannot land inside a read transaction", () => {
+    const { directory, file } = fresh();
+    mkdirSync(directory, { mode: 0o700 });
+    const writer = new Database(file);
+    try {
+      writer.exec("PRAGMA journal_mode = DELETE");
+      writer.exec("BEGIN IMMEDIATE");
+      writer.exec("PRAGMA user_version = 1");
+      writer.exec("CREATE TABLE vault (slot INTEGER PRIMARY KEY, body BLOB)");
+
+      // Bare reads, one commit between them: the first sees the file before
+      // the commit, the second after it.
+      const bare = new Database(file);
+      try {
+        expect(bare.query("PRAGMA user_version").get()).toEqual({
+          user_version: 0,
+        });
+        writer.exec("COMMIT");
+        expect(bare.query("SELECT name FROM sqlite_schema").all()).toEqual([
+          { name: "vault" },
+        ]);
+      } finally {
+        bare.close();
+      }
+
+      // One transaction: the writer's next commit cannot land inside it, and
+      // both reads answer from the same moment.
+      writer.exec("BEGIN IMMEDIATE");
+      writer.exec("PRAGMA user_version = 2");
+      const reader = new Database(file);
+      try {
+        const seen = reader
+          .transaction(() => {
+            const first = reader.query("PRAGMA user_version").get();
+            let refused: unknown;
+            try {
+              writer.exec("COMMIT");
+            } catch (error) {
+              refused = error;
+            }
+            const second = reader.query("PRAGMA user_version").get();
+            return { first, second, refused };
+          })
+          .deferred();
+        expect(seen.first).toEqual({ user_version: 1 });
+        expect(seen.second).toEqual({ user_version: 1 });
+        expect(seen.refused).toBeInstanceOf(Error);
+        writer.exec("COMMIT");
+      } finally {
+        reader.close();
+      }
+    } finally {
+      writer.close();
+    }
+  });
+
+  // The store's use of that one-snapshot read cannot be observed
+  // behaviourally: the mixed read needs a commit to land between two of
+  // layoutOf's three statements, and there is no hook inside create() to
+  // pause between them (see the note in the serialization case above). So it
+  // is pinned at the source, the way the store layout contract is
+  // (setup.test.ts, ADR 0001): a revert of the pre-lock checks to the bare
+  // reads reddens here, instead of only resurfacing as a statistical CI
+  // flake.
+  test("the pre-lock layout reads go through the one-snapshot helper", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "..", "src", "adapters", "sqlite-vault-store.ts"),
+      "utf8",
+    );
+    // Each writer's pre-lock region is its own function up to its immediate
+    // transaction; the in-transaction re-checks sit inside that transaction,
+    // after it. The region must hold the settled read and no bare one, and
+    // the bare reads are counted over the whole file as well, so a bare read
+    // placed anywhere it could run — beside a settled check, after the
+    // journal heal, or inside a helper the region cannot see — reddens the
+    // pin instead of hiding behind it. This pin sees this file only, and it
+    // matches the bare reads by their literal spelling: one moved to another
+    // module, reached through an alias, or written with a different argument
+    // name is outside what it can prove.
+    const region = (start: string, end: string) => {
+      const from = source.indexOf(start);
+      const to = from === -1 ? -1 : source.indexOf(end, from);
+      return from === -1 || to === -1 ? undefined : source.slice(from, to);
+    };
+    const createRegion = region("create(vaultId", ".transaction(");
+    const mutateRegion = region("mutate(key", ".transaction(");
+    const holds = (slice: string | undefined, settled: string, bare: string) =>
+      slice !== undefined && slice.includes(settled) && !slice.includes(bare);
+    const count = (pattern: RegExp) => (source.match(pattern) ?? []).length;
+    const pins: Array<[string, boolean]> = [
+      [
+        "settledLayout is a deferred transaction over layoutOf",
+        /function settledLayout\(db: Database\): "empty" \| "ward" \{\s*(?:\/\/[^\n]*\n\s*)*return db\.transaction\(\(\) => layoutOf\(db\)\)\.deferred\(\);\s*\}/.test(
+          source,
+        ),
+      ],
+      [
+        "requireSettledVault takes its answer from settledLayout",
+        /function requireSettledVault\(db: Database\): void \{\s*(?:\/\/[^\n]*\n\s*)*if \(settledLayout\(db\) !== "ward"\) throw new WardError\("vault_not_found"\);\s*\}/.test(
+          source,
+        ),
+      ],
+      [
+        "create's pre-lock region reads the settled layout and no bare one",
+        holds(createRegion, "settledLayout(db)", "layoutOf(db)"),
+      ],
+      [
+        "mutate's pre-lock region reads the settled vault and no bare one",
+        holds(mutateRegion, "requireSettledVault(db)", "requireVault(db)"),
+      ],
+      // The bare reads there should be, and no others: layoutOf's four are
+      // requireVault's body, settledLayout's body, and the in-transaction
+      // checks in create and header; requireVault's two callers are the
+      // in-transaction checks in read and mutate. A new reader spelling them
+      // the same way — or one moved into a helper that keeps the db
+      // parameter name — moves these numbers and asks for this pin to be
+      // read again.
+      [
+        "the file holds exactly the four known bare layoutOf reads",
+        count(/layoutOf\(db\)/g) === 4,
+      ],
+      [
+        "the file holds exactly the two known bare requireVault calls",
+        count(/requireVault\(db\)/g) === 2,
+      ],
+    ];
+    const missing = pins.filter(([, ok]) => !ok).map(([name]) => name);
+    expect(missing).toEqual([]);
+  });
+
   test("a writer that cannot get the lock within the bound reports vault_busy", () => {
     const { file, store } = fresh(50);
     const key = generateVaultKey();
