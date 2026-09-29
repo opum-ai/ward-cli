@@ -518,12 +518,13 @@ describe("ward doctor", () => {
       code: "manifest_unsupported",
     });
 
-    // A state document from another build is refused by the same parse the
-    // real reads run. The version is one this build does not write — stated
-    // relative to the format this build does write, so the case keeps meaning
-    // "a build that is not this one" rather than pinning a number that a bump
-    // would quietly turn into this build's own (WCLI-11 regenerated this
-    // fixture; it read `2`, which was a future version until format 2 landed).
+    // A state document this build did not write is refused by the same parse
+    // the real reads run, and since DEC-38 that refusal is the ordinary
+    // malformed one rather than a distinguished "another build" state: with a
+    // single format there is no other build for the report to name. The
+    // version is still stated relative to the one this build writes, so the
+    // case keeps meaning "not this build's" rather than pinning a literal
+    // that a later change would quietly turn into this build's own.
     writeFileSync(manifestPath, manifest);
     h.store.mutate(h.key(), () =>
       new TextEncoder().encode(
@@ -534,7 +535,7 @@ describe("ward doctor", () => {
     expect(future.result.exitCode).toBe(exitCodes.validation);
     expect(checkFor(future.data, "schema")).toMatchObject({
       status: "fail",
-      code: "state_unsupported",
+      code: "state_malformed",
     });
     expect(checkFor(future.data, "permissions")).toMatchObject({
       status: "pass",

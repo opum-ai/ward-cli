@@ -651,57 +651,17 @@ describe("the vault's state document", () => {
     });
   }
 
-  // The genuine format-1 fixture, kept verbatim rather than deleted: this is
-  // what the previous build actually wrote, down to an audit record carrying
-  // exactly the eight keys format 1 had and no machine and no labels. It is
-  // here to pin that the version is the gate — the refusal is the version's
-  // answer about these bytes, not a reader failing to make sense of them
-  // (WCLI-11, DEC-19 B; DEC-25 is why nothing raises it).
-  const formatOneDocument = {
-    formatVersion: 1,
-    projects: [{ id: projectId, createdAt: timestamp }],
-    localBindings: [],
-    secrets: [],
-    profileApprovals: [],
-    auditRecords: [
-      {
-        id: "11111111-1111-4111-8111-111111111111",
-        runId: "22222222-2222-4222-8222-222222222222",
-        projectId,
-        profile: "example-profile",
-        secretId: "33333333-3333-4333-8333-333333333333",
-        phase: "admission",
-        outcome: null,
-        at: timestamp,
-      },
-    ],
-  };
-
-  test("a genuine format-1 document is refused by its version, and nothing reads it", () => {
-    expect(codeOf(() => parseVaultState(stateBytes(formatOneDocument)))).toBe(
-      "vault_format_unsupported",
-    );
-    // The positive control for "nothing reads it": the same document under the
-    // version this build writes is refused for its record instead. Two
-    // demonstrably different answers about the same bytes, which is what makes
-    // the first one a reading of the version rather than of the contents.
-    expect(
-      codeOf(() =>
-        parseVaultState(
-          stateBytes({
-            ...formatOneDocument,
-            formatVersion: vaultStateFormatVersion,
-          }),
-        ),
-      ),
-    ).toBe("vault_state_malformed");
-  });
-
-  test("a format version this build does not implement is named as such", () => {
-    expect(
-      codeOf(() => parseVaultState(stateBytes({ formatVersion: 3 }))),
-    ).toBe("vault_format_unsupported");
-  });
+  // The genuine format-1 document that stood here, verbatim down to its
+  // eight-key audit record, is gone with DEC-38. Its comment said it existed
+  // "to pin that the version is the gate", and its own positive control said
+  // otherwise without noticing: the same bytes carrying the version this
+  // build writes were refused for their *record* instead. The key-set
+  // comparison was doing the refusing either way, so once the version is an
+  // ordinary field the fixture pinned a distinction that no longer exists.
+  // What it actually taught is kept where the reader is, in
+  // domain/vault-state.ts: a record written to a different vocabulary is
+  // refused by the exact key-set check, and that is the answer a format-1
+  // vault always in fact received.
 });
 
 describe("the tracked project manifest", () => {

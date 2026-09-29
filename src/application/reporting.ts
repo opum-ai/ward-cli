@@ -99,12 +99,14 @@ type KeyObservation =
   | { status: "invalid" }
   | { status: "unsupported" };
 
+// There is no `unsupported` here, because there is no second state document
+// format for it to describe (DEC-38). A document this build did not write is
+// malformed by the same reader that refuses any other shape.
 type StateObservation =
   | { status: "present"; state: VaultState }
   | { status: "unreadable" }
   | { status: "unauthenticated" }
   | { status: "malformed" }
-  | { status: "unsupported" }
   | { status: "busy" };
 
 // undefined means the read was never attempted because a prerequisite is
@@ -219,8 +221,6 @@ function observeState(store: VaultStore, key: Uint8Array): StateObservation {
     switch (wardCode(error)) {
       case "vault_state_malformed":
         return { status: "malformed" };
-      case "vault_format_unsupported":
-        return { status: "unsupported" };
       case "vault_authentication_failed":
         return { status: "unauthenticated" };
       case "vault_busy":
@@ -480,8 +480,6 @@ function schemaCheck(
     switch (state.status) {
       case "malformed":
         return { check, status: "fail", code: "state_malformed" };
-      case "unsupported":
-        return { check, status: "fail", code: "state_unsupported" };
       case "unauthenticated":
         return { check, status: "fail", code: "vault_unauthenticated" };
       case "unreadable":

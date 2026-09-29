@@ -27,19 +27,27 @@ import {
   secretLimits,
 } from "./secret.ts";
 
-// The document's format, and its only format gate (WCLI-11, DEC-19 B).
+// The document's format, and its number (DEC-38, option A).
 //
-// Format 2 added the observed machine and the two self-asserted labels to
-// every audit record, which changes what every build can read in both
-// directions: an earlier build meeting this document would compare a record's
-// key set against the set it knows and call the whole document damaged. So the
-// version refuses the document rather than reading part of it, and the refusal
-// is the entire answer — DEC-25 settled that there is no migration and no
-// read-out path, so a format-1 vault is refused on every ordinary path and
-// nothing here tries to raise one. This constant is the only thing that
-// decides, and a version that is missing or is not a number is a damaged
-// document rather than an older one (parseVaultState).
-export const vaultStateFormatVersion = 2;
+// Ward has one format and this is it. Before the first release the on-disk
+// format is not a compatibility contract: every vault in existence was
+// written by a build of this same line of work, so a document from a
+// *different* build is not a state this reader needs to distinguish. DEC-19 B
+// once bumped this to 2 for the audit field set §9.4 requires; DEC-38 returns
+// it to 1, because that bump answered a compatibility question that had no
+// one on the other side of it.
+//
+// What refuses a document whose shape is not this build's is the reader
+// below, not this number. Every record's key set is compared exactly, so a
+// record written to a different vocabulary is refused as
+// `vault_state_malformed` — the answer every other invalid field in this
+// document already gets. The version is validated the same way: a missing,
+// non-numeric or unrecognized value is malformed, and this module never
+// raises `vault_format_unsupported`. That code survives at the two sites
+// which are not this format — the sealed envelope's header, which is bound as
+// authenticated data, and a stored profile approval's snapshot version, which
+// guards an authority question rather than a compatibility one.
+export const vaultStateFormatVersion = 1;
 
 export interface ProjectRecord {
   readonly id: string;
@@ -524,12 +532,12 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
       key !== "auditRecords"
     )
       malformed();
-  // A version that is missing or is not a number is a damaged document; a
-  // version this build does not implement is a document from another build.
-  // They are different answers because they call for different actions.
-  if (typeof parsed.formatVersion !== "number") malformed();
-  if (parsed.formatVersion !== vaultStateFormatVersion)
-    throw new WardError("vault_format_unsupported");
+  // The version is an ordinary field, not a format gate (DEC-38). A missing
+  // or non-numeric value and a number this build did not write are one
+  // answer rather than two, because with one format there is no other build
+  // for the second to be about — a `typeof` check would only split off a case
+  // that reaches the same refusal one line later.
+  if (parsed.formatVersion !== vaultStateFormatVersion) malformed();
   return {
     formatVersion: parsed.formatVersion,
     projects: ownCollection(parsed.projects ?? [], ownProject),
