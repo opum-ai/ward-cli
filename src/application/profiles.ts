@@ -22,13 +22,15 @@ import {
   type ResultKind,
 } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
+import { escapeForDisplay } from "../domain/display.ts";
 import {
   differingProfileFields,
   isProfileName,
-  normalizeProfile,
   type NormalizedProfile,
-  profilesMatch,
+  normalizeProfile,
   type ProfileSnapshotField,
+  profileSnapshotVersion,
+  profilesMatch,
 } from "../domain/profile.ts";
 import {
   type ProjectManifest,
@@ -39,12 +41,12 @@ import {
   findBinding,
   findProfileApproval,
   findSecret,
-  parseVaultState,
   type ProfileApprovalRecord,
+  parseVaultState,
   serializeVaultState,
   type VaultState,
-  withProfileApproval,
   withoutProfileApproval,
+  withProfileApproval,
 } from "../domain/vault-state.ts";
 import type { ProfileApprover } from "./approvals.ts";
 import type { KeyProvider } from "./key-provider.ts";
@@ -373,9 +375,16 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
 }
 
 function checkText(report: ReadinessReport): string {
+  // The heading says what is actually true. A registered checkout with no
+  // declared profiles is ready (there is nothing to refuse), so "not ready"
+  // with nothing declared can only be the missing binding — and saying a
+  // profile would be refused there would be the one line of this report
+  // contradicted by the line under it.
   const heading = report.ready
     ? "Ready: Ward can run every declared profile from this checkout."
-    : "Not ready: Ward would refuse to run at least one declared profile.";
+    : report.profiles.length === 0
+      ? "Not ready: this checkout is not registered with Ward."
+      : "Not ready: Ward would refuse to run at least one declared profile.";
   const lines = [heading, ""];
   const unbound = report.binding !== "registered";
   if (report.profiles.length === 0)
@@ -383,10 +392,15 @@ function checkText(report: ReadinessReport): string {
   else
     for (const entry of report.profiles) {
       const reasons = checkReasons(entry, unbound);
+      // A name comes from a tracked file anyone can edit, and a name the
+      // profile grammar refuses is reported rather than dropped, so it is
+      // escaped here for the same reason the approval prompt escapes the
+      // operation: the value shown is read by a person, not by a parser.
+      const shown = escapeForDisplay(entry.profile);
       lines.push(
         reasons.length === 0
-          ? `  ${entry.profile}: ready`
-          : `  ${entry.profile}: not ready (${reasons.map((reason) => reasonPhrase(entry, reason)).join(", ")})`,
+          ? `  ${shown}: ready`
+          : `  ${shown}: not ready (${reasons.map((reason) => reasonPhrase(entry, reason)).join(", ")})`,
       );
     }
   if (report.binding !== "registered") {
@@ -416,15 +430,17 @@ function profileStateWord(
 function listText(report: ReadinessReport): string {
   if (report.profiles.length === 0)
     return "No profiles are declared in this project's manifest.";
-  const width = Math.max(
-    ...report.profiles.map((entry) => entry.profile.length),
-  );
+  // Escaped before the column is measured, so the escapes are what the
+  // padding aligns — a name carrying terminal control bytes cannot widen or
+  // misalign the column it is printed in.
+  const names = report.profiles.map((entry) => escapeForDisplay(entry.profile));
+  const width = Math.max(...names.map((name) => name.length));
   return [
     "Profiles declared in this project, and their approval state here.",
     "",
     ...report.profiles.map(
-      (entry) =>
-        `  ${entry.profile.padEnd(width)}  ${profileStateWord(entry, report.binding)}`,
+      (entry, index) =>
+        `  ${(names[index] ?? "").padEnd(width)}  ${profileStateWord(entry, report.binding)}`,
     ),
     "",
     "A profile is runnable when it is approved here and its credential is stored.",
@@ -515,6 +531,9 @@ async function approveProfile(
     device: options.checkout.device,
     inode: options.checkout.inode,
     approvedAt,
+    // Written with the record so a later build reads the snapshot under the
+    // rules that produced it rather than under its own (spec §6.2).
+    snapshotVersion: profileSnapshotVersion,
     snapshot,
   };
   writeApproval(options, opened.key, projectId, (state) =>

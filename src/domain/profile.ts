@@ -16,13 +16,26 @@
 // flow"; they are deferred (WCLI-33), so a declaration naming one is refused
 // as unsupported rather than ignored or quietly treated as bearer.
 //
-// Comparison is literal, and that is deliberate. A URL differing only in a
-// default port, or a header name differing only in case, is a different
-// approved operation and needs the developer's approval again: reapproval is
-// cheap, and a normalization that silently equated two spellings would be a
-// rule nobody reviewed. What is normalized is ordering (headers are sorted)
-// and completeness (an omitted optional field becomes its default), so those
-// two changes cannot invalidate an approval on their own.
+// What an approval pins is the normalized operation — spec §9.2: "the
+// developer approves the normalized operation: adapter, exact method and
+// URL, ..."; §9.3: "only connect to the approved destination" — and not the
+// bytes the manifest happened to spell it with. So normalization also
+// canonicalizes the URL, and what is stored, shown and later executed is the
+// canonical form. A declaration the canonical form would have to *rewrite*
+// rather than merely complete is refused instead (see `normalizedUrl`): a
+// spelling two parsers can read two ways must not become an approval whose
+// meaning depends on which parser reads it back.
+//
+// Comparison is then literal over normalized values, and that is deliberate.
+// A different path, a different method, or a header name differing only in
+// case is a different approved operation and needs the developer's approval
+// again: reapproval is cheap, and a normalization that silently equated two
+// spellings would be a rule nobody reviewed. What is normalized is ordering
+// (headers are sorted), completeness (an omitted optional field becomes its
+// default), and canonical spelling of a value that denotes one operation
+// (URL, whose host and scheme case, default port and empty path vary without
+// changing where a request goes) — so none of those can invalidate an
+// approval on its own.
 import { WardError } from "../contract/errors.ts";
 import { isSecretAlias } from "./secret.ts";
 
@@ -90,6 +103,23 @@ export interface NormalizedProfile {
   readonly output: ProfileOutputPolicy;
 }
 
+// The version of the approved-snapshot schema, written beside every stored
+// approval (spec §6.2: "store versioned collections for ... approved profile
+// snapshots"). The vault's own formatVersion says which build wrote the
+// document; this says which *normalizer* produced the snapshot inside it, and
+// the two are not the same question: a build that widened or tightened what
+// `normalizeProfile` accepts would otherwise re-read every stored approval
+// through its new rules and silently reinterpret what the developer
+// approved. A record naming a version this build does not implement is
+// refused as a document from another build, never re-normalized into one.
+//
+// It is deliberately per record rather than one version for the whole
+// collection: records written under different versions can sit side by side
+// — an approval made after a schema change does not have to wait for every
+// older one to be rewritten — and a collection-level version would have to
+// claim a uniformity it could not guarantee.
+export const profileSnapshotVersion = 1;
+
 export const profileSnapshotFields = [
   "adapter",
   "method",
@@ -141,9 +171,42 @@ function normalizedMethod(value: unknown): ProfileMethod {
   return value as ProfileMethod;
 }
 
-// The URL is validated and then kept as declared — not rebuilt from URL's
-// own normalization — so what the developer approved is exactly the string
-// Ward would use.
+// The characters RFC 3986 allows unencoded in a URI: unreserved, the
+// gen-delims and sub-delims, and `%` for a percent escape (checked for
+// well-formedness separately). Ward refuses a declaration carrying anything
+// else rather than letting its parser encode it, because a character this
+// parser rewrites is one another parser may read as structure.
+const urlCharactersPattern = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*$/;
+
+// Every percent sign must introduce two hex digits, so no parser has to
+// decide what a malformed escape means.
+const percentEscapePattern = /%[0-9A-Fa-f]{2}/g;
+
+// The authority, introduced by exactly `https://`. A special-scheme URL in
+// any other spelling — `https:/host/x`, `https:host/x` — is given an
+// authority by the parser here and refused by this build's own HTTP client,
+// which would make the approval describe an operation Ward cannot send.
+const httpsAuthorityPattern = /^https:\/\//i;
+
+// The URL, as the canonical form of the operation Ward would perform.
+//
+// Two spellings this refuses are the reason the rule is stated over
+// characters and structure rather than over remembered bad inputs. A
+// backslash in the authority — `https://api.example.invalid\@evil.example/`
+// — is a path separator to this parser, which judges the host
+// `api.example.invalid`, and part of the user-info to others, which dial
+// `evil.example`: the host the developer was shown is not the host another
+// client would reach. And `https:/host/x` is accepted here but refused by
+// this build's fetch, so the record would describe an operation Ward itself
+// cannot send. A backslash is outside the character set below and the
+// single-slash form fails the authority pattern, so both are refused before
+// anything is stored.
+//
+// What passes is stored as `URL`'s canonical href — host and scheme case
+// folded, an empty path made `/`, a default port dropped — which is exactly
+// what the approval prompt displays and what a later build executes, so the
+// string the developer approved and the string Ward would send are one
+// string rather than two the validator hoped were equal.
 function normalizedUrl(value: unknown): string {
   if (
     typeof value !== "string" ||
@@ -151,7 +214,6 @@ function normalizedUrl(value: unknown): string {
     value.length > profileLimits.maxUrlChars
   )
     invalid();
-  if (hasControlBytes(value)) invalid();
   let url: URL;
   try {
     url = new URL(value);
@@ -161,11 +223,14 @@ function normalizedUrl(value: unknown): string {
   // HTTPS is P0's only transport (spec §9.3): plain HTTP is not implemented
   // here, and nothing in this build can enable it.
   if (url.protocol !== "https:") unsupported();
+  if (!urlCharactersPattern.test(value)) invalid();
+  if (value.replace(percentEscapePattern, "").includes("%")) invalid();
+  if (!httpsAuthorityPattern.test(value)) invalid();
   // A user-info URL carries a credential outside the header path this
   // contract exists to keep credentials inside (spec §9.3).
   if (url.username !== "" || url.password !== "") invalid();
   if (url.hostname === "") invalid();
-  return value;
+  return url.href;
 }
 
 function normalizedAuth(value: unknown): ProfileAuth {

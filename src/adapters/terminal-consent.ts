@@ -30,6 +30,7 @@ import type {
   RegistrationApprover,
   RegistrationRequest,
 } from "../application/approvals.ts";
+import { escapeForDisplay } from "../domain/display.ts";
 
 export interface TerminalConsentParts {
   isInteractive?: () => boolean;
@@ -44,22 +45,12 @@ export function isConsentAnswer(answer: string): boolean {
   return normalized === "y" || normalized === "yes";
 }
 
-// A path is the user's own filesystem, so it can contain control bytes and
-// terminal escapes. The value shown is the value being approved, so it is
-// escaped rather than passed through: a path cannot redraw the prompt that
-// asks about it.
-export function escapeForDisplay(value: string): string {
-  let escaped = "";
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    escaped +=
-      code < 0x20 || code === 0x7f
-        ? `\\x${code.toString(16).padStart(2, "0")}`
-        : character;
-  }
-  return escaped;
-}
-
+// A path is the user's own filesystem, and a profile declaration comes from a
+// tracked, editable file, so either can contain control bytes and terminal
+// escapes. The value shown is the value being approved, so it is escaped
+// rather than passed through: it cannot redraw the prompt that asks about it.
+// The policy itself is shared with the text reports in the application layer
+// (`escapeForDisplay` in src/domain/display.ts).
 function promptFor(request: RegistrationRequest): string {
   return [
     "Ward is not registered for this checkout.",

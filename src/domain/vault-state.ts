@@ -1,6 +1,7 @@
 // The decrypted vault's own document (spec §6.2): versioned collections for
-// projects, local bindings and secret records. It reaches storage only
-// through VaultStore.mutate, which seals each change as the next revision.
+// projects, local bindings, secret records and approved profile snapshots.
+// It reaches storage only through VaultStore.mutate, which seals each change
+// as the next revision.
 //
 // The document is Ward's own encrypted state, so this module is defense in
 // depth rather than a trust boundary: a snapshot that opens has already
@@ -17,6 +18,7 @@ import {
   isProfileName,
   type NormalizedProfile,
   normalizeProfile,
+  profileSnapshotVersion,
 } from "./profile.ts";
 import {
   decodeSecretValue,
@@ -59,7 +61,10 @@ export interface BindingRecord {
 // The snapshot is the normalized operation and never a value. It is
 // re-normalized when a document is parsed, so a stored snapshot that this
 // build's normalizer would not produce is a damaged document rather than an
-// approval with unknown meaning.
+// approval with unknown meaning — and `snapshotVersion` names the schema the
+// stored snapshot was written under, so a record from a build whose
+// normalizer differs is refused rather than re-read through these rules
+// (spec §6.2).
 export interface ProfileApprovalRecord {
   readonly profile: string;
   readonly projectId: string;
@@ -67,6 +72,7 @@ export interface ProfileApprovalRecord {
   readonly device: string;
   readonly inode: string;
   readonly approvedAt: string;
+  readonly snapshotVersion: number;
   readonly snapshot: NormalizedProfile;
 }
 
@@ -236,6 +242,7 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
     "projectId",
     "root",
     "snapshot",
+    "snapshotVersion",
   ];
   const keys = Object.keys(value).sort();
   if (keys.length !== expected.length) malformed();
@@ -246,6 +253,14 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   if (!isCanonicalAbsolutePath(value.root)) malformed();
   if (!isCounter(value.device) || !isCounter(value.inode)) malformed();
   if (!isTimestamp(value.approvedAt)) malformed();
+  // A version that is missing or is not a number is a damaged record; a
+  // version this build does not implement is a record from another build.
+  // The second is answered rather than re-normalized, because running this
+  // build's rules over a snapshot written under different ones is how an
+  // approval comes to mean something the developer never approved.
+  if (typeof value.snapshotVersion !== "number") malformed();
+  if (value.snapshotVersion !== profileSnapshotVersion)
+    throw new WardError("vault_format_unsupported");
   let snapshot: NormalizedProfile;
   try {
     snapshot = normalizeProfile(value.snapshot);
@@ -259,6 +274,7 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
     device: value.device,
     inode: value.inode,
     approvedAt: value.approvedAt,
+    snapshotVersion: value.snapshotVersion,
     snapshot,
   };
 }
@@ -328,13 +344,23 @@ export function serializeVaultState(state: VaultState): Uint8Array {
       }),
     ),
     profileApprovals: state.profileApprovals.map(
-      ({ profile, projectId, root, device, inode, approvedAt, snapshot }) => ({
+      ({
         profile,
         projectId,
         root,
         device,
         inode,
         approvedAt,
+        snapshotVersion,
+        snapshot,
+      }) => ({
+        profile,
+        projectId,
+        root,
+        device,
+        inode,
+        approvedAt,
+        snapshotVersion,
         // Written in the same shape a manifest declares it, so one
         // normalizer reads both and a stored snapshot cannot drift into a
         // form only the serializer produces. The canonical order is the

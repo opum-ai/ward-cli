@@ -4,7 +4,10 @@
 // the state is sealed but written by an earlier Ward — so every field is
 // checked here rather than trusted.
 import { describe, expect, test } from "bun:test";
-import { profileLimits } from "../src/domain/profile.ts";
+import {
+  profileLimits,
+  profileSnapshotVersion,
+} from "../src/domain/profile.ts";
 import {
   newProjectManifest,
   parseProjectManifest,
@@ -15,6 +18,7 @@ import {
   type CheckoutIdentity,
   emptyVaultState,
   findBinding,
+  type ProfileApprovalRecord,
   parseVaultState,
   registerCheckout,
   serializeVaultState,
@@ -38,6 +42,33 @@ const secretRecord = (overrides: Partial<SecretRecord> = {}): SecretRecord => ({
   createdAt: timestamp,
   updatedAt: timestamp,
   revision: 1,
+  ...overrides,
+});
+
+// A complete, valid stored approval; each malformed case below breaks
+// exactly one field of it. The URL is canonical and within the character set
+// the profile normalizer accepts, so the record survives re-normalization.
+const snapshot = {
+  adapter: "http",
+  method: "GET",
+  url: "https://api.example.invalid/a%20b?x=1&y=2",
+  auth: { type: "bearer", secret: "example.token" },
+  headers: [],
+  requestBody: "none",
+  output: "status",
+} as const;
+
+const approvalRecord = (
+  overrides: Partial<ProfileApprovalRecord> = {},
+): ProfileApprovalRecord => ({
+  profile: "example-profile",
+  projectId,
+  root: identity.root,
+  device: identity.device,
+  inode: identity.inode,
+  approvedAt: timestamp,
+  snapshotVersion: profileSnapshotVersion,
+  snapshot: { ...snapshot },
   ...overrides,
 });
 
@@ -113,6 +144,43 @@ describe("the vault's state document", () => {
       ],
     };
     expect(parseVaultState(serializeVaultState(state))).toEqual(state);
+  });
+
+  test("an approval record round-trips byte for byte, with its snapshot version", () => {
+    const state = {
+      ...emptyVaultState(),
+      profileApprovals: [
+        approvalRecord({
+          snapshot: {
+            ...snapshot,
+            url: "https://api.example.invalid/other?a=1&b=%20",
+          },
+        }),
+      ],
+    };
+    const bytes = serializeVaultState(state);
+    expect(parseVaultState(bytes)).toEqual(state);
+    const document = new TextDecoder().decode(bytes);
+    expect(document).toContain('"snapshotVersion":1');
+    expect(document).toContain('"snapshot":{"adapter":"http"');
+  });
+
+  test("a snapshot version this build does not implement is a document from another build", () => {
+    // The vault's formatVersion says which build wrote the document; this
+    // says which normalizer produced the snapshot inside it. Running this
+    // build's rules over a snapshot written under other ones is how an
+    // approval comes to mean something the developer never approved, so it
+    // is refused rather than re-read.
+    expect(
+      codeOf(() =>
+        parseVaultState(
+          stateBytes({
+            formatVersion: 1,
+            profileApprovals: [approvalRecord({ snapshotVersion: 2 })],
+          }),
+        ),
+      ),
+    ).toBe("vault_format_unsupported");
   });
 
   test("registering twice keeps one project record and two bindings", () => {
@@ -230,6 +298,33 @@ describe("the vault's state document", () => {
       { formatVersion: 1, unknownCollection: [], localBindings: [] },
     ],
     [
+      "an approval record with no snapshot version",
+      {
+        formatVersion: 1,
+        profileApprovals: [
+          (() => {
+            const { snapshotVersion: _omitted, ...rest } = approvalRecord();
+            return rest;
+          })(),
+        ],
+      },
+    ],
+    [
+      "an approval whose snapshot the normalizer would not produce",
+      {
+        formatVersion: 1,
+        profileApprovals: [
+          approvalRecord({
+            snapshot: {
+              ...snapshot,
+              headers: [],
+              followRedirects: true,
+            } as unknown as ProfileApprovalRecord["snapshot"],
+          }),
+        ],
+      },
+    ],
+    [
       "a secret value that is not canonical base64",
       { formatVersion: 1, secrets: [secretRecord({ value: "AAA" })] },
     ],
@@ -297,6 +392,24 @@ describe("the tracked project manifest", () => {
     const text = serializeProjectManifest(manifest);
     expect(text.endsWith("\n")).toBe(true);
     expect(text).toContain('\n  "projectId": "');
+    expect(parseProjectManifest(text)).toEqual(manifest);
+  });
+
+  test("a manifest carrying declarations writes them back unchanged", () => {
+    // Every caller today hands this function a fresh or restored manifest,
+    // whose profiles are empty, so a serializer that dropped them would look
+    // correct until the first rewrite of a manifest that had any.
+    const profiles = {
+      deploy: {
+        adapter: "http",
+        method: "GET",
+        url: "https://api.example.invalid/status",
+        auth: { type: "bearer", secret: "example.token" },
+      },
+    };
+    const manifest = { ...newProjectManifest(projectId), profiles };
+    const text = serializeProjectManifest(manifest);
+    expect(text).toContain('"deploy"');
     expect(parseProjectManifest(text)).toEqual(manifest);
   });
 

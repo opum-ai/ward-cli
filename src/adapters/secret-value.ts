@@ -23,12 +23,9 @@ import {
 } from "node:fs";
 import type { SecretValueSource } from "../application/secrets.ts";
 import { WardError } from "../contract/errors.ts";
+import { escapeForDisplay } from "../domain/display.ts";
 import { secretLimits } from "../domain/secret.ts";
-import {
-  escapeForDisplay,
-  isConsentAnswer,
-  readAnswerLine,
-} from "./terminal-consent.ts";
+import { isConsentAnswer, readAnswerLine } from "./terminal-consent.ts";
 
 export interface TerminalSecretParts {
   isInteractive?: () => boolean;

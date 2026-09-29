@@ -17,12 +17,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { locateCheckout } from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
@@ -411,6 +412,54 @@ describe("the profile declaration", () => {
       },
       "profile_invalid",
     ],
+    // The settled reading (WCLI-9): an approval pins the normalized
+    // operation, so a declaration another parser could read as a different
+    // destination is refused rather than canonicalized into one of them.
+    [
+      "a URL with a backslash in the authority",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        // This parser judges the host `api.example.invalid`; a client that
+        // treats the backslash as a literal reads the user-info as ending at
+        // the `@` and dials `evil.example` instead.
+        url: "https://api.example.invalid\\@evil.example/steal",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with one slash after the scheme",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        // Given an authority by this build's parser, refused by its own
+        // fetch: the record would describe an operation Ward cannot send.
+        url: "https:/api.example.invalid/x",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with a character the spec spelling does not allow",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://api.example.invalid/café",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with a space",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://api.example.invalid/a b",
+      },
+      "profile_invalid",
+    ],
+    [
+      "a URL with a malformed percent escape",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        url: "https://api.example.invalid/100%zz",
+      },
+      "profile_invalid",
+    ],
     [
       "a header value with a line break",
       {
@@ -486,6 +535,26 @@ describe("the profile declaration", () => {
     expect(() =>
       normalizeProfile({ ...(SNAPSHOT as unknown as Declaration), headers }),
     ).toThrow();
+  });
+
+  // What is stored is the operation Ward would perform, not the bytes the
+  // manifest spelled it with (spec §9.2, WCLI-9's settled reading). The
+  // prompt shows this string and a later build executes it, so the approval
+  // and the request cannot describe two different destinations.
+  test("a URL is stored as the canonical form of the operation", () => {
+    const stored = (url: string) =>
+      normalizeProfile({ ...declaration(), url }).url;
+    expect(stored("https://API.Example.INVALID/rate_limit")).toBe(
+      "https://api.example.invalid/rate_limit",
+    );
+    expect(stored("https://api.example.invalid")).toBe(
+      "https://api.example.invalid/",
+    );
+    expect(stored("https://api.example.invalid:443/rate_limit")).toBe(
+      "https://api.example.invalid/rate_limit",
+    );
+    // A URL already in canonical form is stored byte for byte.
+    expect(stored(SNAPSHOT.url)).toBe(SNAPSHOT.url);
   });
 
   test("a declaration without a secret value anywhere in it", () => {
@@ -653,6 +722,24 @@ describe("T13: a changed declaration cannot reuse an approval", () => {
     });
     const implicit = normalizeProfile(declaration());
     expect(profilesMatch(implicit, explicit)).toBe(true);
+  });
+
+  test("a respelling of the same URL is not a change, a different destination is", () => {
+    // T13 invalidates a changed destination. Host case, a default port and
+    // an omitted trailing slash name the same destination — the spec's own
+    // framing is the normalized operation — so they are the same approval,
+    // and the snapshot records the one canonical form either way.
+    const approved = normalizeProfile(declaration());
+    const respelled = normalizeProfile({
+      ...declaration(),
+      url: "https://API.example.invalid:443/rate_limit",
+    });
+    expect(differingProfileFields(respelled, approved)).toEqual([]);
+    const elsewhere = normalizeProfile({
+      ...declaration(),
+      url: "https://api.example.invalid/RATE_LIMIT",
+    });
+    expect(differingProfileFields(elsewhere, approved)).toEqual(["url"]);
   });
 });
 
@@ -1049,6 +1136,20 @@ describe("ward check", () => {
       expect(profileCheckReasons as readonly string[]).toContain(reason);
   });
 
+  test("an unregistered checkout with nothing declared says that, and not that a profile would be refused", async () => {
+    const h = harness();
+    const checkout = worktree();
+    await h.ward(checkout, ["setup", "--json"]);
+    await h.ward(checkout, ["init", "--no-register", "--json"]);
+    const result = await h.ward(checkout, ["check"]);
+    expect(result.exitCode).toBe(exitCodes.validation);
+    // The heading has to agree with the line under it: there is no declared
+    // profile to refuse, so the binding is the only thing not ready.
+    expect(result.stdout).toContain("this checkout is not registered");
+    expect(result.stdout).not.toContain("at least one declared profile");
+    expect(result.stdout).toContain("No profiles are declared");
+  });
+
   test("an invalid declaration is reported rather than thrown", async () => {
     const h = harness();
     const checkout = await h.registered({
@@ -1090,7 +1191,12 @@ describe("non-disclosure", () => {
     }
   });
 
-  test("the approval prompt, and only the prompt, shows the operation", async () => {
+  // What this measures is the port's payload, not the rendered prompt: the
+  // question carries the operation and no value, and every *result* stays
+  // silent about both (the case above walks the results). The rendering
+  // itself — escaping, and what a person actually reads — is measured in
+  // test/terminal-consent.test.ts, where the prompt is produced.
+  test("the approval question carries the operation and no value", async () => {
     const h = harness();
     const checkout = await h.registered();
     const prompt: string[] = [];
@@ -1272,5 +1378,117 @@ describe("checking a profile never reads its value", () => {
       .secrets.find((entry) => entry.alias === SNAPSHOT.auth.secret);
     expect(stored).toBeDefined();
     expect(decodeSecretValue(stored?.value ?? "")).toEqual(encode(SENTINEL));
+  });
+});
+
+describe("a profile name from the manifest cannot act on the terminal", () => {
+  // A name is a key in a tracked file anyone who can edit the repository can
+  // write, and a name this build's grammar refuses is still *reported* —
+  // dropping it would hide a declaration. So it reaches the text reports,
+  // and it is escaped on the way out for the same reason the approval prompt
+  // escapes the operation: a person reads it.
+  const hostile = "evil\u001b]0;PWNED\u0007‮name";
+
+  test("list and check escape a name in their text output", async () => {
+    const h = harness();
+    const checkout = await h.registered({
+      [PROFILE]: declaration(),
+      [hostile]: declaration(),
+    });
+    for (const argv of [["profile", "list"], ["check"]]) {
+      const result = await h.ward(checkout, argv);
+      expect(result.stdout).not.toContain("\u001b");
+      expect(result.stdout).not.toContain("\u0007");
+      expect(result.stdout).not.toContain("‮");
+      expect(result.stdout).toContain("evil\\x1b]0;PWNED\\x07\\u202ename");
+    }
+  });
+
+  test("the JSON report carries the name as a JSON string, with no raw control byte", async () => {
+    const h = harness();
+    const checkout = await h.registered({ [hostile]: declaration() });
+    const result = await h.ward(checkout, ["check", "--json"]);
+    // JSON.stringify escapes the control bytes itself, so the name survives
+    // the round trip — the caller that asked by name still finds it — while
+    // no raw ESC or BEL reaches stdout. JSON is a machine channel rather
+    // than a terminal, so a format character may travel in it unescaped.
+    const parsed = json(result.stdout).data as { profiles: CheckProfile[] };
+    expect(parsed.profiles[0]?.profile).toBe(hostile);
+    expect(result.stdout).not.toContain("\u001b");
+    expect(result.stdout).not.toContain("\u0007");
+  });
+});
+
+describe("the readiness path cannot reach a transport", () => {
+  // The case above patches globalThis.fetch, which is one way to make a
+  // request and not the only one: a captured fetch reference, node:https and
+  // a spawned curl all miss it, and the layer check constrains only relative
+  // imports, so `import "node:https"` would pass it. This is the structural
+  // half — the whole import closure of the application layer, every file
+  // `ward check` could execute, names no transport at all.
+  //
+  // What it does not claim: that no Ward command ever reaches the network
+  // (adapters do I/O, and a later task adds the transport), only that the
+  // layer that answers readiness cannot. It is a source scan, so it would
+  // not see a transport acquired by a string a program builds at run time.
+  const transports = [
+    "node:http",
+    "node:https",
+    "node:net",
+    "node:tls",
+    "node:dns",
+    "node:dgram",
+    "node:child_process",
+  ];
+
+  async function closureOfEntries(entries: readonly string[]) {
+    const read = new Map<string, string>();
+    const queue = [...entries];
+    while (queue.length > 0) {
+      const path = queue.pop() as string;
+      if (read.has(path)) continue;
+      const source = await Bun.file(path).text();
+      read.set(path, source);
+      for (const [, target] of source.matchAll(/["'](\.[^"']+)["']/g)) {
+        if (target === undefined) continue;
+        const resolved = join(dirname(path), target);
+        if (await Bun.file(resolved).exists()) queue.push(resolved);
+      }
+    }
+    return read;
+  }
+
+  test("no file the application layer imports names a transport", async () => {
+    const layer = join(import.meta.dir, "..", "src", "application");
+    const entries = readdirSync(layer)
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => join(layer, name));
+    const read = await closureOfEntries(entries);
+    // Positive control: the walk read the layer it describes, and the file
+    // the readiness answer comes from is inside the closure.
+    expect(read.size).toBeGreaterThanOrEqual(entries.length);
+    expect(entries.length).toBeGreaterThan(0);
+    const paths = [...read.keys()];
+    expect(paths.some((path) => path.endsWith("/profiles.ts"))).toBe(true);
+    expect(paths.some((path) => path.endsWith("/domain/profile.ts"))).toBe(
+      true,
+    );
+
+    const offenders: string[] = [];
+    for (const [path, source] of read) {
+      for (const specifier of transports)
+        if (
+          source.includes(`"${specifier}"`) ||
+          source.includes(`'${specifier}'`) ||
+          source.includes(`\`${specifier}\``)
+        )
+          offenders.push(`${path}: names ${specifier}`);
+      // A bare call, with `//` comments stripped so prose cannot trip it.
+      const code = source.replace(/^\s*\/\/.*$/gm, "");
+      if (/\bfetch\s*\(/.test(code)) offenders.push(`${path}: calls fetch`);
+      if (/\bBun\.(spawn|spawnSync|\$)/.test(code))
+        offenders.push(`${path}: spawns a process`);
+    }
+    expect(offenders).toEqual([]);
   });
 });
