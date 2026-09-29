@@ -21,6 +21,20 @@ Do not read or inspect `~/.ward/`, invoke keychain utilities, query Ward's datab
 
 Do not use command substitution, `eval`, shell tracing, credential-bearing URLs, or direct secret-provider calls to bypass Ward. Do not wrap an unsupported tool with environment injection. Unsupported transport means the workflow is not yet supported.
 
+## Keep values out of every durable surface
+
+What a session writes is durable, copied, and indexed, so a value is exposed the moment it reaches one of these surfaces. Four of them matter most.
+
+**The session transcript.** The conversation is a durable artifact: it is saved, copied into logs, re-read as context later, and commonly synced or indexed by tooling. Never place a value in a message, and never ask the user to paste one into the session. A value that has appeared in the transcript has left the vault, and editing it out of view afterwards does not recall the copies. Treat it as exposed.
+
+**Standard output and standard error.** Ward's interface is status-only, and command output flows into the transcript and into whatever log captures it. Never print, echo, log, or debug-print a value to stdout or stderr, and never enable a mode that would: shell tracing, verbose or debug logging, HTTP request dumps, or a tool's raw output. When something fails, report the safe error code and the affected reference, not the payload that carried the value. A check that seems to need the value needs a Ward status or a non-secret identifier instead.
+
+**Shell history.** Command lines are persisted: shell history is written to disk, kept after the session ends, and commonly synced or backed up. Never place a value on a command line, whether as a literal argument, through a shell variable, command substitution, a heredoc, or a wrapper around another program, and do not read a value into the shell: an exported value is readable by other processes, and an unexported variable is no safer, because expanding it into a command puts the value on that command line. Ward's own interface consumes the credential without bringing it into the shell. A value that has been on a command line is in history; treat it as exposed.
+
+**Redaction of a value that has already reached output.** Redaction is containment, not remediation: it cannot recall the copies already written, and it must not repeat the value in order to remove it. Never re-emit a value, or any part of it, to redact it: no full value, no prefix, no last characters, no masked form built from it. Replace it with a marker that contains no part of the value, and say where it sat rather than what it was.
+
+A value that has reached any of those surfaces is exposed. Do not repeat it while cleaning up, and follow Suspected exposure below: stop, identify the reference, affected surface, and approximate time without the value, and request provider-side revocation or rotation through an authorized path.
+
 ## Respect local authority
 
 Do not grant access, approve your own profile changes, attach an unregistered checkout to an existing credential namespace, or impersonate a human actor. A TTY and an actor label are not proof of human authorization.

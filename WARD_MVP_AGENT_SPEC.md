@@ -332,9 +332,9 @@ Use `.claude/skills/ward/SKILL.md` for an explicitly selected Claude local bridg
 
 ### 11.3 Skill source and distribution
 
-Author `skills/ward/SKILL.md` in `ward-cli`, with a proper name/description frontmatter and concise task-shaped guidance. Ship `.claude-plugin/plugin.json` following the actual peer pattern. Proposed plugin name: `opum-ward`.
+The skill is authored in `ward-cli` at `skills/ward/SKILL.md`, with name/description frontmatter and concise task-shaped guidance, and packaged by `.claude-plugin/plugin.json` following the actual peer pattern under the name `opum-ward`. It ships with an eval suite under `evals/`, run by `scripts/run-eval.sh` as a release gate rather than a CI job.
 
-The marketplace change should point to the released Ward repository at an immutable resolved release reference, following the index's existing validation conventions. Do not publish a broken index entry before its plugin release exists. Do not maintain a separately edited marketplace copy of the skill. [S13]
+**Distribution, corrected 2026-09-29.** While `ward-cli` is private, the plugin is distributed through the private `opum-fleet` marketplace; that half of the work is filed there, and the distribution direction recorded on WCLI-50 for this phase supersedes the public-marketplace assumption that stood here. The public `opum-marketplace` entry is the later phase and still waits for a release artifact: it should point to the released Ward repository at an immutable resolved release reference, following the index's existing validation conventions. Do not publish a broken index entry before its plugin release exists. Do not maintain a separately edited marketplace copy of the skill. [S13]
 
 A future installation, after release and indexing, would follow the existing pattern:
 
@@ -343,7 +343,7 @@ A future installation, after release and indexing, would follow the existing pat
 /plugin install opum-ward@opum
 ```
 
-These are proposed future installation commands, not a claim that Ward is published now.
+These are proposed future installation commands, not a claim that Ward is published now, and they are not the private-phase path.
 
 ## 12. Required skill content
 
