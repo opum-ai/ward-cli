@@ -53,6 +53,14 @@
 # `--ablation none` the with-only indicator graders (`tool_used: Skill`) ARE
 # scored, so absolute scores differ between modes; never compare across them.
 #
+# RUN NONE-MODE PER CASE, NOT ACROSS THE SUITE. The same rule that makes the
+# indicators score under `none` makes a whole-suite none run fail by
+# construction: the should-NOT-fire guard's `tool_used: Skill` grader is
+# SUPPOSED to fail there - a reported FAIL is the measurement that the skill
+# stayed quiet - so the guard scores below 1.0 and threshold 1 exits 1. That is
+# the guard working, not a regression. Filter every none-mode run with --case,
+# the way the pair measurements do.
+#
 # A USAGE-LIMITED ZERO IS NOT A REGRESSION, and nothing in the tool says so.
 # If the account hits a plan or rate limit while a suite runs, each later run
 # ends with that error, is graded on what it produced, and usually scores 0,

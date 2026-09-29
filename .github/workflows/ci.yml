@@ -35,7 +35,7 @@ jobs:
           # package.json's packageManager field, so the version is stated once.
           bun-version-file: package.json
       - run: bun install --frozen-lockfile
-      # typecheck, lint, format, layer check, tests.
+      # typecheck, lint, format, layer check, eval suite structural check, tests.
       - run: bun run check
       - run: git diff --check
 
