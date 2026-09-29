@@ -541,16 +541,21 @@ describe("T06: transactions", () => {
       join(import.meta.dir, "..", "src", "adapters", "sqlite-vault-store.ts"),
       "utf8",
     );
-    // The pre-lock reads are the ones before the journal heal; the
-    // in-transaction re-checks sit after it. Anchoring on that position is
-    // what stops a swap of the settled and bare forms between the two — the
-    // edit that would reinstate the defect while both spellings still appear
-    // in the file.
-    const at = (needle: string) => source.indexOf(needle);
-    const before = (needle: string, anchor: number) =>
-      at(needle) !== -1 && anchor !== -1 && at(needle) < anchor;
-    const firstHeal = at("healJournalMode(db);");
-    const lastHeal = source.lastIndexOf("healJournalMode(db);");
+    // Each writer's pre-lock region is its own function up to its journal
+    // heal, before the immediate transaction; the in-transaction re-checks
+    // sit after that. The region must hold the settled read and no bare one:
+    // presence alone would miss a bare read added beside the settled check,
+    // and a bare read in this region is exactly the defect. A missing region
+    // (a removed heal, a renamed function) reads as a failure, not a pass.
+    const region = (start: string, end: string) => {
+      const from = source.indexOf(start);
+      const to = from === -1 ? -1 : source.indexOf(end, from);
+      return from === -1 || to === -1 ? undefined : source.slice(from, to);
+    };
+    const createRegion = region("create(vaultId", "healJournalMode(db);");
+    const mutateRegion = region("mutate(key", "healJournalMode(db);");
+    const holds = (slice: string | undefined, settled: string, bare: string) =>
+      slice !== undefined && slice.includes(settled) && !slice.includes(bare);
     const pins: Array<[string, boolean]> = [
       [
         "settledLayout is a deferred transaction over layoutOf",
@@ -565,12 +570,12 @@ describe("T06: transactions", () => {
         ),
       ],
       [
-        "create's pre-lock check reads the settled layout before the journal heal",
-        before('settledLayout(db) === "ward"', firstHeal),
+        "create's pre-lock region reads the settled layout and no bare one",
+        holds(createRegion, "settledLayout(db)", "layoutOf(db)"),
       ],
       [
-        "mutate's pre-lock check reads the settled vault before the journal heal",
-        before("requireSettledVault(db)", lastHeal),
+        "mutate's pre-lock region reads the settled vault and no bare one",
+        holds(mutateRegion, "requireSettledVault(db)", "requireVault(db)"),
       ],
     ];
     const missing = pins.filter(([, ok]) => !ok).map(([name]) => name);
