@@ -13,4 +13,5 @@ sources = [
   "adr/0006-backup-container-and-restore-authority",
   "adr/0007-status-and-doctor-reporting",
   "adr/0008-agent-profile-source-coverage",
+  "adr/0009-hand-rolled-status-only-https-transport",
 ]
