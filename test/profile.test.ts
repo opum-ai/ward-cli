@@ -524,6 +524,29 @@ describe("the profile declaration", () => {
       "profile_invalid",
     ],
     [
+      // The same defect arriving by truncation rather than by spelling. U+010A
+      // holds no control byte and its UTF-8 encoding holds none either — but
+      // the request line is written as latin1, which maps it to its low byte,
+      // 0x0A (WCLI-10 review, F1).
+      "a header value whose code point the wire encoding truncates to a line break",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        headers: { Accept: "application/jsonĊčX-Evil: 1" },
+      },
+      "profile_invalid",
+    ],
+    [
+      // Truncation that mangles rather than injects — U+0141 is written as
+      // `A` — refused for the other half of the same reason: the value the
+      // developer approved has to be the value sent.
+      "a header value whose code point the wire encoding cannot carry",
+      {
+        ...(SNAPSHOT as unknown as Declaration),
+        headers: { Accept: "application/jsonŁ" },
+      },
+      "profile_invalid",
+    ],
+    [
       "a header name that is not a token",
       { ...(SNAPSHOT as unknown as Declaration), headers: { "Bad Name": "1" } },
       "profile_invalid",

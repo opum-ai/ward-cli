@@ -10,9 +10,12 @@
 - 2026-09-28T19:14:02-05:00 3dfe16aea0999900c69d6f3aeccc92b3b6de847d WCLI-13: encrypted backup and fresh-store restore (#32)
 - 2026-09-28T20:00:23-05:00 d0b8877cbff67cd301cc20c8b188c5f22e57269e WCLI-26: `ward status` and `ward doctor` (#36)
 - 2026-09-28T20:21:13-05:00 53fbbc8b311297ea2cf03380666d7038cbb6435e WCLI-25: keep the four lore agent source lists current
+- 2026-09-28T20:52:05-05:00 3e4064729f20950cd2ac783798994979297657a5 WCLI-25: keep the four lore agent source lists current (#43)
+- 2026-09-29T01:11:17-05:00 c4c646df5b692b4ef486202889881399ee63705d docs(WCLI-10): record the transport decision as ADR 0009
 
 ## docs/adr
 
 - 2026-09-28T13:09:30-05:00 e46ae0c8607368ac036a0f1fbcfc3a053b9fa7c3 WCLI-5: KeyProvider with a bounded macOS Keychain adapter (#15)
 - 2026-09-28T14:43:48-05:00 8bd61d107fc98171d3cb852bf0800b1c03405a9f WCLI-6: encrypted SQLite snapshot store with transactional mutation (#19)
 - 2026-09-28T15:59:49-05:00 9709d912bd155500422d0514005077c2d7817a49 WCLI-20: ward setup with serialized key creation and crash resume (#21)
+- 2026-09-28T22:30:27-05:00 51f000ee586268f4241dbe5d54ca2bf805038323 WCLI-32: scope ADR 0001's vault_busy claim, and file WCLI-31 (#53)

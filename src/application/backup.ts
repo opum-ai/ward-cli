@@ -195,6 +195,16 @@ export async function runRestore(options: {
         // approvals to be inactive until they are reviewed explicitly.
         profileApprovals: [],
         secrets: backup.secrets,
+        // The audit history is carried, unlike the bindings and approvals
+        // above it, because of what separates them: a restore deactivates
+        // authority, and an audit record is not authority. It says a run
+        // happened, and it did. Erasing it would leave the restored vault
+        // asserting that runs which consumed credentials never occurred,
+        // which is a claim about the past rather than a decision about what
+        // this machine may do next. The records it carries name opaque
+        // secret ids the restore also carries, so they keep referring to the
+        // same records; they reach no project until one is registered here.
+        auditRecords: backup.auditRecords,
       }),
     );
     return {

@@ -76,12 +76,66 @@ export interface ProfileApprovalRecord {
   readonly snapshot: NormalizedProfile;
 }
 
+// One operational event from a `ward run` (spec §9.4). Two are written per
+// run and they are two records rather than one with two timestamps, because
+// the point of the pair is that the first exists *before* a credential is
+// delivered: if admission cannot be persisted, the run does not happen, and a
+// single record written afterwards could not express that.
+//
+// What is here is the whole of what a record may hold, and the reason is the
+// shape rather than a redaction step: there is no field a credential, a
+// request body, a response body or an upstream message could be written
+// into, so gate T14's "absent from ... audit" is a property of this
+// interface rather than a rule the writer has to follow. `secretId` is the
+// opaque identifier the vault assigns a stored secret, never an alias and
+// never a value.
+//
+// `outcome` is null on an admission record, which is written before there is
+// an outcome to record, and carries a safe code on the completion record.
+// It is nullable rather than optional so that a serialized record always
+// carries the key: this document's reader compares key sets exactly, and
+// JSON drops a key whose value is undefined.
+export type AuditPhase = "admission" | "completion";
+
+// The outcomes a completed run can record. These are the run's own public
+// outcome values as well as the audit record's, deliberately: one vocabulary
+// means `ward run`'s result and the audit trail that describes it cannot
+// drift into naming the same event two ways. The cases that are refused
+// rather than performed — no approval, a stale declaration, a destination
+// Ward will not connect to — are errors and are not recorded here, because
+// nothing was admitted.
+export const auditOutcomes = ["succeeded", "failed", "indeterminate"] as const;
+
+export type AuditOutcome = (typeof auditOutcomes)[number];
+
+export interface AuditRecord {
+  readonly id: string;
+  readonly runId: string;
+  readonly projectId: string;
+  readonly profile: string;
+  readonly secretId: string;
+  readonly phase: AuditPhase;
+  readonly outcome: AuditOutcome | null;
+  readonly at: string;
+}
+
+// How many events this vault keeps. Spec §9.4 permits a bounded history for
+// the local MVP and requires the limit to be exposed rather than hidden;
+// stating it in `ward audit` is WCLI-11's, and the bound itself lives here so
+// that a build cannot write an unbounded collection in the meantime. The
+// oldest records are dropped first, across projects rather than per project,
+// because a per-project bound would let one project's activity be pushed out
+// by another's and would have to be enforced at every write to mean
+// anything.
+export const auditHistoryLimit = 500;
+
 export interface VaultState {
   readonly formatVersion: number;
   readonly projects: readonly ProjectRecord[];
   readonly localBindings: readonly BindingRecord[];
   readonly secrets: readonly SecretRecord[];
   readonly profileApprovals: readonly ProfileApprovalRecord[];
+  readonly auditRecords: readonly AuditRecord[];
 }
 
 // The directory a binding is being matched against.
@@ -98,6 +152,7 @@ export function emptyVaultState(): VaultState {
     localBindings: [],
     secrets: [],
     profileApprovals: [],
+    auditRecords: [],
   };
 }
 
@@ -279,6 +334,53 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   };
 }
 
+// A stored audit event. Every field is a Ward-owned identifier, a closed
+// code, or a timestamp — which is what makes this collection safe to read
+// back and display, and what makes an event written by a build whose
+// vocabulary differed a damaged record rather than a displayable one.
+function ownAuditRecord(value: unknown): AuditRecord {
+  if (!isRecord(value)) malformed();
+  const expected = [
+    "at",
+    "id",
+    "outcome",
+    "phase",
+    "profile",
+    "projectId",
+    "runId",
+    "secretId",
+  ];
+  const keys = Object.keys(value).sort();
+  if (keys.length !== expected.length) malformed();
+  for (const [index, key] of expected.entries())
+    if (keys[index] !== key) malformed();
+  if (!isOpaqueId(value.id)) malformed();
+  if (!isOpaqueId(value.runId)) malformed();
+  if (!isOpaqueId(value.projectId)) malformed();
+  if (!isOpaqueId(value.secretId)) malformed();
+  if (!isProfileName(value.profile)) malformed();
+  if (value.phase !== "admission" && value.phase !== "completion") malformed();
+  if (value.outcome !== null) {
+    if (typeof value.outcome !== "string") malformed();
+    if (!(auditOutcomes as readonly string[]).includes(value.outcome))
+      malformed();
+    // An admission record is written before there is an outcome, so one
+    // carrying an outcome is not a record this build wrote.
+    if (value.phase === "admission") malformed();
+  }
+  if (!isTimestamp(value.at)) malformed();
+  return {
+    id: value.id,
+    runId: value.runId,
+    projectId: value.projectId,
+    profile: value.profile,
+    secretId: value.secretId,
+    phase: value.phase,
+    outcome: value.outcome as AuditOutcome | null,
+    at: value.at,
+  };
+}
+
 // A document with no collection key is an empty collection: the skeleton
 // `ward setup` seals holds only `formatVersion`, and an older vault gains
 // the collections with its first binding rather than being refused.
@@ -298,7 +400,8 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
       key !== "projects" &&
       key !== "localBindings" &&
       key !== "secrets" &&
-      key !== "profileApprovals"
+      key !== "profileApprovals" &&
+      key !== "auditRecords"
     )
       malformed();
   // A version that is missing or is not a number is a damaged document; a
@@ -316,6 +419,7 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
       parsed.profileApprovals ?? [],
       ownProfileApproval,
     ),
+    auditRecords: ownCollection(parsed.auditRecords ?? [], ownAuditRecord),
   };
 }
 
@@ -378,6 +482,18 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         },
       }),
     ),
+    auditRecords: state.auditRecords.map(
+      ({ id, runId, projectId, profile, secretId, phase, outcome, at }) => ({
+        id,
+        runId,
+        projectId,
+        profile,
+        secretId,
+        phase,
+        outcome,
+        at,
+      }),
+    ),
   };
   return new TextEncoder().encode(JSON.stringify(document));
 }
@@ -410,6 +526,9 @@ export function registerCheckout(options: {
   const { state, projectId, checkout, registeredAt } = options;
   return {
     formatVersion: vaultStateFormatVersion,
+    // Registering a checkout is not an event in a run's history and does not
+    // add one; the collection is carried through untouched.
+    auditRecords: state.auditRecords,
     projects: state.projects.some((project) => project.id === projectId)
       ? state.projects
       : [...state.projects, { id: projectId, createdAt: registeredAt }],
@@ -552,5 +671,22 @@ export function withoutProfileApproval(
     profileApprovals: state.profileApprovals.filter(
       (approval) => !isApprovalFor(approval, checkout, projectId, profile),
     ),
+  };
+}
+
+// Appends an audit event and drops the oldest if the history is at its
+// bound. Appending rather than replacing is the point: two runs of the same
+// profile are two events, and a history that collapsed them would not be one.
+export function withAuditRecord(
+  state: VaultState,
+  record: AuditRecord,
+): VaultState {
+  const appended = [...state.auditRecords, record];
+  return {
+    ...state,
+    auditRecords:
+      appended.length > auditHistoryLimit
+        ? appended.slice(appended.length - auditHistoryLimit)
+        : appended,
   };
 }

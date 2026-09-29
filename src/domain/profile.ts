@@ -136,6 +136,19 @@ export interface NormalizedProfile {
 // snapshot predates this build, because WCLI-9 is the first build to write
 // one and it is unreleased. The version exists for the records that will
 // outlive the rules; there are none yet to protect.
+//
+// **Considered again at WCLI-10, which narrowed the set** — a declared header
+// value may no longer carry a code point the wire encoding cannot represent —
+// and it still does not bump, on a reason the paragraph above does not supply
+// on its own. The rule at the top exists to stop a build reading a
+// differently-interpreted record as an approval the developer gave; this
+// change can only ever *refuse* more, never accept more, so a snapshot it
+// newly rejects fails closed at parse and there is no interpretation to get
+// wrong in either direction. The cost accepted here is the error a developer
+// sees on such a vault: malformed rather than unsupported-by-another-build,
+// which is a worse description of a correctly-refused record. The first bump
+// belongs to the first release, which is when snapshots begin outliving the
+// rules that wrote them (WCLI-10 review, F7).
 export const profileSnapshotVersion = 1;
 
 export const profileSnapshotFields = [
@@ -175,10 +188,26 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // is a credential.
 const reservedHeaderNames = new Set(["authorization", "proxy-authorization"]);
 
-function hasControlBytes(value: string): boolean {
+// Whether a declared header value cannot be written as the single line of
+// text it was approved as.
+//
+// Two things can go wrong, and they are the same thing seen from the two ends
+// of the wire. A code point below 0x20, or DEL, ends the line: CR and LF
+// terminate the header, and whatever follows is read as further headers or as
+// a second request carrying this operation's credential (spec §9.2). A code
+// point above 0xff has no byte to be written as — the transport encodes each
+// line as latin1, which maps every code point from 0x100 upward to its low
+// byte, so U+010A reaches the socket as a bare LF while a scan of the string's
+// code points sees only a letter (WCLI-10 review, F1). Refusing both is what
+// makes the bytes approved the bytes sent: inside this range that encoding is
+// lossless, so nothing is rewritten between the approval prompt and the
+// socket. A value that mangles rather than injects — U+0141, written as `A` —
+// is refused for the same reason, which is that the developer approved
+// something else.
+function hasUnwritableHeaderByte(value: string): boolean {
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) return true;
+    if (code < 0x20 || code === 0x7f || code > 0xff) return true;
   }
   return false;
 }
@@ -319,8 +348,10 @@ function normalizedHeaders(value: unknown): readonly ProfileHeader[] {
     if (typeof headerValue !== "string") invalid();
     if (headerValue.length > profileLimits.maxHeaderValueChars) invalid();
     // CR, LF, NUL and every other control byte: a header value is a single
-    // line of text, and Ward refuses anything that could terminate it.
-    if (hasControlBytes(headerValue)) invalid();
+    // line of text, and Ward refuses anything that could terminate it. Also
+    // refused: a code point the wire encoding cannot carry, which is the same
+    // defect arriving by truncation rather than by spelling.
+    if (hasUnwritableHeaderByte(headerValue)) invalid();
     headers.push({ name, value: headerValue });
   }
   return headers.sort((left, right) =>
