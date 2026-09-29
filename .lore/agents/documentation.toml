@@ -2,7 +2,7 @@ schema_version = 1
 name = "documentation"
 description = "Grounds authoring in the bundle entry point and the accepted ADRs, so a documentation change lands where this repository already owns the fact rather than duplicating the spec, the planned SECURITY.md (WCLI-15), or a skill."
 kind = "specialist"
-max_tokens = 20000
+max_tokens = 23000
 pinned = ["index"]
 sources = [
   "adr/0001-vault-storage-and-key-custody",
@@ -15,4 +15,7 @@ sources = [
   "adr/0008-agent-profile-source-coverage",
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
+  "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
+  "adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke",
+  "runbooks/release-smoke-t24-s-manual-half",
 ]
