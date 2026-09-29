@@ -40,13 +40,14 @@ import {
   type NormalizedProfile,
   profilesMatch,
 } from "../domain/profile.ts";
-import { decodeSecretValue } from "../domain/secret.ts";
+import { decodeSecretValue, isSecretAlias } from "../domain/secret.ts";
 import {
   type AuditOutcome,
   type AuditRecord,
   type CheckoutIdentity,
   findProfileApproval,
   findSecret,
+  type ObservedMachine,
   parseVaultState,
   serializeVaultState,
   type VaultState,
@@ -61,6 +62,13 @@ import type { VaultStore } from "./vault-store.ts";
 
 export interface RunCommandInput {
   readonly profile: string | undefined;
+  // `--actor-label` and `--task-label`: what the caller says about who it is
+  // and what it is doing, recorded on the run's events as self-asserted
+  // (spec §4.2, §12). They are correlation metadata and never authorization —
+  // nothing in Ward reads them back — and `undefined` means the caller
+  // asserted nothing, which is recorded as absence rather than as a value.
+  readonly actorLabel: string | undefined;
+  readonly taskLabel: string | undefined;
 }
 
 export interface OperationOptions {
@@ -74,6 +82,9 @@ export interface OperationOptions {
   // this layer keeps no dependency a caller cannot replace and a test can
   // predict the identifiers it asserts on.
   readonly newId: () => string;
+  // What the OS says about this process's user and host, supplied for the same
+  // reason and read once per run so both of a run's events carry one identity.
+  readonly observeMachine: () => ObservedMachine | null;
 }
 
 export interface OperationResult {
@@ -171,6 +182,9 @@ function writeAudit(options: {
   outcome: AuditOutcome | null;
   runId: string;
   at: string;
+  machine: ObservedMachine | null;
+  actorLabel: string | null;
+  taskLabel: string | null;
   newId: () => string;
   // Present at admission only: what this run is about to execute, and the
   // credential it is about to deliver.
@@ -217,6 +231,9 @@ function writeAudit(options: {
       phase: options.phase,
       outcome: options.outcome,
       at: options.at,
+      machine: options.machine,
+      actorLabel: options.actorLabel,
+      taskLabel: options.taskLabel,
     };
     return serializeVaultState(withAuditRecord(state, record));
   });
@@ -261,6 +278,17 @@ function resultText(options: {
   return lines.join("\n");
 }
 
+// A self-asserted label as an audit record carries it: the caller's value, or
+// null when it asserted none. The grammar is the alias grammar (WCLI-11), and
+// a value outside it is refused rather than recorded — a label is a name Ward
+// carries into a record and prints, and one this build will not write is not
+// one it should accept and then quietly drop.
+function assertedLabel(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  if (!isSecretAlias(value)) throw new WardError("run_label_invalid");
+  return value;
+}
+
 export async function runOperation(
   input: RunCommandInput,
   options: OperationOptions,
@@ -268,6 +296,14 @@ export async function runOperation(
   const name = input.profile;
   if (name === undefined) throw new WardError("missing_argument");
   if (!isProfileName(name)) throw new WardError("profile_name_invalid");
+  // A label this build would not record is a usage fault, and answering it
+  // must not cost a credential-store read or a key prompt, so it is refused
+  // here rather than inside the vault.
+  const actorLabel = assertedLabel(input.actorLabel);
+  const taskLabel = assertedLabel(input.taskLabel);
+  // Observed once, before either event is written, so the admission and the
+  // completion describe the same run on the same machine.
+  const machine = options.observeMachine();
 
   return withOpenVault(options, async ({ checkout, key, state }) => {
     const manifest = requireManifest(checkout);
@@ -321,6 +357,9 @@ export async function runOperation(
           outcome: null,
           runId,
           at: options.now().toISOString(),
+          machine,
+          actorLabel,
+          taskLabel,
           newId: options.newId,
           executing: snapshot,
           executingSecret: { id: secret.id, revision: secret.revision },
@@ -352,6 +391,9 @@ export async function runOperation(
             outcome,
             runId,
             at: options.now().toISOString(),
+            machine,
+            actorLabel,
+            taskLabel,
             newId: options.newId,
           });
         } catch {

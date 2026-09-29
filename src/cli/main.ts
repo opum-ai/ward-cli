@@ -7,6 +7,7 @@ import {
   createKeychainKeyProvider,
   keychainService,
 } from "../adapters/keychain.ts";
+import { observeMachine } from "../adapters/machine.ts";
 import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
 import { createTerminalSecretValues } from "../adapters/secret-value.ts";
@@ -102,6 +103,15 @@ export interface RunOptions {
   // reach a request path without a network. There is no command-line,
   // configuration or environment path to it.
   transport?: Transport;
+  // What the OS says about this process's user and host, recorded on the
+  // events `ward run` writes. Defaults to reading the platform; tests supply
+  // one so the record they assert on carries values they can predict, and so
+  // no test depends on the machine it runs on. There is no command-line,
+  // configuration or environment path to it: an observed identity that a
+  // caller could pass would not be observed. Typed from the adapter rather
+  // than from the domain type it returns, because this layer may not import
+  // the domain.
+  machine?: typeof observeMachine;
 }
 
 function failure(error: WardError): RunResult {
@@ -424,6 +434,15 @@ async function checkCommand(
   };
 }
 
+// An optional flag's value, or undefined when the caller left it off. The
+// parser has already refused a repeated flag and a flag given no value, so the
+// only other thing it can hold is `true` — the value it records for a flag
+// declared to take none, which neither of `ward run`'s labels is.
+function optionalFlag(input: CommandInput, name: string): string | undefined {
+  const value = input.flags.get(name);
+  return typeof value === "string" ? value : undefined;
+}
+
 // The composition root for `ward run`. Unlike every other command's, it
 // builds a transport — the in-process HTTPS client by default, and whatever
 // the caller supplied when a test is exercising the run path without a
@@ -437,7 +456,11 @@ async function runCommand(
   const checkout = locateCheckout(options.cwd ?? process.cwd());
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const result = await runOperation(
-    { profile: input.positionals[0] },
+    {
+      profile: input.positionals[0],
+      actorLabel: optionalFlag(input, "--actor-label"),
+      taskLabel: optionalFlag(input, "--task-label"),
+    },
     {
       checkout,
       files: createProjectFiles(checkout.root),
@@ -448,6 +471,7 @@ async function runCommand(
       transport: options.transport ?? createHttpsTransport(),
       now: options.now ?? (() => new Date()),
       newId: options.newId ?? randomUUID,
+      observeMachine: options.machine ?? observeMachine,
     },
   );
   return {

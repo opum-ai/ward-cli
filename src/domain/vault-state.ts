@@ -27,7 +27,19 @@ import {
   secretLimits,
 } from "./secret.ts";
 
-export const vaultStateFormatVersion = 1;
+// The document's format, and its only format gate (WCLI-11, DEC-19 B).
+//
+// Format 2 added the observed machine and the two self-asserted labels to
+// every audit record, which changes what every build can read in both
+// directions: an earlier build meeting this document would compare a record's
+// key set against the set it knows and call the whole document damaged. So the
+// version refuses the document rather than reading part of it, and the refusal
+// is the entire answer — DEC-25 settled that there is no migration and no
+// read-out path, so a format-1 vault is refused on every ordinary path and
+// nothing here tries to raise one. This constant is the only thing that
+// decides, and a version that is missing or is not a number is a damaged
+// document rather than an older one (parseVaultState).
+export const vaultStateFormatVersion = 2;
 
 export interface ProjectRecord {
   readonly id: string;
@@ -108,6 +120,24 @@ export const auditOutcomes = ["succeeded", "failed", "indeterminate"] as const;
 
 export type AuditOutcome = (typeof auditOutcomes)[number];
 
+// What the OS said about who ran this event and on what machine, recorded as
+// what Ward observed rather than as anything a caller claimed (spec §9.4's
+// "observed OS identity"). Ward reads this itself, from the platform, and no
+// argument reaches it: a run's `--actor-label` is a different field below,
+// because an assertion and an observation must not be able to occupy the same
+// place in a record a reader will trust.
+//
+// It is nullable, and only one thing makes it null: the OS gave no answer this
+// build can record. `os.userInfo()` throws for a uid with no passwd entry,
+// which is ordinary in a container, and Ward will not refuse to run in order
+// to insist on a field a machine may not have. A null here is the record
+// saying Ward observed nothing, and `ward audit` prints it that way rather
+// than leaving a blank a reader would take for an identity.
+export interface ObservedMachine {
+  readonly user: string;
+  readonly host: string;
+}
+
 export interface AuditRecord {
   readonly id: string;
   readonly runId: string;
@@ -117,6 +147,15 @@ export interface AuditRecord {
   readonly phase: AuditPhase;
   readonly outcome: AuditOutcome | null;
   readonly at: string;
+  readonly machine: ObservedMachine | null;
+  // What the caller said about who it was and what it was doing, carried
+  // through `ward run`'s `--actor-label` and `--task-label`, and recorded as
+  // self-asserted fact (spec §4.2, §12). These are correlation metadata and
+  // never authorization: nothing in Ward reads them back to decide anything,
+  // and `null` means the caller asserted nothing rather than that Ward failed
+  // to observe it — the machine field is the observed one.
+  readonly actorLabel: string | null;
+  readonly taskLabel: string | null;
 }
 
 // How many events this vault keeps, across every project. Spec §9.4 permits a
@@ -342,21 +381,75 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   };
 }
 
+// How long one observed OS value may be. Real user and host names are far
+// shorter than this on every platform Ward targets; the bound is here so a
+// damaged document cannot carry an unbounded string, and it is wide enough
+// that a name observed from the OS is one this build will always read back.
+const maxObservedChars = 256;
+
+// One value Ward observed from the OS. Empty, over-long and control-bearing
+// values are refused: the first two cannot be what a platform reported, and a
+// control character is a value that could rewrite the line `ward audit` prints
+// it on.
+function isObservedString(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > maxObservedChars) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+function isObservedMachine(value: unknown): value is ObservedMachine {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== "host" || keys[1] !== "user")
+    return false;
+  return isObservedString(value.user) && isObservedString(value.host);
+}
+
+// The observed identity as a record may carry it, or null when the OS said
+// nothing this build can record. The caller observes — reading the platform is
+// an adapter's job, not this module's — and passes what it read through here,
+// so the grammar that decides what a record may hold lives in one place and
+// the write path cannot produce a document this module's own reader refuses.
+export function observedMachine(
+  user: unknown,
+  host: unknown,
+): ObservedMachine | null {
+  if (!isObservedString(user) || !isObservedString(host)) return null;
+  return { user, host };
+}
+
+// A self-asserted label, bounded by the alias grammar (WCLI-11). The grammar
+// is deliberately the secret alias's: a label is correlation metadata with the
+// same job an alias has — being a name a person types and a record can carry —
+// and one grammar for both means a value that could not be an alias is not a
+// label either.
+function isLabelOrNull(value: unknown): value is string | null {
+  return value === null || isSecretAlias(value);
+}
+
 // A stored audit event. Every field is a Ward-owned identifier, a closed
-// code, or a timestamp — which is what makes this collection safe to read
-// back and display, and what makes an event written by a build whose
-// vocabulary differed a damaged record rather than a displayable one.
+// code, a timestamp, or a value this module's own grammar bounds — which is
+// what makes this collection safe to read back and display, and what makes an
+// event written by a build whose vocabulary differed a damaged record rather
+// than a displayable one.
 function ownAuditRecord(value: unknown): AuditRecord {
   if (!isRecord(value)) malformed();
   const expected = [
+    "actorLabel",
     "at",
     "id",
+    "machine",
     "outcome",
     "phase",
     "profile",
     "projectId",
     "runId",
     "secretId",
+    "taskLabel",
   ];
   const keys = Object.keys(value).sort();
   if (keys.length !== expected.length) malformed();
@@ -377,6 +470,9 @@ function ownAuditRecord(value: unknown): AuditRecord {
     if (value.phase === "admission") malformed();
   }
   if (!isTimestamp(value.at)) malformed();
+  if (value.machine !== null && !isObservedMachine(value.machine)) malformed();
+  if (!isLabelOrNull(value.actorLabel)) malformed();
+  if (!isLabelOrNull(value.taskLabel)) malformed();
   return {
     id: value.id,
     runId: value.runId,
@@ -386,6 +482,9 @@ function ownAuditRecord(value: unknown): AuditRecord {
     phase: value.phase,
     outcome: value.outcome as AuditOutcome | null,
     at: value.at,
+    machine: value.machine as ObservedMachine | null,
+    actorLabel: value.actorLabel,
+    taskLabel: value.taskLabel,
   };
 }
 
@@ -491,7 +590,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
       }),
     ),
     auditRecords: state.auditRecords.map(
-      ({ id, runId, projectId, profile, secretId, phase, outcome, at }) => ({
+      ({
         id,
         runId,
         projectId,
@@ -500,6 +599,25 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         phase,
         outcome,
         at,
+        machine,
+        actorLabel,
+        taskLabel,
+      }) => ({
+        id,
+        runId,
+        projectId,
+        profile,
+        secretId,
+        phase,
+        outcome,
+        at,
+        // Written as an object or as null, never omitted: this document's
+        // reader compares key sets exactly, and JSON drops a key whose value
+        // is undefined.
+        machine:
+          machine === null ? null : { user: machine.user, host: machine.host },
+        actorLabel,
+        taskLabel,
       }),
     ),
   };

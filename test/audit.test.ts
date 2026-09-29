@@ -154,6 +154,9 @@ function event(
     phase: "admission",
     outcome: null,
     at: AT,
+    machine: { user: "example-user", host: "example-host" },
+    actorLabel: null,
+    taskLabel: null,
     ...over,
   };
 }
@@ -231,6 +234,45 @@ describe("ward audit", () => {
     expect(text).not.toContain(otherProject);
     expect(text).not.toContain("other-profile");
     expect(text).not.toContain(other[0]?.runId as string);
+  });
+
+  test("the observed machine and the asserted labels are reported, and their two absences read differently", async () => {
+    const h = harness();
+    const checkout = worktree("audit-fields");
+    await h.setUp(checkout);
+    const bound = json((await h.init(checkout)).stdout).data as {
+      projectId: string;
+    };
+
+    const asserted = event(bound.projectId, {
+      machine: { user: "observed-user", host: "observed-host" },
+      actorLabel: "example-agent",
+      taskLabel: "example-task",
+    });
+    // The other shape, which is not the same absence twice: a machine the OS
+    // did not give Ward, and a caller that asserted no labels at all.
+    const unobserved = event(bound.projectId, {
+      machine: null,
+      actorLabel: null,
+      taskLabel: null,
+    });
+    h.seed([asserted, unobserved]);
+
+    const { result, data } = await auditOf(h, checkout);
+    expect(result.exitCode).toBe(exitCodes.success);
+    // Both shapes survive the vault's round trip and reach the JSON as they
+    // are stored rather than as they are rendered.
+    expect(data.events).toEqual([asserted, unobserved]);
+
+    const text = (await runWard(["audit"], h.options(checkout))).stdout;
+    expect(text).toContain("machine observed-user@observed-host");
+    expect(text).toContain("actor example-agent");
+    expect(text).toContain("task example-task");
+    // The positive control for both absences: the same line, printed twice,
+    // must carry one of each rather than the two collapsing into one word.
+    expect(text).toContain("machine not-recorded");
+    expect(text).toContain("actor none");
+    expect(text).toContain("task none");
   });
 
   test("an empty history is a zero count, and the bound is still stated", async () => {

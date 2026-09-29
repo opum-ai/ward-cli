@@ -10,4 +10,5 @@
 - [Status and doctor reporting](0007-status-and-doctor-reporting.md)
 - [Agent profile source coverage](0008-agent-profile-source-coverage.md)
 - [Hand-rolled status-only HTTPS transport](0009-hand-rolled-status-only-https-transport.md)
+- [Refuse a vault state document from another format](0010-refuse-a-vault-state-document-from-another-format.md)
 <!-- lore:index:end -->
