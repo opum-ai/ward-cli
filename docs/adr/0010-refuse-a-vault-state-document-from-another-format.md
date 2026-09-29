@@ -127,7 +127,10 @@ than a format gate.**
   parses the plaintext after opening it and before the KDF, the seal and the
   file, so a state document that decrypts and does not parse — bytes that are
   not JSON, or a key set this build does not write — answers
-  `vault_state_malformed` and creates no file, where before it backed up with
+  `vault_state_malformed` and creates no file, and one carrying a stored
+  approval whose snapshot version this build does not implement is refused
+  with the catalogue's other answer, `vault_format_unsupported`, the same code
+  `ward restore` gives it. Where before an unparseable document backed up with
   exit 0 and a file `ward restore` refused, under text promising that
   "recovery from a lost key or a damaged vault needs this file and its
   passphrase". The cost is deliberate and is the reason no softer answer was

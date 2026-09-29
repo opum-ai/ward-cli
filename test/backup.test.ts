@@ -561,17 +561,87 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
     ] as [string, string][]) {
       const origin = await machineHolding(encoder.encode(text));
       const path = backupPath();
+      // Run without `--json`, so the human success text is this mode's
+      // stdout: a build that still wrote the file would print "Backup
+      // written." and the recovery sentence, which is what the absence
+      // below measures. The same assertion under `--json` would be vacuous
+      // twice over — a refusal's stdout is empty whatever its code
+      // (main.ts `failure()`), and this text is not printed in that mode at
+      // all.
       const attempted = await runWard(
-        ["backup", "--output", path, "--json"],
+        ["backup", "--output", path],
         origin.options(worktree()),
       );
       expect(attempted.exitCode, label).toBe(exitCodes.validation);
-      expect(errorCode(attempted.stderr), label).toBe("vault_state_malformed");
+      // The catalogue's sentence, written out rather than imported: the
+      // point is that the shipped text is this text, and an assertion that
+      // read the catalogue would pass on any wording at all.
+      expect(JSON.parse(attempted.stderr), label).toEqual({
+        error_type: "validation",
+        code: "vault_state_malformed",
+        message:
+          "The vault's contents are not a state document this Ward can read.",
+        principal: null,
+      });
       expect(existsSync(path), label).toBe(false);
-      // The inviting sentence lives in the success text, so its absence is
-      // asserted rather than inferred from the exit code.
       expect(attempted.stdout, label).not.toContain("Backup written");
     }
+  });
+
+  test("a stored approval this build cannot interpret is refused with its own code, and no file", async () => {
+    // The same call gives one other answer, and `ward restore` gives the
+    // same one for this document: a stored approval whose snapshot version
+    // this build does not implement is `vault_format_unsupported` rather
+    // than a damaged record (vault-state.ts, the second site DEC-38 left
+    // standing beside the envelope). The record below is otherwise one this
+    // build would write — only the version differs, which is the shape the
+    // check exists for.
+    const approval = {
+      approvedAt: "2026-09-29T00:00:00.000Z",
+      device: "1",
+      inode: "2",
+      profile: "example-profile",
+      projectId: "33b05c92-8a6e-4f15-9dcb-65ae5d371123",
+      root: "/tmp/wcli-52-checkout",
+      snapshot: {
+        adapter: "http",
+        method: "GET",
+        url: "https://api.example.invalid/rate_limit",
+        auth: { type: "bearer", secret: "example.token" },
+        headers: { Accept: "application/json" },
+        requestBody: "none",
+        output: "status",
+      },
+      snapshotVersion: 2,
+    };
+    const origin = await machineHolding(
+      encoder.encode(
+        JSON.stringify({
+          formatVersion: 1,
+          projects: [],
+          localBindings: [],
+          secrets: [],
+          auditRecords: [],
+          profileApprovals: [approval],
+        }),
+      ),
+    );
+    const path = backupPath();
+    const attempted = await runWard(
+      ["backup", "--output", path],
+      origin.options(worktree()),
+    );
+    expect(attempted.exitCode).toBe(exitCodes.validation);
+    // The DEC-30 sentence, verbatim for the same reason as above.
+    expect(JSON.parse(attempted.stderr)).toEqual({
+      error_type: "validation",
+      code: "vault_format_unsupported",
+      message:
+        "This vault was written by a different version of Ward, and this build cannot read it. Ward did not change it.",
+      principal: null,
+    });
+    expect(existsSync(path)).toBe(false);
+    expect(attempted.stdout).not.toContain("Backup written");
   });
 
   test("the same construction over a parseable document still writes, and it restores", async () => {
