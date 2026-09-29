@@ -21,7 +21,11 @@
 // a binding here would make "no events" and "no way to read events" print
 // the same answer, and an agent reading it could not tell which it had. The
 // refusal path is application/run.ts's, so the same condition produces the
-// same error code in both commands.
+// same error code in both commands — and the order is part of that path, not
+// an implementation detail: the manifest is checked before the vault is
+// opened, so a checkout that was never initialized is refused without a
+// credential-store read rather than being answered with a key error or, on a
+// locked keychain, a prompt (WCLI-11 review, F1).
 import { WardError } from "../contract/errors.ts";
 import {
   type AuditRecord,
@@ -120,6 +124,12 @@ function auditText(report: AuditReport): string {
 
 export async function runAudit(options: AuditOptions): Promise<AuditResult> {
   const checkout = readCheckout(options.checkout, options.files);
+  // Before the vault is opened, the way `ward run` orders it: a checkout
+  // with no manifest is not registered, and that answer must not depend on
+  // whether a vault or a key happens to exist, nor cost a credential-store
+  // read to reach.
+  if (checkout.manifest === undefined)
+    throw new WardError("project_not_registered");
   const header = options.store.header();
   if (header === undefined) throw new WardError("vault_not_found");
   const key = await options.keyProvider.load(header.vaultId);

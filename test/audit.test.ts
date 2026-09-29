@@ -20,7 +20,14 @@
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
@@ -102,7 +109,7 @@ function harness() {
     });
   };
 
-  return { directory, store, options, setUp, init, key, seed };
+  return { directory, store, keychain, options, setUp, init, key, seed };
 }
 
 interface AuditData {
@@ -289,6 +296,30 @@ describe("ward audit", () => {
     expect(result.stdout).toBe("");
   });
 
+  test("a checkout with no manifest is refused before the vault or the credential store is touched", async () => {
+    const h = harness();
+    // No manifest and no vault: the answer is the registration refusal
+    // `ward run` gives, not a missing-vault error, and the credential store
+    // was not consulted to reach it.
+    const bare = worktree("audit-no-manifest");
+    const bareResult = await runWard(["audit", "--json"], h.options(bare));
+    expect(bareResult.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(bareResult.stderr)).toBe("project_not_registered");
+    expect(h.keychain.readAttempts).toBe(0);
+
+    // And with a vault and its key present: still the registration refusal,
+    // still no credential-store read. This is the half that pins the order —
+    // with the vault opened first, this is where the key would be fetched,
+    // and on a locked keychain where a prompt could be raised instead.
+    const withVault = worktree("audit-no-manifest-vault");
+    await h.setUp(withVault);
+    const readsAfterSetup = h.keychain.readAttempts;
+    const result = await runWard(["audit", "--json"], h.options(withVault));
+    expect(result.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(result.stderr)).toBe("project_not_registered");
+    expect(h.keychain.readAttempts).toBe(readsAfterSetup);
+  });
+
   test("a manifest and binding that disagree are a conflict, and neither project is named", async () => {
     const h = harness();
     const checkout = worktree("audit-conflict");
@@ -339,20 +370,56 @@ describe("ward audit", () => {
     expect(result.stdout).toBe("");
   });
 
-  test("it changes nothing", async () => {
+  test("vault, manifest and bridge files are byte-identical after the read", async () => {
     const h = harness();
     const checkout = worktree("audit-readonly");
     await h.setUp(checkout);
-    const bound = json((await h.init(checkout)).stdout).data as {
-      projectId: string;
-    };
+    const bound = json((await h.init(checkout, ["--claude", "--codex"])).stdout)
+      .data as { projectId: string };
     h.seed([event(bound.projectId)]);
-    const before = h.store.header()?.revision ?? 0;
 
-    const { result, data } = await auditOf(h, checkout);
-    expect(result.exitCode).toBe(exitCodes.success);
-    expect(data.projectId).toBe(bound.projectId);
-    // A read is not a write: the sealed revision is where it was.
-    expect(h.store.header()?.revision).toBe(before);
+    const dbPath = join(h.directory, "ward.db");
+    const manifestPath = join(checkout, ".ward", "project.json");
+    const claudePath = join(checkout, "CLAUDE.md");
+    const agentsPath = join(checkout, "AGENTS.md");
+    const before = {
+      db: readFileSync(dbPath),
+      manifest: readFileSync(manifestPath),
+      claude: readFileSync(claudePath),
+      agents: readFileSync(agentsPath),
+      // Nothing new may appear beside them, in the checkout or in the vault
+      // directory (the database, its journal and the setup lock live there),
+      // and nothing may be written to the credential store.
+      checkoutListing: readdirSync(checkout),
+      vaultListing: readdirSync(h.directory),
+      revision: h.store.header()?.revision,
+      writes: h.keychain.writeAttempts,
+    };
+    const stored = h.key();
+    const encodings = [
+      Buffer.from(stored).toString("hex"),
+      Buffer.from(stored).toString("base64"),
+      Buffer.from(stored).toString("latin1"),
+    ];
+
+    for (const argv of [["audit", "--json"], ["audit"]]) {
+      const result = await runWard(argv, h.options(checkout));
+      expect(result.exitCode).toBe(exitCodes.success);
+      // The positive control: the report did read and render this project.
+      expect(result.stdout).toContain(bound.projectId);
+      for (const encoding of encodings) {
+        expect(result.stdout.includes(encoding)).toBe(false);
+        expect(result.stderr.includes(encoding)).toBe(false);
+      }
+    }
+
+    expect(h.keychain.writeAttempts).toBe(before.writes);
+    expect(h.store.header()?.revision).toBe(before.revision);
+    expect(readFileSync(dbPath).equals(before.db)).toBe(true);
+    expect(readFileSync(manifestPath).equals(before.manifest)).toBe(true);
+    expect(readFileSync(claudePath).equals(before.claude)).toBe(true);
+    expect(readFileSync(agentsPath).equals(before.agents)).toBe(true);
+    expect(readdirSync(checkout)).toEqual(before.checkoutListing);
+    expect(readdirSync(h.directory)).toEqual(before.vaultListing);
   });
 });
