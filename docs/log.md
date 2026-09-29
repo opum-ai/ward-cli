@@ -15,6 +15,7 @@
 - 2026-09-29T01:22:37-05:00 58d0604c5bfe2d3863aa8b10fe2e3368371b53a9 WCLI-10: the status-only HTTPS transport (#67)
 - 2026-09-29T06:16:11-05:00 d187fe72b23e17ce94b270b3b5df1ad472933ffc WCLI-11: vault state format 2, the full audit field set, and the refusal that replaces recovery (#93)
 - 2026-09-29T06:50:14-05:00 537c23e55cbfd5e0574171774e13441199ff5f7e refactor(WCLI-51): one vault format at version 1, no compatibility surface
+- 2026-09-29T07:02:08-05:00 61aa8a24d6818fcdc852bddfb5267252e83f4161 refactor(WCLI-51): one vault format at version 1, no compatibility surface (#99)
 
 ## docs/adr
 

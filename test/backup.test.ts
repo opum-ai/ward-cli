@@ -13,6 +13,7 @@
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -23,6 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBackupFiles } from "../src/adapters/backup-file.ts";
@@ -36,8 +38,14 @@ import {
   backupLimits,
   newBackupKdf,
 } from "../src/domain/backup.ts";
+import { generateVaultKey } from "../src/domain/envelope.ts";
 import { decodeSecretValue } from "../src/domain/secret.ts";
-import { parseVaultState, type VaultState } from "../src/domain/vault-state.ts";
+import {
+  emptyVaultState,
+  parseVaultState,
+  serializeVaultState,
+  type VaultState,
+} from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
 const SERVICE = "opum.ward.backup";
@@ -172,6 +180,20 @@ async function backedUp(
     projectId: json(init.stdout).data.projectId as string,
     backup: json(backup.stdout).data,
   };
+}
+
+// A machine whose vault holds `document` verbatim, with its key in the
+// memory credential store. The bytes are the ones given — nothing here goes
+// through `ward setup` — so this is the fixture for a state document that
+// decrypts and does not parse (WCLI-52).
+async function machineHolding(document: Uint8Array) {
+  const vault = machine();
+  const vaultId = randomUUID();
+  const key = generateVaultKey();
+  await vault.keyProvider.create(vaultId, key);
+  vault.store.create(vaultId, key, document);
+  key.fill(0);
+  return vault;
 }
 
 describe("T20: a backup opens with only its passphrase", () => {
@@ -508,6 +530,71 @@ describe("T20: a backup opens with only its passphrase", () => {
     expect(destination.passphrases.reads).toBe(0);
     expect(destination.keychain.items.size).toBe(1);
     expect(destination.keychain.writeAttempts).toBe(1);
+  });
+});
+
+// WCLI-52: a state document that decrypts and does not parse is refused
+// before a backup exists.
+//
+// The envelope half of this path already refused before a file was created:
+// `store.read` authenticates the latest snapshot, so a vault this build
+// cannot open never reaches `files.create`. The document half did not —
+// `runBackup` sealed the plaintext it had opened without parsing it, so a
+// document this build cannot read backed up with exit 0 and a file that
+// `ward restore` then refused, under text promising that "recovery from a
+// lost key or a damaged vault needs this file and its passphrase". It is
+// refused now, for the reason ADR 0010 gives: Ward has no recovery surface,
+// so a file restore refuses has no defined use.
+describe("WCLI-52: a document that does not parse is refused before a backup exists", () => {
+  const encoder = new TextEncoder();
+
+  test("no file is written, and no success output, for a document this build cannot read", async () => {
+    // Two shapes of "does not parse", both of which `ward restore` refuses:
+    // bytes that are not JSON, and JSON whose key set is not this build's
+    // (ADR 0010's exact comparison, not a version gate).
+    for (const [label, text] of [
+      ["bytes that are not JSON", "{not a state document"],
+      [
+        "a key set this build does not write",
+        '{"formatVersion":1,"fromAnotherBuild":[]}',
+      ],
+    ] as [string, string][]) {
+      const origin = await machineHolding(encoder.encode(text));
+      const path = backupPath();
+      const attempted = await runWard(
+        ["backup", "--output", path, "--json"],
+        origin.options(worktree()),
+      );
+      expect(attempted.exitCode, label).toBe(exitCodes.validation);
+      expect(errorCode(attempted.stderr), label).toBe("vault_state_malformed");
+      expect(existsSync(path), label).toBe(false);
+      // The inviting sentence lives in the success text, so its absence is
+      // asserted rather than inferred from the exit code.
+      expect(attempted.stdout, label).not.toContain("Backup written");
+    }
+  });
+
+  test("the same construction over a parseable document still writes, and it restores", async () => {
+    // The control: identical fixture and command, only the document's bytes
+    // differ, so a refusal coming from the fixture rather than from the
+    // parse would show up here. The restore is the property the refusal
+    // protects: every file `ward backup` writes, `ward restore` honours.
+    const origin = await machineHolding(serializeVaultState(emptyVaultState()));
+    const path = backupPath();
+    const written = await runWard(
+      ["backup", "--output", path, "--json"],
+      origin.options(worktree()),
+    );
+    expect(written.exitCode).toBe(exitCodes.success);
+    expect(existsSync(path)).toBe(true);
+
+    const destination = machine();
+    const restored = await runWard(
+      ["restore", "--input", path, "--json"],
+      destination.options(worktree()),
+    );
+    expect(restored.exitCode).toBe(exitCodes.success);
+    expect(destination.header()).toBeDefined();
   });
 });
 
