@@ -362,6 +362,7 @@ function harness() {
     ) => {
       mutateBeforeWrite = { write, change };
     },
+    keychain,
     worktree,
     writes: () => writes,
   };
@@ -630,14 +631,30 @@ describe("the approved snapshot is what runs", () => {
 // each call site in run.ts is covered here rather than the extraction being
 // assumed safe because the body it replaced looks identical.
 describe("a run resolves its project through the binding rule", () => {
-  test("a checkout with no manifest is refused, vault present or not", async () => {
+  test("a checkout with no manifest is refused before the vault or the credential store", async () => {
     const h = harness();
-    // A vault exists for this harness; the refusal must not depend on it.
-    await h.ward(h.worktree(), ["setup", "--json"]);
+    // No vault at all: the answer is the registration refusal, not a
+    // missing-vault error.
     const bare = h.worktree();
-    const result = await h.ward(bare, ["run", PROFILE, "--json"]);
+    const bareResult = await h.ward(bare, ["run", PROFILE, "--json"]);
+    expect(bareResult.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(bareResult.stderr)).toBe("project_not_registered");
+    expect(h.transport.count).toBe(0);
+
+    // With a vault whose key is gone: still the registration refusal, and
+    // still no credential-store read. This second half is the ordering one —
+    // the WCLI-39 review measured that the case as first written pinned
+    // neither, because a removal of the early manifest check left every test
+    // green while these two states answer vault_not_found and vault_key_missing
+    // instead (review F1).
+    await h.ward(h.worktree(), ["setup", "--json"]);
+    h.keychain.items.clear();
+    const readsBefore = h.keychain.readAttempts;
+    const keyless = h.worktree();
+    const result = await h.ward(keyless, ["run", PROFILE, "--json"]);
     expect(result.exitCode).toBe(exitCodes.denied);
     expect(errorCode(result.stderr)).toBe("project_not_registered");
+    expect(h.keychain.readAttempts).toBe(readsBefore);
     expect(h.transport.count).toBe(0);
   });
 

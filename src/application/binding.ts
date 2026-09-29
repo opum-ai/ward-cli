@@ -1,9 +1,10 @@
 // Which project a checkout may act on, decided in one place. The manifest
 // names the project and the vault's binding is the authority, so the two must
 // agree: a missing manifest is not-registered, a missing binding is the same
-// answer for every caller but `ward check` — which reports it rather than
-// refusing, because reporting it is what `ward check` is for — and a binding
-// naming another project is a conflict, never a fallback (docs/adr/0003).
+// answer for every caller but the readiness reading (`ward check`, `ward
+// profile list`) — which reports it rather than refusing, because reporting
+// it is what readiness is for — and a binding naming another project is a
+// conflict, never a fallback (docs/adr/0003).
 //
 // Every command that resolves a project reads the rule from here — `ward
 // run`, `ward secret`, `ward profile` and `ward audit` — and so does the
@@ -20,8 +21,9 @@ import {
 } from "../domain/vault-state.ts";
 import type { Checkout } from "./project.ts";
 
-// `ward check` reports an unbound checkout instead of refusing it; that is
-// the one reading of the rule under which an absent binding is an answer.
+// The readiness reading — `ward check` and `ward profile list` — reports an
+// unbound checkout instead of refusing it; that is the one reading of the
+// rule under which an absent binding is an answer.
 export type BindingAuthority =
   | { readonly kind: "bound"; readonly projectId: string }
   | { readonly kind: "unbound" };
@@ -71,7 +73,7 @@ export function boundProject(checkout: Checkout, state: VaultState): string {
   return requireBinding(state, checkout.identity, manifest.projectId);
 }
 
-// `ward check`'s reading: the same rule, with the absent binding reported
+// The readiness reading: the same rule, with the absent binding reported
 // rather than refused.
 export function bindingAuthority(
   checkout: Checkout,
