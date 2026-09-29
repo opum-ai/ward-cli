@@ -962,10 +962,19 @@ describe("WCLI-11: the audit field set a run records", () => {
       "9not-a-label",
       "--json",
     ]);
+    // The sentence DEC-33 option A fixed, written out rather than read back
+    // from the catalog: an assertion that read the catalog would pass on any
+    // wording at all, which is the failure it exists to catch.
     expect({
       exit: result.exitCode,
       code: JSON.parse(result.stderr).code,
-    }).toEqual({ exit: exitCodes.usage, code: "run_label_invalid" });
+      message: JSON.parse(result.stderr).message,
+    }).toEqual({
+      exit: exitCodes.usage,
+      code: "run_label_invalid",
+      message:
+        "A run label must start with a letter, be at most 64 characters, and use only letters, digits, dot, underscore or dash.",
+    });
     // Nothing was admitted, nothing was sent, and answering the argument
     // fault cost no credential-store read: a usage fault is answered before
     // the vault is opened, so it cannot raise a prompt on a locked keychain.

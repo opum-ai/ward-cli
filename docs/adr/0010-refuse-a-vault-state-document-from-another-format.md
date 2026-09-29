@@ -105,7 +105,12 @@ rule as the decision, not as a gap still to be filled.**
   grammar and each `null` when the caller asserted nothing. They are
   correlation metadata: nothing in Ward reads them back, and a labelled run
   with no approval is refused exactly as an unlabelled one is. A label that
-  fails the grammar is a usage fault, answered before the vault is opened.
+  fails the grammar is a usage fault, answered before the vault is opened and
+  before the credential store is read: one code, `run_label_invalid`, for both
+  flags, carrying "A run label must start with a letter, be at most 64
+  characters, and use only letters, digits, dot, underscore or dash." It is
+  one code rather than one per flag because the sentence is true of both and
+  the flag a reader passed is in the argument vector they typed (DEC-33).
 
 **One refusal code, one sentence, three sites.** The envelope's version, a
 stored profile snapshot's version and the state document's version all raise

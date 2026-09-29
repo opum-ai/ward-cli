@@ -313,11 +313,12 @@ export const errorCatalog = {
   // code or a next step and never a destination, a header, an upstream
   // message or a status text: a run's diagnostics travel through an agent's
   // transcript, and spec §9.4 keeps a run's output to Ward-owned values.
-  // `ward run --actor-label` and `--task-label` (WCLI-11). A label is bounded
-  // by the alias grammar, and this is the refusal for a value outside it —
-  // named for its subject the way secret_alias_invalid and profile_name_invalid
-  // are. It is a usage fault rather than a validation one because the value is
-  // the caller's own argument, and it is answered before the vault is opened.
+  // `ward run --actor-label` and `--task-label` (WCLI-11, DEC-33 option A). A
+  // label is bounded by the alias grammar, and this is the refusal for a value
+  // outside it — one code for both flags, named for its subject the way
+  // secret_alias_invalid and profile_name_invalid are. It is a usage fault
+  // rather than a validation one because the value is the caller's own
+  // argument, and it is answered before the vault is opened.
   run_label_invalid: {
     type: "usage",
     message:
