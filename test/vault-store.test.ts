@@ -547,9 +547,10 @@ describe("T06: transactions", () => {
     // the bare reads are counted over the whole file as well, so a bare read
     // placed anywhere it could run — beside a settled check, after the
     // journal heal, or inside a helper the region cannot see — reddens the
-    // pin instead of hiding behind it. This pin sees this file only: a bare
-    // read moved to another module, or reached through an alias, is outside
-    // what it can prove.
+    // pin instead of hiding behind it. This pin sees this file only, and it
+    // matches the bare reads by their literal spelling: one moved to another
+    // module, reached through an alias, or written with a different argument
+    // name is outside what it can prove.
     const region = (start: string, end: string) => {
       const from = source.indexOf(start);
       const to = from === -1 ? -1 : source.indexOf(end, from);
@@ -584,8 +585,9 @@ describe("T06: transactions", () => {
       // The bare reads there should be, and no others: layoutOf's four are
       // requireVault's body, settledLayout's body, and the in-transaction
       // checks in create and header; requireVault's two callers are the
-      // in-transaction checks in read and mutate. A new reader, or an
-      // aliased spelling, moves these numbers and asks for this pin to be
+      // in-transaction checks in read and mutate. A new reader spelling them
+      // the same way — or one moved into a helper that keeps the db
+      // parameter name — moves these numbers and asks for this pin to be
       // read again.
       [
         "the file holds exactly the four known bare layoutOf reads",
