@@ -17,17 +17,25 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createBackupFiles } from "../src/adapters/backup-file.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type { PassphraseSource } from "../src/application/backup.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
-import { backupLimits } from "../src/domain/backup.ts";
+import {
+  backupAssociatedData,
+  backupLimits,
+  newBackupKdf,
+} from "../src/domain/backup.ts";
 import { parseVaultState, type VaultState } from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
@@ -111,6 +119,14 @@ const json = (output: string) =>
   JSON.parse(output) as { kind: string; data: Record<string, unknown> };
 const errorCode = (stderr: string) =>
   (JSON.parse(stderr) as { code: string }).code;
+const codeOf = (run: () => unknown): string | undefined => {
+  try {
+    run();
+    return undefined;
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+};
 
 // A machine with a vault, a registered checkout, and a backup of it.
 async function backedUp() {
@@ -140,7 +156,7 @@ async function backedUp() {
 
 describe("T20: a backup opens with only its passphrase", () => {
   test("restoring into a fresh machine keeps projects and clears bindings", async () => {
-    const { origin, checkout, path, projectId, backup } = await backedUp();
+    const { origin, path, projectId, backup } = await backedUp();
 
     // The file is owner-only, and holds no plaintext: the project id the
     // source vault carries appears nowhere in it.
@@ -269,12 +285,17 @@ describe("T20: a backup opens with only its passphrase", () => {
   });
 
   test("a hostile parameter set is refused before anything is derived", async () => {
-    // A weak set would derive quickly and open nothing; a huge one would ask
-    // for gigabytes. Both are refused by name, from the file, before the KDF
-    // runs at all — which is what the elapsed bound below is measuring.
+    // Three shapes: a weak set that would derive quickly and open nothing, a
+    // huge one that would ask for gigabytes, and the canonical N and r with
+    // another p, which needs no extra memory at all and only costs time —
+    // measured at 540 ms per derivation under the same bound. The exact
+    // match is what stops all three, and the assertion that discriminates is
+    // the code: without it a weak set derives and fails differently, and the
+    // other two are stopped by Node's own maxmem, not by Ward.
     for (const parameters of [
       { N: 2, r: 1, p: 1 },
       { N: 1_073_741_824, r: 8, p: 1 },
+      { N: 131_072, r: 8, p: 4 },
     ]) {
       const { path } = await backedUp();
       const hostile = backupPath();
@@ -285,16 +306,16 @@ describe("T20: a backup opens with only its passphrase", () => {
       Object.assign(document.kdf as Record<string, unknown>, parameters);
       writeFileSync(hostile, `${JSON.stringify(document, null, 2)}\n`);
       const restored = machine();
-      const started = Date.now();
       const result = await runWard(
         ["restore", "--input", hostile, "--json"],
         restored.options(worktree()),
       );
-      expect(result.exitCode).toBe(exitCodes.validation);
-      expect(errorCode(result.stderr)).toBe("backup_unsupported");
-      // Deriving under the huge set would take far longer than this, and
-      // deriving under the weak one would not be refused as unsupported.
-      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(result.exitCode, JSON.stringify(parameters)).toBe(
+        exitCodes.validation,
+      );
+      expect(errorCode(result.stderr), JSON.stringify(parameters)).toBe(
+        "backup_unsupported",
+      );
       expect(restored.keychain.items.size).toBe(0);
     }
   });
@@ -355,6 +376,17 @@ describe("T20: a backup opens with only its passphrase", () => {
     expect(errorCode(refused.stderr)).toBe("backup_file_exists");
     expect(readFileSync(path, "utf8")).toBe(existing);
 
+    // A directory at the path is the same refusal. What is there is not a
+    // file, so the message names both shapes rather than claiming a file.
+    const directory = mkdtempSync(join(root, `occupied-${++cases}-`));
+    const asDirectory = await runWard(
+      ["backup", "--output", directory, "--json"],
+      origin.options(checkout),
+    );
+    expect(asDirectory.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(asDirectory.stderr)).toBe("backup_file_exists");
+    expect(readdirSync(directory)).toEqual([]);
+
     const empty = machine();
     const missing = await runWard(
       ["backup", "--output", backupPath(), "--json"],
@@ -362,6 +394,44 @@ describe("T20: a backup opens with only its passphrase", () => {
     );
     expect(missing.exitCode).toBe(exitCodes.notFound);
     expect(errorCode(missing.stderr)).toBe("vault_not_found");
+  });
+
+  test("a path that cannot be read as a backup is refused on the read path", async () => {
+    const { path } = await backedUp();
+
+    // A directory, a FIFO and a link: none is a file Ward will read, and
+    // Ward attempted neither a create nor a write, so the refusal does not
+    // claim to be one.
+    const directory = mkdtempSync(join(root, `read-dir-${++cases}-`));
+    const fifo = join(root, `read-fifo-${++cases}`);
+    expect(spawnSync("/usr/bin/mkfifo", [fifo]).status).toBe(0);
+    const link = join(root, `read-link-${++cases}`);
+    symlinkSync(path, link);
+
+    for (const [label, input] of [
+      ["a directory", directory],
+      ["a FIFO", fifo],
+      ["a link", link],
+    ] as [string, string][]) {
+      const destination = machine();
+      const result = await runWard(
+        ["restore", "--input", input, "--json"],
+        destination.options(worktree()),
+      );
+      expect(result.exitCode, label).toBe(exitCodes.denied);
+      expect(errorCode(result.stderr), label).toBe("backup_file_unreadable");
+      expect(destination.header(), label).toBeUndefined();
+    }
+  });
+
+  test("a missing path is still its own answer", async () => {
+    const destination = machine();
+    const absent = await runWard(
+      ["restore", "--input", join(root, `absent-${++cases}`), "--json"],
+      destination.options(worktree()),
+    );
+    expect(absent.exitCode).toBe(exitCodes.notFound);
+    expect(errorCode(absent.stderr)).toBe("backup_not_found");
   });
 
   test("a restore never lands in a vault that already exists", async () => {
@@ -384,5 +454,105 @@ describe("T20: a backup opens with only its passphrase", () => {
     expect(destination.header()?.vaultId).toBe(before?.vaultId);
     expect(destination.header()?.revision).toBe(before?.revision);
     expect([...storedKey(destination)]).toEqual(keyBefore);
+
+    // The guard is the *early* refusal, and it is load-bearing for more than
+    // the exit code: without it the same conflict is reached only after the
+    // developer is prompted, the backup is opened, and a key is created for
+    // a vault id that will never exist. `store.create` refuses with the same
+    // code, so the count of readings and items is what distinguishes the two
+    // — and the key check above reads the first item only, which is why the
+    // size is asserted separately.
+    expect(destination.passphrases.reads).toBe(0);
+    expect(destination.keychain.items.size).toBe(1);
+    expect(destination.keychain.writeAttempts).toBe(1);
+  });
+});
+
+describe("the backup file adapter", () => {
+  test("a read bound is the adapter's own, whatever the caller asks for", () => {
+    // The domain applies the same limit to the same number, so a
+    // command-level test cannot tell the two apart: this is the descriptor
+    // path, where a genuinely huge file would otherwise be loaded before
+    // anything checked it.
+    const path = join(root, `bound-${++cases}`);
+    writeFileSync(path, "x".repeat(64));
+    const files = createBackupFiles();
+    expect(codeOf(() => files.read(path, 63))).toBe("backup_too_large");
+    expect(files.read(path, 64).length).toBe(64);
+  });
+
+  test("a FIFO is refused without blocking", () => {
+    // Without O_NONBLOCK, opening a writer-less FIFO does not return —
+    // measured here, the open never comes back. The refusal itself comes
+    // from the non-regular check either side of the open; the elapsed bound
+    // is what would catch a blocking open returning to this path, and a
+    // regression hangs the test rather than failing it quietly.
+    const fifo = join(root, `fifo-${++cases}`);
+    expect(spawnSync("/usr/bin/mkfifo", [fifo]).status).toBe(0);
+    const files = createBackupFiles();
+    const started = Date.now();
+    expect(codeOf(() => files.read(fifo, 64))).toBe("backup_file_unreadable");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("a create never replaces what is there, whichever shape it is", () => {
+    const files = createBackupFiles();
+    const file = join(root, `no-replace-${++cases}`);
+    writeFileSync(file, "mine\n");
+    expect(codeOf(() => files.create(file, new Uint8Array([1])))).toBe(
+      "backup_file_exists",
+    );
+    expect(readFileSync(file, "utf8")).toBe("mine\n");
+
+    const directory = mkdtempSync(join(root, `no-replace-dir-${++cases}-`));
+    expect(codeOf(() => files.create(directory, new Uint8Array([1])))).toBe(
+      "backup_file_exists",
+    );
+    expect(readdirSync(directory)).toEqual([]);
+
+    const link = join(root, `no-replace-link-${++cases}`);
+    symlinkSync(file, link);
+    expect(codeOf(() => files.create(link, new Uint8Array([1])))).toBe(
+      "backup_file_unwritable",
+    );
+    expect(readFileSync(file, "utf8")).toBe("mine\n");
+  });
+});
+
+describe("the container's authenticated header", () => {
+  test("every field a reader relies on is bound by the tag", () => {
+    // The AAD is what makes a relabelled container fail to open rather than
+    // be interpreted, so each field it covers is asserted here directly:
+    // changing any one of them changes the bytes the tag authenticates.
+    const kdf = newBackupKdf();
+    const header = {
+      formatVersion: 1,
+      vaultId: "33b05c92-8a6e-4f15-9dcb-65ae5d371123",
+      revision: 1,
+      kdf,
+    };
+    const base = backupAssociatedData(header);
+    const changes = {
+      vaultId: { ...header, vaultId: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d" },
+      revision: { ...header, revision: 2 },
+      "kdf salt": {
+        ...header,
+        kdf: { ...kdf, salt: new Uint8Array(32).fill(7) },
+      },
+    };
+    for (const [label, changed] of Object.entries(changes)) {
+      expect(
+        Buffer.from(backupAssociatedData(changed)).toString("base64"),
+        label,
+      ).not.toBe(Buffer.from(base).toString("base64"));
+    }
+
+    // A parameter outside the v1 set is not merely authenticated, it cannot
+    // be encoded at all: the same exact match that stops a derivation stops
+    // the header first, so no code path can build a header a reader would
+    // refuse to interpret.
+    expect(
+      codeOf(() => backupAssociatedData({ ...header, kdf: { ...kdf, p: 4 } })),
+    ).toBe("backup_unsupported");
   });
 });

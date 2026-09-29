@@ -11,10 +11,20 @@
 // which is the isolation rule for every file under test/ (WCLI-5); nothing
 // here calls the credential store.
 import "./support/no-real-keychain.ts";
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createTerminalPassphrase,
   maxPassphraseBytes,
+  readPassphraseBytes,
 } from "../src/adapters/passphrase.ts";
 import { WardError } from "../src/contract/errors.ts";
 
@@ -153,9 +163,68 @@ describe("the terminal passphrase reader", () => {
 
   test("the reading is bounded", () => {
     // The bound is a product property: a stream that never ends cannot grow
-    // a passphrase without limit. What a real terminal delivers is the
-    // default reader's own business, which needs a pty to observe.
+    // a passphrase without limit. The reader that enforces it takes any
+    // readable descriptor, which is what the cases below drive.
     expect(maxPassphraseBytes).toBeGreaterThan(0);
     expect(maxPassphraseBytes).toBeLessThanOrEqual(4096);
+  });
+});
+
+describe("the byte reader the terminal path uses", () => {
+  const root = mkdtempSync(join(tmpdir(), "ward-passphrase-reader-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  let cases = 0;
+
+  const bytes = (text: string) => [...new TextEncoder().encode(text)];
+
+  function read(bytesHere: number[]): Uint8Array {
+    const path = join(root, `case-${++cases}`);
+    writeFileSync(path, Buffer.from(bytesHere));
+    const descriptor = openSync(path, "r");
+    try {
+      return readPassphraseBytes(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+
+  test("a line ending ends the reading and is not part of it", () => {
+    expect(
+      new TextDecoder().decode(read([...bytes("correct horse"), 0x0a])),
+    ).toBe("correct horse");
+    expect(new TextDecoder().decode(read([...bytes("done"), 0x0d]))).toBe(
+      "done",
+    );
+  });
+
+  test("backspace removes the last byte, and EOF submits what was typed", () => {
+    expect(
+      new TextDecoder().decode(
+        read([...bytes("ab"), 0x7f, ...bytes("c"), 0x0a]),
+      ),
+    ).toBe("ac");
+    expect(new TextDecoder().decode(read([...bytes("partial"), 0x04]))).toBe(
+      "partial",
+    );
+    expect(read([]).length).toBe(0);
+  });
+
+  test("Ctrl-C cancels rather than submitting what was typed", () => {
+    // The distinction the catalog's third clause names: a cancel must not
+    // hand back a partial passphrase as if it had been typed and entered.
+    let caught: unknown;
+    try {
+      read([...bytes("half"), 0x03]);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe(
+      "backup_passphrase_rejected",
+    );
+  });
+
+  test("the bound stops a stream that never ends", () => {
+    const endless = new Array(maxPassphraseBytes + 16).fill(0x61);
+    expect(read(endless).length).toBe(maxPassphraseBytes);
   });
 });

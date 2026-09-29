@@ -44,15 +44,21 @@ function defaultSetRaw(on: boolean): void {
   stdin.setRawMode(on);
 }
 
-function defaultReadBytes(): Uint8Array {
+// The reader the terminal path uses, over any readable descriptor so its
+// byte semantics (backspace, Ctrl-C, the bound) can be tested without a pty.
+export function readPassphraseBytes(descriptor = 0): Uint8Array {
   const bytes: number[] = [];
   const buffer = new Uint8Array(1);
   while (bytes.length < maxPassphraseBytes) {
-    const read = readSync(0, buffer, 0, 1, null);
+    const read = readSync(descriptor, buffer, 0, 1, null);
     if (read === 0) break;
     const byte = buffer[0] as number;
     if (byte === 0x0a || byte === 0x0d) break;
-    if (byte === 0x03 || byte === 0x04) break;
+    // Ctrl-C is the user cancelling, and cancelling is not submitting: the
+    // reading is abandoned whether or not anything was typed. Ctrl-D is the
+    // end of input, which submits what was typed — nothing, if nothing was.
+    if (byte === 0x03) throw new WardError("backup_passphrase_rejected");
+    if (byte === 0x04) break;
     if (byte === 0x7f || byte === 0x08) {
       bytes.pop();
       continue;
@@ -85,7 +91,7 @@ export function createTerminalPassphrase(
   const isInteractive =
     parts.isInteractive ?? (() => process.stdin.isTTY === true);
   const setRaw = parts.setRaw ?? defaultSetRaw;
-  const readBytes = parts.readBytes ?? defaultReadBytes;
+  const readBytes = parts.readBytes ?? (() => readPassphraseBytes(0));
   const writePrompt = parts.writePrompt ?? defaultWritePrompt;
   const available = (): boolean => {
     try {

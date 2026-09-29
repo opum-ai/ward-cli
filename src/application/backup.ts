@@ -99,12 +99,18 @@ export async function runBackup(options: {
   let plaintext: Uint8Array | undefined;
   try {
     key = await options.keyProvider.load(header.vaultId);
-    plaintext = options.store.read(key).plaintext;
+    // The plaintext's own revision is what the container records: another
+    // writer can commit between the header read above and this one, and the
+    // container states the origin it actually carries. The header above is
+    // still what decides which key opens the vault, which no concurrent
+    // writer changes.
+    const snapshot = options.store.read(key);
+    plaintext = snapshot.plaintext;
     const kdf = newBackupKdf();
     derived = deriveBackupKey(passphrase, kdf);
     const sealed = sealBackup(
       derived,
-      { vaultId: header.vaultId, revision: header.revision, kdf },
+      { vaultId: snapshot.vaultId, revision: snapshot.revision, kdf },
       plaintext,
     );
     const bytes = encodeBackup(sealed);
@@ -112,8 +118,8 @@ export async function runBackup(options: {
     return {
       path: options.path,
       bytes: bytes.length,
-      vaultId: header.vaultId,
-      revision: header.revision,
+      vaultId: snapshot.vaultId,
+      revision: snapshot.revision,
       kdf: {
         name: kdf.name,
         N: kdf.N,

@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import type { BackupFiles } from "../application/backup.ts";
 import { WardError } from "../contract/errors.ts";
+import { stripInheritedAcl } from "./inherited-acl.ts";
 
 function errnoCode(error: unknown): unknown {
   return typeof error === "object" && error !== null
@@ -56,11 +57,27 @@ export function createBackupFiles(): BackupFiles {
       } catch (error) {
         if (errnoCode(error) === "EEXIST") {
           // O_EXCL reports a symlink at the path the same way it reports a
-          // file. They are different facts, and the catalog says which one
-          // the caller is dealing with.
+          // file or a directory. They are different facts, and the catalog
+          // says which one the caller is dealing with: a link is a path Ward
+          // will not write through, while anything else is simply occupied.
           throw new WardError(
             isLink(path) ? "backup_file_unwritable" : "backup_file_exists",
           );
+        }
+        throw new WardError("backup_file_unwritable");
+      }
+      // The file inherits its directory's ACL on macOS, and 0600 does not
+      // stop an inherited grant; the same strip the vault store applies.
+      if (!stripInheritedAcl(path)) {
+        try {
+          closeSync(fd);
+        } catch {
+          // The failure that matters is the ACL's.
+        }
+        try {
+          unlinkSync(path);
+        } catch {
+          // Best effort, as below.
         }
         throw new WardError("backup_file_unwritable");
       }
@@ -93,27 +110,36 @@ export function createBackupFiles(): BackupFiles {
       try {
         const stats = lstatSync(path);
         if (!stats.isFile() || stats.isSymbolicLink())
-          throw new WardError("backup_file_unwritable");
+          throw new WardError("backup_file_unreadable");
         size = stats.size;
       } catch (error) {
         if (error instanceof WardError) throw error;
         if (errnoCode(error) === "ENOENT")
           throw new WardError("backup_not_found");
-        throw new WardError("backup_file_unwritable");
+        throw new WardError("backup_file_unreadable");
       }
       if (size > maxBytes) throw new WardError("backup_too_large");
 
       let fd: number;
       try {
-        fd = openSync(path, fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW);
+        // O_NONBLOCK is not about regular files, which ignore it: a FIFO
+        // swapped in between the lstat above and this open would otherwise
+        // block forever with no writer, where a refusal is the answer Ward
+        // owes the caller.
+        fd = openSync(
+          path,
+          fileConstants.O_RDONLY |
+            fileConstants.O_NOFOLLOW |
+            fileConstants.O_NONBLOCK,
+        );
       } catch (error) {
         if (errnoCode(error) === "ENOENT")
           throw new WardError("backup_not_found");
-        throw new WardError("backup_file_unwritable");
+        throw new WardError("backup_file_unreadable");
       }
       try {
         const opened = fstatSync(fd);
-        if (!opened.isFile()) throw new WardError("backup_file_unwritable");
+        if (!opened.isFile()) throw new WardError("backup_file_unreadable");
         if (opened.size > maxBytes) throw new WardError("backup_too_large");
         const contents = new Uint8Array(opened.size);
         let read = 0;
@@ -129,7 +155,7 @@ export function createBackupFiles(): BackupFiles {
           read += count;
         }
         if (read !== contents.length)
-          throw new WardError("backup_file_unwritable");
+          throw new WardError("backup_file_unreadable");
         return contents;
       } finally {
         closeSync(fd);

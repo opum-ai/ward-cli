@@ -201,7 +201,7 @@ export const errorCatalog = {
   backup_requires_terminal: {
     type: "denied",
     message:
-      "Creating or opening a backup needs an interactive terminal, and this run has none to ask on.",
+      "Creating or opening a backup needs an interactive terminal, and this run has none Ward can read a passphrase from.",
     hint: "Run the command yourself in a terminal. Ward never reads a backup passphrase from an argument, the environment or a pipe.",
   },
   backup_passphrase_rejected: {
@@ -213,14 +213,20 @@ export const errorCatalog = {
   backup_file_exists: {
     type: "conflict",
     message:
-      "A file already exists at the backup path, and Ward does not replace an existing file.",
-    hint: "Choose another path, or move the existing file, then run the command again.",
+      "Something already exists at the backup path — a file or a directory — and Ward does not replace or write through it.",
+    hint: "Choose another path, or move what is there, then run the command again.",
   },
   backup_file_unwritable: {
     type: "denied",
     message:
       "Ward could not create or write the backup file. There is no usable backup at that path.",
     hint: "Check that the directory exists and is writable by you, and that the path is not a link.",
+  },
+  backup_file_unreadable: {
+    type: "denied",
+    message:
+      "Ward could not read the backup file. There is no usable backup at that path.",
+    hint: "Check that the path names a regular file you can read, and that it is not a directory, a link, or another kind of entry.",
   },
   backup_not_found: {
     type: "not_found",

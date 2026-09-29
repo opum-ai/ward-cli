@@ -71,9 +71,12 @@ binding.**
 - **A backup file is created once, owner-only, and never replaced.** Mode
   0600 with `O_CREAT|O_EXCL|O_NOFOLLOW`, so an existing path, a link and a
   directory are all refused rather than written through; only ciphertext
-  reaches the file and no plaintext copy is ever made. A failed write removes
-  what it created, best effort. Reads are bounded by the container limit and
-  refuse anything that is not a regular file.
+  reaches the file and no plaintext copy is ever made, and the inherited ACL
+  a directory can carry is cleared with the same strip the vault store
+  applies. A failed write removes what it created, best effort. Reads are
+  bounded by the container limit, refuse anything that is not a regular
+  file, and open without blocking, so a FIFO swapped in between the check
+  and the open is refused rather than waited on.
 - **The passphrase is read from a terminal, and only from a terminal.** Echo
   is suppressed by reading with the terminal in raw mode — no mask is
   printed, because a mask discloses the passphrase's length. There is no
@@ -121,4 +124,16 @@ binding.**
 - **A restore is the one place besides `ward setup` that mints a key**, which
   is why the source-level invariant that guards key creation now names two
   callers instead of one, and why the behavioural half — a non-empty
-  destination leaves its key and vault untouched — is asserted separately.
+  destination leaves its key and vault untouched, and is refused before the
+  developer is even prompted — is asserted separately.
+- **A failed restore can leave a key nothing points at, and nothing takes it
+  back.** That residue is the deliberate side of storing the key before the
+  vault: the reverse order can leave a vault whose key does not exist, which
+  no command can repair. Measured 2026-09-28 (WCLI-13's review): a restore
+  whose destination becomes unwritable fails with `vault_store_failed` and
+  leaves one credential-store item and no vault. Unlike setup, restore keeps
+  no journal, so a rerun mints another id and the orphan is never reused; and
+  Ward has no command that enumerates or deletes credential-store items, so
+  the only remedy is Keychain Access. The key is random and reachable by no
+  vault id, so nothing is exposed — it is clutter a person has to remove, and
+  repeated failures accumulate it.
