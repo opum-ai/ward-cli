@@ -89,13 +89,35 @@ function filesContaining(directory: string, needle: string): string[] {
     });
 }
 
+// Raw SQL against a vault file, through a connection of its own.
+//
+// The helper asserts its own premise: the mutation must change the file. Every
+// case that uses it then asserts about a vault that really was altered, and a
+// mutation that changed nothing is a harness fault rather than a result about
+// the code. That premise is not free (WCLI-59): a case that rewrote a one-byte
+// ciphertext with randomblob(length(ciphertext)) left it identical 1 run in
+// 256 - a one-byte randomblob reproduces the old byte that often - so the case
+// read the OLD plaintext, the assertion failed as if the reader had missed a
+// corrupt vault, and the same shape could as easily have passed while testing
+// nothing. A no-op throws here, naming itself, instead of reaching an
+// assertion.
 function withRaw<T>(file: string, run: (db: Database) => T): T {
+  // A missing file is not an empty one: some callers plant a foreign database
+  // where none exists, and going from absent to present is a change.
+  const before = existsSync(file) ? readFileSync(file) : undefined;
   const db = new Database(file);
+  let result: T;
   try {
-    return run(db);
+    result = run(db);
   } finally {
     db.close();
   }
+  const after = existsSync(file) ? readFileSync(file) : undefined;
+  if (before !== undefined && after?.equals(before))
+    throw new Error(
+      "ward test harness: the raw mutation changed nothing on disk, so the case that follows would assert about an unaltered file",
+    );
+  return result;
 }
 
 function spawnWorker(key: Uint8Array, args: string[]) {
@@ -325,14 +347,32 @@ describe("mutate", () => {
     const { file, store } = fresh();
     const key = generateVaultKey();
     store.create(VAULT_ID, key, bytes("a"));
-    withRaw(file, (db) =>
-      db.exec(
-        "UPDATE vault SET ciphertext = randomblob(length(ciphertext)) WHERE slot = 1",
-      ),
-    );
+    // Corrupted by construction, not by chance: this plaintext is one byte, so
+    // the ciphertext is one byte, and randomblob(1) reproduced it 1 run in 256
+    // - which left the case asserting about an uncorrupted vault (WCLI-59).
+    // Flipping every bit of the first byte cannot equal what was there.
+    withRaw(file, (db) => {
+      const row = db
+        .query("SELECT ciphertext FROM vault WHERE slot = 1")
+        .get() as { ciphertext: Uint8Array };
+      const corrupted = Uint8Array.from(row.ciphertext);
+      corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
+      db.query("UPDATE vault SET ciphertext = ? WHERE slot = 1").run(corrupted);
+    });
     expect(codeOf(() => store.read(key))).toBe("vault_authentication_failed");
     expect(codeOf(() => store.mutate(key, (p) => p))).toBe(
       "vault_authentication_failed",
+    );
+  });
+
+  // The helper's own premise, proven rather than assumed: a mutation that
+  // changes nothing is a harness fault and must not reach an assertion, where
+  // it would be scored as a result about the reader.
+  test("the raw helper refuses a mutation that changed nothing", () => {
+    const { file, store } = fresh();
+    store.create(VAULT_ID, generateVaultKey(), bytes("a"));
+    expect(() => withRaw(file, (db) => db.exec("SELECT 1"))).toThrow(
+      /changed nothing on disk/,
     );
   });
 
