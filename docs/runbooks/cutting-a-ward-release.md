@@ -5,7 +5,7 @@ title: Cutting a Ward release
 tags:
   - release
   - qualification
-summary: "The obligations a Ward release must discharge beyond the code: the profileSnapshotVersion bump (DEC-50), version agreement, T24's smoke (DEC-45), and the marketplace condition (T25)."
+summary: "Ward release obligations beyond the code: profileSnapshotVersion bump (DEC-50), version agreement, T24's smoke (DEC-45), marketplace condition (T25), and DEC-38's deferred compatibility question."
 generated:
   by: lore/0.11.0
   at: 2026-09-29T17:14:07.413Z
@@ -18,7 +18,8 @@ generated:
 This is where a Ward release's recorded obligations live, so that whoever cuts
 one meets them as a checklist instead of rediscovering them late. Each item
 below is a decision recorded elsewhere and already accepted; this runbook
-carries the act, not the reasoning.
+carries the act, not the reasoning. One item is the exception and says so
+itself: the act there is to decide.
 
 It is not the whole release process: the lifecycle (branch, pull request,
 integration on `dev`, fast-forward promotion to `main`) is the fleet's and
@@ -55,7 +56,22 @@ that named a release-time obligation.
    public `opum-marketplace` entry is the later phase: it must validate against
    the index and resolve to the released artifact at an immutable reference
    (spec §11.3, test matrix T25). The private-marketplace half is opum-fleet's.
-5. **Record the gate results** where the release's results live - WCLI-15's
+5. **Answer the format-compatibility question DEC-38 deferred.** This is the
+   runbook's one item that decides rather than applies:
+   [ADR 0010](../adr/0010-refuse-a-vault-state-document-from-another-format.md)
+   defers it here deliberately, so that it is settled against a shipped format
+   instead of a hypothetical one. The state document's reader compares each
+   record's key set exactly, so the next field added to the document raises the
+   same wall the version gate used to name - an older build refuses the
+   document, a newer one refuses the old shape. Before the first release the
+   format is not a compatibility contract and raising that wall costs nothing;
+   at the release it becomes one. Decide whether the exact key-set comparison
+   stays, and record the answer as an ADR in this repository, where this
+   component's decisions live. The arm DEC-38 left aside - relaxing the reader
+   to tolerate unknown keys - is the one to revisit here, and it was left aside
+   deliberately: on authority records such as bindings and approvals, an
+   unknown field would be dropped silently from something that decides access.
+6. **Record the gate results** where the release's results live - WCLI-15's
    `docs/security-tests.md` maps every gate to a test and a recorded result -
    including this runbook's items, so the next release reads one list.
 
