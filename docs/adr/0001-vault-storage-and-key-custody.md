@@ -135,11 +135,12 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   same setup — reusing the recorded id, the stored key, or both — or reports the state it finds:
   a vault whose key loads is an already-completed setup, a vault whose key does not load is a
   recovery condition, and a damaged journal refuses rather than overwrites. The vault sealed by
-  setup is the minimal self-describing skeleton `{"formatVersion":2}`; the full state schema is
-  the next layer's contract (WCLI-7), and it moved to format 2 when the audit record gained the
-  fields spec §9.4 requires — see
-  [ADR 0010](0010-refuse-a-vault-state-document-from-another-format.md), which is also why a
-  format-1 document now stops opening. A kill test runs each interruption point in a separate
+  setup is the minimal self-describing skeleton `{"formatVersion":1}`; the full state schema is
+  the next layer's contract (WCLI-7). The number names the state document's one format rather
+  than counting generations: an earlier version of it moved to 2 when the audit record gained
+  the fields spec §9.4 requires, and DEC-38 put it back to 1, which is what
+  [ADR 0010](0010-refuse-a-vault-state-document-from-another-format.md) now records. The
+  envelope's own version is a separate number and is unchanged. A kill test runs each interruption point in a separate
   process against a file-backed stand-in store. One stated limit: deleting the vault is not a
   fresh start while the journal and the keychain item survive — a rerun resumes the old vault
   id and the old key, so an older copy of that vault (a backup or snapshot) still authenticates.

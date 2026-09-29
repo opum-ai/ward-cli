@@ -40,6 +40,7 @@ import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import { WardError } from "../src/contract/errors.ts";
+import { profileSnapshotVersion } from "../src/domain/profile.ts";
 import {
   parseVaultState,
   serializeVaultState,
@@ -518,12 +519,13 @@ describe("ward doctor", () => {
       code: "manifest_unsupported",
     });
 
-    // A state document from another build is refused by the same parse the
-    // real reads run. The version is one this build does not write — stated
-    // relative to the format this build does write, so the case keeps meaning
-    // "a build that is not this one" rather than pinning a number that a bump
-    // would quietly turn into this build's own (WCLI-11 regenerated this
-    // fixture; it read `2`, which was a future version until format 2 landed).
+    // A state document this build did not write is refused by the same parse
+    // the real reads run, and since DEC-38 that refusal is the ordinary
+    // malformed one rather than a distinguished "another build" state: with a
+    // single format there is no other build for the report to name. The
+    // version is still stated relative to the one this build writes, so the
+    // case keeps meaning "not this build's" rather than pinning a literal
+    // that a later change would quietly turn into this build's own.
     writeFileSync(manifestPath, manifest);
     h.store.mutate(h.key(), () =>
       new TextEncoder().encode(
@@ -534,12 +536,74 @@ describe("ward doctor", () => {
     expect(future.result.exitCode).toBe(exitCodes.validation);
     expect(checkFor(future.data, "schema")).toMatchObject({
       status: "fail",
-      code: "state_unsupported",
+      code: "state_malformed",
     });
     expect(checkFor(future.data, "permissions")).toMatchObject({
       status: "pass",
       code: "private",
     });
+  });
+
+  // WCLI-51 review, F1. A document whose own version is not this build's is
+  // malformed, but a document carrying a *record* this build cannot read is
+  // not malformed: the document parsed and one approval inside it did not.
+  // Both reports must still answer. This case exists because the first draft
+  // of the change deleted the reporting path's answer for that second shape,
+  // on the assumption that a single format made it unreachable. Measured, both
+  // commands instead exited 6 with empty stdout, because the read threw past
+  // the report — and ADR 0007 requires the report to reach stdout either way.
+  test("schema: a stored approval from another build is reported, not thrown", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-approval-version");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+
+    // A complete, canonical approval, so the version it was written under is
+    // the only thing about the record this build cannot read.
+    h.store.mutate(h.key(), () =>
+      new TextEncoder().encode(
+        JSON.stringify({
+          formatVersion: vaultStateFormatVersion,
+          profileApprovals: [
+            {
+              profile: "deploy",
+              projectId: randomUUID(),
+              root: identity.root,
+              device: identity.device,
+              inode: identity.inode,
+              approvedAt: "2026-09-29T00:00:00.000Z",
+              snapshotVersion: profileSnapshotVersion + 1,
+              snapshot: {
+                adapter: "http",
+                method: "GET",
+                url: "https://api.example.invalid/a%20b?x=1&y=2",
+                auth: { type: "bearer", secret: "example.token" },
+                headers: [],
+                requestBody: "none",
+                output: "status",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const doctor = await doctorOf(h, checkout);
+    expect(doctor.result.exitCode).toBe(exitCodes.validation);
+    // The positive control for "the report reached stdout": all five checks
+    // are present, so the read answered rather than throwing out of the
+    // command.
+    expect(doctor.data.checks).toHaveLength(5);
+    expect(checkFor(doctor.data, "schema")).toMatchObject({
+      status: "fail",
+      code: "state_unsupported",
+    });
+
+    // And status still exits 0, the only code its manifest declares for a
+    // report it was able to produce.
+    const status = await statusOf(h, checkout);
+    expect(status.result.exitCode).toBe(exitCodes.success);
   });
 
   test("binding: unregistered, then registered, then a conflict", async () => {

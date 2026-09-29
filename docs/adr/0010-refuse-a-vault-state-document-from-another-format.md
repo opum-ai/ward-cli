@@ -1,167 +1,139 @@
 ---
 # yaml-language-server: $schema=../../.lore/schemas/adr.schema.json
 type: ADR
-title: Refuse a vault state document from another format
-summary: Move the vault state document to format 2 for the audit field set spec §9.4 requires, and refuse a format-1 document outright — there is no migration and no read-out.
+title: One vault state document format
+summary: The state document has a single format at version 1, and a document whose shape is not this build's is refused by the reader's exact key-set comparison rather than by a version gate.
 generated:
   by: lore/0.11.0
   at: 2026-09-29T10:28:54.730Z
 ---
 
-# Refuse a vault state document from another format
+# One vault state document format
 
 ## Status
 
-Accepted. Decided by the operator first-party through opum-doc on 2026-09-29,
-relayed as R-2026-09-29-03, R-2026-09-29-08 and R-2026-09-29-11, and recorded
-in opum-agent's tracker as DEC-19 (option B), DEC-25, DEC-26 (option A) and
-DEC-30 (option A). Executed here as WCLI-11.
+Accepted. Rewritten 2026-09-29 under **DEC-38 (option A)**, which the operator
+answered first-party through opum-doc as R-2026-09-29-22. This document
+replaces an earlier version of itself that recorded DEC-19 (option B), DEC-25
+and DEC-26 (option A) and was executed as WCLI-11. DEC-19 B is superseded and
+DEC-25 is vacuous; DEC-26's no-hint rule and DEC-30's sentence survive
+unchanged at the two sites that still raise the code. Executed as WCLI-51. The
+file keeps its name because that name is this record's identifier: other
+documents link to it by path, and renaming it would break those links to
+change what is at the top of the file anyway.
 
 This is the state document inside the sealed envelope, not the envelope. The
-envelope's own version is still 1 and is unchanged
+envelope's own version is 1 and was never part of this decision
 ([ADR 0001](0001-vault-storage-and-key-custody.md)); the two numbers are
-independent, and only this one moved.
+independent, and both are 1.
 
 ## Context
 
-Spec §9.4 requires each audit event to carry more than format 1 recorded:
-"observed OS identity, optional explicitly self-asserted actor/task labels"
-alongside the operation, project and profile ids, opaque secret ids, time and
-safe outcome code. `src/domain/vault-state.ts` recorded none of the three.
+Spec §9.4 requires each audit event to carry the observed OS identity and the
+optional self-asserted actor and task labels. An earlier version of this
+document added those three fields and, because the reader below compares each
+record's key set against an exact expected list, bumped the document's version
+to 2 so that an older build would refuse the document rather than read part of
+it. That was DEC-19 B, and its accepted cost was that every vault written
+before the change became unreadable, with no migration and no read-out path.
 
-The obstacle is that this document's reader compares each record's key set
-against an exact expected list and answers any difference with
-`vault_state_malformed`. That check is what makes an event written by a build
-with a different vocabulary a damaged record rather than a displayable one, so
-adding a field changes what every build can read **in both directions**: an
-older build meeting a newer document calls it malformed, and a newer build
-meeting an older one does the same.
+**DEC-38 measured that cost against a fact that removed it.** Before the first
+release the on-disk format is not a compatibility contract: no repository and
+no person holds a vault this build did not write, and the only vault in
+existence held one valueless test value. The bump answered a compatibility
+question with nobody on the other side of it.
 
-ward-cli measured this and put two options to the operator, recommending the
-other one:
-
-- **A — additive tolerant read, staying at version 1.** The parser would know
-  two record shapes and check both; absence would display as "not recorded".
-  No vault stops opening. Cost: two shapes to maintain, a mixed vocabulary
-  after upgrade, and a version number that does not advertise the change.
-- **B — strict, bumping the version to 2.** The cleanest "another build wrote
-  this" refusal and one vocabulary ever. Cost, stated in full before the
-  decision: **every pre-change vault, secrets included, becomes unreadable,
-  with no migration and no read-out path** — possibly including the operator's
-  own dogfood vault — and it is the first bump before the first release.
-
-The operator chose B.
-
-One sentence in the decision record is worth naming here because it was
-withdrawn rather than amended: the first relay (R-2026-09-29-03) said the
-recovery story for existing vaults was part of this work. It was opum-doc's
-gloss and the operator did not say it; R-2026-09-29-08 withdrew it, and DEC-25
-then confirmed first-party that there is no recovery. **Read the no-recovery
-rule as the decision, not as a gap still to be filled.**
+The measurement that decides the shape was already in the suite. The version
+was never what refused those documents: the same reader that compares key sets
+exactly refused a genuine format-1 document for its *record* — an eight-key
+audit record against the eleven this build writes — even when only its version
+number was changed. The version added a name to the refusal, not a protection.
 
 ## Decision
 
-**`vaultStateFormatVersion` is 2, and the version is the only format gate.**
+**`vaultStateFormatVersion` is 1, and the version is an ordinary field rather
+than a format gate.**
 
-- A vault document this build writes opens on every path. A format-1 document
-  is refused by every command that reads the vault's contents — `ward run`,
-  `ward audit`, `ward check` and `ward secret` all answer exit 6 with the
-  sentence above, each measured.
-- `ward doctor` reports it rather than refusing: its `schema` check fails with
-  `state_unsupported`, which is the state document's verdict kept distinct
-  from `vault_unsupported` for the envelope.
-- **`ward status` does not report it, because it never reads the state
-  document.** By [ADR 0007](0007-status-and-doctor-reporting.md) status
-  answers from the sealed header alone so that it works without the key, and
-  the header is unchanged here — so a format-1 vault reads as `present` with
-  the record's format version, and the word `unsupported` appears nowhere in
-  the report. A review measured this and it is the correction to an earlier
-  version of this document, which claimed status reported it. Filed as WCLI-48
-  alongside the printed version number, which has the same root: two format
-  versions now exist and the report names one of them.
-- **`ward backup` succeeds on a format-1 vault** and that is not yet
-  settled either way. `src/application/backup.ts` seals the plaintext without
-  parsing it, so the command exits 0 and writes a durable file whose restore
-  then refuses with the sentence above — measured: backup 0, restore 6. The
-  argument for leaving it: the container stays encrypted, and refusing would
-  remove the only way to preserve a vault this build cannot read. The argument
-  against: the command's own output invites the reader to treat that file as
-  recovery material, and it is not. Filed as WCLI-49, and it is a decision for
-  the coordinator rather than one this document should settle quietly.
-- A missing or non-numeric `formatVersion` is still `vault_state_malformed`.
-  A damaged document and a document from another build call for different
-  things and must not converge on one answer.
+- `parseVaultState` validates `formatVersion` the way it validates every other
+  field. A value this build did not write is `vault_state_malformed`, and a
+  missing or non-numeric value reaches the same answer. There is no
+  "document from another build" state distinct from a malformed one, because
+  with a single format there is no other build for it to be about.
+- **What refuses a document whose shape is not this build's is the reader's
+  exact key-set comparison**, which was always doing the work. A record
+  carrying a key set this build does not write is a damaged record rather than
+  a displayable one, and that rule is unchanged.
+- **`vault_format_unsupported` survives at two sites, and neither is this
+  format.** The sealed envelope's header
+  ([ADR 0001](0001-vault-storage-and-key-custody.md)), where the version is
+  bound as authenticated data and is genuinely the outer container's format;
+  and a stored profile approval's `snapshotVersion`, which guards an authority
+  question — running this build's normalization rules over an approval written
+  under different ones is how it comes to mean something the developer never
+  approved. DEC-26's no-hint rule and DEC-30's sentence stand unchanged at
+  both:
 
-**Each audit record carries the §9.4 field set.**
+  > This vault was written by a different version of Ward, and this build
+  > cannot read it. Ward did not change it.
 
-- `machine: { user, host }` — what the OS said, observed by Ward and never
-  taken from an argument. It is `null` in exactly one case: the OS gave no
-  answer Ward can record. `os.userInfo()` throws for a uid with no passwd
-  entry, which is ordinary in a container, and Ward will not refuse to run in
-  order to insist on a field a platform may not have. `ward audit` prints that
-  as `not-recorded`.
-- `actorLabel` and `taskLabel` — what the caller asserted through
-  `ward run --actor-label` and `--task-label`, each bounded by the alias
-  grammar and each `null` when the caller asserted nothing. They are
-  correlation metadata: nothing in Ward reads them back, and a labelled run
-  with no approval is refused exactly as an unlabelled one is. A label that
-  fails the grammar is a usage fault, answered before the vault is opened and
-  before the credential store is read: one code, `run_label_invalid`, for both
-  flags, carrying "A run label must start with a letter, be at most 64
-  characters, and use only letters, digits, dot, underscore or dash." It is
-  one code rather than one per flag because the sentence is true of both and
-  the flag a reader passed is in the argument vector they typed (DEC-33).
-
-**One refusal code, one sentence, three sites.** The envelope's version, a
-stored profile snapshot's version and the state document's version all raise
-`vault_format_unsupported`, whose message is now:
-
-> This vault was written by a different version of Ward, and this build cannot
-> read it. Ward did not change it.
-
-It carries no hint and no version numbers. A hint would name a recovery this
-build does not have, and a found-or-expected pair would invite action there is
-none to take.
-
-**No recovery surface exists.** There is no `ward migrate`, no read-out into a
-fresh vault, and no domain function that rewrites a document from another
-format. The refusal is the whole answer, and `test/vault-format-refusal.test.ts`
-asserts that absence beside a positive control, because an absent signal and a
-passing one are different facts.
+- **No recovery surface, and none needed.** The earlier version of this
+  document recorded DEC-25's no-migration rule as a decision. It is vacuous
+  now rather than repealed: there is no second format to migrate from. Ward
+  still has no `ward migrate`, no read-out into a fresh vault, and no domain
+  function that rewrites a document from another build.
+- **`ward doctor` answers two ways, and the difference is the record.** A
+  document whose *own* version this build did not write fails the `schema`
+  check as `state_malformed`, the answer a damaged document gets. A stored
+  profile approval whose `snapshotVersion` this build does not implement fails
+  it as `state_unsupported`, because the document parsed and one record inside
+  it did not. The second is not a leftover of the version gate: it is the
+  retained authority check above reaching the report, and removing that
+  handling would make both reports throw out of their read instead of
+  answering. A first draft of this rewrite deleted it on the assumption that
+  one format made it unreachable, which was false — the code still reaches the
+  reporting path from the approval site, and the removal was measured and
+  reverted (WCLI-51 review, F1).
 
 ## Consequences
 
-- **A vault written before this change stops opening, and its secrets are lost
-  to Ward.** That is the accepted cost of B, not a defect to be repaired. It
-  applies equally to the developer's own vault, and it is why the refusal text
-  says plainly that Ward did not change anything.
-- **The audit history is not carried forward on any path.** A restore is the
-  one place records cross a vault boundary
-  ([ADR 0006](0006-backup-container-and-restore-authority.md)) and it carries
-  whatever the backup's own state document holds, so a format-1 backup file is
-  refused on the same terms as the vault it came from. It can still be
-  *created* — `ward backup` seals the plaintext without parsing it, so it
-  exits 0 on a vault nothing else will read. Whether it should is open, not
-  decided here; see the `ward backup` bullet under Decision.
-- **Two absences in `ward audit` read differently on purpose.** A missing
-  machine is Ward saying it observed no identity; a missing label is the caller
-  saying it asserted none. The report prints `not-recorded` for the first and
-  `none` for the second, because collapsing them would erase the distinction
-  between an observation and an assertion that these fields exist to keep.
-- **The fixtures that build vault documents are regenerated for format 2, with
-  one genuine format-1 document retained** — verbatim, eight-key audit record
-  and all — so the refusal is pinned rather than described. It is in
-  `test/project-documents.test.ts`, and its test asserts both answers about the
-  same bytes: refused by the version as written, refused for the record when
-  only the version is changed. That pairing is what makes the first answer a
-  reading of the version rather than of the contents.
-- **`--actor-label` and `--task-label` are the first caller-supplied strings
-  Ward writes into a record.** They are the reason `ward audit`'s own doc
-  comment no longer claims every field is Ward-owned: what still holds, and is
-  what matters, is that nothing is free text. A label is at most 64 characters
-  of letters, digits, dot, underscore and dash, and the observed identity is
-  bounded to printable characters: C0, DEL, the C1 block, the two Unicode line
-  separators and every Cf format character are refused, so a name cannot break
-  or reverse the line `ward audit` prints it on. The first version of that
-  grammar refused only C0 and DEL, and a review measured U+0085, U+2028 and
-  U+202E passing it; the constraint and the claim now agree.
+- **A vault written by the pre-DEC-38 build stops opening, and is re-created
+  rather than raised.** That is what made DEC-19 B's accepted cost go away:
+  the only such vault held no credentials and belonged to the developer who
+  decided the change. This is not a general statement that vaults are
+  disposable — it is true of this repository before its first release, and it
+  stops being true at it.
+- **The compatibility question is deferred to the first release, not denied.**
+  The reader still compares key sets exactly, so the next audit field added
+  before release raises the same wall again, and it will be answered there
+  with a real shipped format to reason about rather than a hypothetical one.
+  The arm DEC-38 left aside — relaxing the reader to tolerate unknown keys —
+  is the one to revisit then, and it was left aside deliberately: on authority
+  records such as bindings and approvals, an unknown field would be dropped
+  silently from something that decides access.
+- **`ward status` names the same number as the document it describes.** By
+  [ADR 0007](0007-status-and-doctor-reporting.md) status answers from the
+  sealed header alone, so it prints the envelope's version. While the state
+  document was 2 the report named one of two numbers, and WCLI-48 tracked that
+  ambiguity alongside what status should say about a state it cannot read.
+  With both numbers at 1 and one format, both halves dissolve, and WCLI-48 is
+  closed as moot rather than answered.
+- **`ward backup` and `ward restore` are symmetric again.** `runBackup` opens
+  and authenticates the envelope before it seals anything, so a vault this
+  build cannot read is refused before a backup file exists, rather than
+  producing a file that restore then refuses. WCLI-49 tracked that asymmetry
+  and is closed as moot. One gap is unchanged and is recorded rather than
+  tidied away: a state document that decrypts but whose shape this build does
+  not write still backs up, because `runBackup` seals the plaintext without
+  parsing it. That is now a defect in the backup path rather than a format
+  case, and no task covers it.
+- **A denied vault looks different in the two reports, by design.** `ward
+  doctor` fails its `schema` check; `ward status` exits 0. The reason that
+  suggests itself is wrong, and an earlier version of this document gave it:
+  status *does* read the state document — that read is what produces the
+  `binding` row. It exits 0 because `bindingStatus` maps a state that is not
+  present to `unknown`
+  ([ADR 0007](0007-status-and-doctor-reporting.md)), which is the report
+  saying it could not judge rather than that it did not look. One format does
+  not change that, and it is also why the remedy for a stored approval this
+  build cannot read is a report and not a thrown envelope: both reports answer
+  whatever the read returned.

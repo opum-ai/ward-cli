@@ -99,6 +99,13 @@ type KeyObservation =
   | { status: "invalid" }
   | { status: "unsupported" };
 
+// `unsupported` is not about the document's own version, which now has a
+// single format and answers `malformed` when it is not this build's (DEC-38).
+// It is the *other* raiser of `vault_format_unsupported` reaching this read: a
+// stored profile approval whose `snapshotVersion` this build does not
+// implement. That record sits inside an otherwise-readable document, so the
+// document is not malformed — and because it is reachable, this status is what
+// keeps the two reports answering rather than throwing (WCLI-51 review, F1).
 type StateObservation =
   | { status: "present"; state: VaultState }
   | { status: "unreadable" }
@@ -219,6 +226,11 @@ function observeState(store: VaultStore, key: Uint8Array): StateObservation {
     switch (wardCode(error)) {
       case "vault_state_malformed":
         return { status: "malformed" };
+      // Still reachable after DEC-38, and this case is the whole reason the
+      // status survives: parseVaultState raises this code for a stored
+      // approval's snapshotVersion even though it no longer raises it for the
+      // document's own version. Dropping this case makes both reports throw
+      // out of their read instead of answering.
       case "vault_format_unsupported":
         return { status: "unsupported" };
       case "vault_authentication_failed":
@@ -480,6 +492,9 @@ function schemaCheck(
     switch (state.status) {
       case "malformed":
         return { check, status: "fail", code: "state_malformed" };
+      // A stored approval this build cannot read. Keyed to the record rather
+      // than to the document, which is why it is not `state_malformed`: the
+      // document parsed, and one record in it did not (WCLI-51 review, F1).
       case "unsupported":
         return { check, status: "fail", code: "state_unsupported" };
       case "unauthenticated":
