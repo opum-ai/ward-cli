@@ -7,6 +7,7 @@
 - 2026-09-28T13:11:04-05:00 c41a62af265c62853a75b929713b7c0d34cc7e63 WCLI-23: record the committed platform target (ODOC-316) (#16)
 - 2026-09-28T18:16:01-05:00 a1c8d29633574a01f286fd88eb76514e1810c6a8 WCLI-7: `ward init` and project binding (#27)
 - 2026-09-28T18:25:49-05:00 4ed62db68c4fab55c58b2c15be589945a936a653 WCLI-28: track the lore-generated bundle index and log (#31)
+- 2026-09-28T19:14:02-05:00 3dfe16aea0999900c69d6f3aeccc92b3b6de847d WCLI-13: encrypted backup and fresh-store restore (#32)
 
 ## docs/adr
 

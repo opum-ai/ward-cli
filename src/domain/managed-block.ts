@@ -51,16 +51,9 @@ export function upsertManagedBlock(
   body: string,
 ): ManagedBlockUpdate {
   const inner = body.endsWith("\n") ? body : `${body}\n`;
-  const begins = markerSpans(text, managedBlockBegin);
-  const ends = markerSpans(text, managedBlockEnd);
-  if (begins.length > 1 || ends.length > 1)
-    throw new WardError("instructions_markers_conflict");
-  if (begins.length !== ends.length)
-    throw new WardError("instructions_markers_conflict");
+  const located = locateBlock(text);
 
-  const begin = begins[0];
-  const end = ends[0];
-  if (begin === undefined || end === undefined) {
+  if (located === undefined) {
     const separator =
       text.length === 0 ? "" : text.endsWith("\n") ? "\n" : "\n\n";
     const block = `${managedBlockBegin}\n${inner}${managedBlockEnd}\n`;
@@ -69,9 +62,44 @@ export function upsertManagedBlock(
       status: text.length === 0 ? "created" : "updated",
     };
   }
-  if (begin.start >= end.start)
-    throw new WardError("instructions_markers_conflict");
-
+  const { begin, end } = located;
   const next = `${text.slice(0, begin.end)}${inner}${text.slice(end.start)}`;
   return { text: next, status: next === text ? "unchanged" : "updated" };
+}
+
+// The marker rules every caller shares: a pair is located only when there is
+// exactly one of each, in order, and anything else is a conflict. Writing a
+// block and judging one therefore cannot drift apart.
+function locateBlock(
+  text: string,
+): { begin: LineSpan; end: LineSpan } | undefined {
+  const begins = markerSpans(text, managedBlockBegin);
+  const ends = markerSpans(text, managedBlockEnd);
+  if (begins.length > 1 || ends.length > 1)
+    throw new WardError("instructions_markers_conflict");
+  if (begins.length !== ends.length)
+    throw new WardError("instructions_markers_conflict");
+  const begin = begins[0];
+  const end = ends[0];
+  if (begin === undefined || end === undefined) return undefined;
+  if (begin.start >= end.start)
+    throw new WardError("instructions_markers_conflict");
+  return { begin, end };
+}
+
+export type ManagedBlockState = "absent" | "current" | "stale";
+
+// What is in the file, without changing it: no block is "absent", a block
+// whose bytes are exactly what this build writes is "current", and any other
+// block is "stale". Malformed markers throw the same conflict the writer
+// would, because a file Ward refuses to write is one it also cannot judge.
+export function managedBlockStatus(
+  text: string,
+  body: string,
+): ManagedBlockState {
+  const inner = body.endsWith("\n") ? body : `${body}\n`;
+  const located = locateBlock(text);
+  if (located === undefined) return "absent";
+  const content = text.slice(located.begin.end, located.end.start);
+  return content === inner ? "current" : "stale";
 }

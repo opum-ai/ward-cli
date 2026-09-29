@@ -4,6 +4,10 @@
 export interface VaultHeader {
   vaultId: string;
   revision: number;
+  // The sealed record's own format version. Readable without the key, so a
+  // report can name the schema it would have to read (`ward status`,
+  // `ward doctor`) even when the key is missing.
+  formatVersion: number;
 }
 
 export interface VaultSnapshot extends VaultHeader {

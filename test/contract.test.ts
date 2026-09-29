@@ -105,14 +105,43 @@ describe("manifest", () => {
   });
 
   test("lists exactly the commands that have handlers", () => {
-    // `setup`, `init`, `backup` and `restore` are dispatched by the
-    // composition root in main.ts rather than by the synchronous handler
-    // table, because they need the injected store, provider, checkout,
-    // consent or terminal passphrase.
-    const compositionRoot = ["setup", "init", "backup", "restore"];
+    // `setup`, `init`, `status`, `doctor`, `backup` and `restore` are
+    // dispatched by the composition root in main.ts rather than by the
+    // synchronous handler table, because they need the injected store,
+    // provider, checkout, consent or terminal passphrase.
+    const compositionRoot = [
+      "setup",
+      "init",
+      "status",
+      "doctor",
+      "backup",
+      "restore",
+    ];
     expect(commands.map((command) => command.name).sort()).toEqual(
       [...Object.keys(handlers), ...compositionRoot].sort(),
     );
+  });
+
+  test("status and doctor are registered as read-only reporting commands", async () => {
+    const data = json((await runWard(["manifest", "--json"])).stdout).data as {
+      commands: {
+        name: string;
+        kind: string;
+        mutates: boolean;
+        unlocksVault: boolean;
+      }[];
+    };
+    for (const [name, kind] of [
+      ["status", "status.report"],
+      ["doctor", "doctor.report"],
+    ] as const) {
+      const command = data.commands.find((entry) => entry.name === name);
+      expect(command?.kind).toBe(kind);
+      // Both report on the vault, so both declare the unlock; neither
+      // mutates anything.
+      expect(command?.mutates).toBe(false);
+      expect(command?.unlocksVault).toBe(true);
+    }
   });
 
   test("declares every exit code the contract defines", async () => {

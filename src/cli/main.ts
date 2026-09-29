@@ -26,6 +26,11 @@ import {
 } from "../application/commands.ts";
 import type { KeyProvider } from "../application/key-provider.ts";
 import { initProject } from "../application/project.ts";
+import {
+  type ReportingOptions,
+  runDoctor,
+  runStatus,
+} from "../application/reporting.ts";
 import { runSetup } from "../application/setup.ts";
 import {
   type ExitCode,
@@ -230,6 +235,61 @@ async function restoreCommand(
   };
 }
 
+// The composition roots for `ward status` and `ward doctor`. Both resolve
+// the checkout the way every project command does and build the same
+// read-only ports; neither touches the store or the provider until the
+// application layer reads through them.
+function reporting(options: RunOptions): {
+  options: ReportingOptions;
+  keyProvider: KeyProvider;
+} {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const keyProvider =
+    options.keyProvider ??
+    createKeychainKeyProvider({ service: keychainService });
+  return {
+    keyProvider,
+    options: {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider,
+    },
+  };
+}
+
+async function statusCommand(
+  options: RunOptions,
+): Promise<{ output: CommandOutput; exitExplicitly: boolean }> {
+  const prepared = reporting(options);
+  const result = await runStatus(prepared.options);
+  return {
+    output: {
+      kind: "status.report" as const,
+      data: result.data,
+      text: result.text,
+    },
+    exitExplicitly: prepared.keyProvider.abandonedCall?.() ?? false,
+  };
+}
+
+async function doctorCommand(
+  options: RunOptions,
+): Promise<{ output: CommandOutput; exitExplicitly: boolean }> {
+  const prepared = reporting(options);
+  const result = await runDoctor(prepared.options);
+  return {
+    output: {
+      kind: "doctor.report" as const,
+      data: result.data,
+      text: result.text,
+      exitCode: result.exitCode,
+    },
+    exitExplicitly: prepared.keyProvider.abandonedCall?.() ?? false,
+  };
+}
+
 async function dispatch(
   argv: readonly string[],
   options: RunOptions,
@@ -265,6 +325,14 @@ async function dispatch(
     const run = await restoreCommand(parsed, options);
     output = run.output;
     exitExplicitly = run.exitExplicitly;
+  } else if (command.name === "status") {
+    const run = await statusCommand(options);
+    output = run.output;
+    exitExplicitly = run.exitExplicitly;
+  } else if (command.name === "doctor") {
+    const run = await doctorCommand(options);
+    output = run.output;
+    exitExplicitly = run.exitExplicitly;
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);
@@ -276,7 +344,9 @@ async function dispatch(
   return {
     stdout: `${stdout}\n`,
     stderr: "",
-    exitCode: exitCodes.success,
+    // A report can carry its own exit code (ward doctor: 6 when a check
+    // failed); everything else exits 0.
+    exitCode: output.exitCode ?? exitCodes.success,
     ...(exitExplicitly ? { exitExplicitly: true } : {}),
   };
 }

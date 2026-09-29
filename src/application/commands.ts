@@ -1,5 +1,9 @@
 import packageJson from "../../package.json" with { type: "json" };
-import { exitCodes, type ResultKind } from "../contract/envelope.ts";
+import {
+  type ExitCode,
+  exitCodes,
+  type ResultKind,
+} from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
 import {
   type CommandSpec,
@@ -19,6 +23,10 @@ export interface CommandOutput {
   kind: ResultKind;
   data: unknown;
   text: string;
+  // A report that is a finding rather than a success sets this: `ward doctor`
+  // exits 6 when a check failed (spec §8's validation exit). Everything else
+  // leaves it unset and exits 0.
+  exitCode?: ExitCode;
 }
 
 export type CommandHandler = (input: CommandInput) => CommandOutput;
