@@ -541,21 +541,25 @@ describe("T06: transactions", () => {
       join(import.meta.dir, "..", "src", "adapters", "sqlite-vault-store.ts"),
       "utf8",
     );
-    // Each writer's pre-lock region is its own function up to its journal
-    // heal, before the immediate transaction; the in-transaction re-checks
-    // sit after that. The region must hold the settled read and no bare one:
-    // presence alone would miss a bare read added beside the settled check,
-    // and a bare read in this region is exactly the defect. A missing region
-    // (a removed heal, a renamed function) reads as a failure, not a pass.
+    // Each writer's pre-lock region is its own function up to its immediate
+    // transaction; the in-transaction re-checks sit inside that transaction,
+    // after it. The region must hold the settled read and no bare one, and
+    // the bare reads are counted over the whole file as well, so a bare read
+    // placed anywhere it could run — beside a settled check, after the
+    // journal heal, or inside a helper the region cannot see — reddens the
+    // pin instead of hiding behind it. This pin sees this file only: a bare
+    // read moved to another module, or reached through an alias, is outside
+    // what it can prove.
     const region = (start: string, end: string) => {
       const from = source.indexOf(start);
       const to = from === -1 ? -1 : source.indexOf(end, from);
       return from === -1 || to === -1 ? undefined : source.slice(from, to);
     };
-    const createRegion = region("create(vaultId", "healJournalMode(db);");
-    const mutateRegion = region("mutate(key", "healJournalMode(db);");
+    const createRegion = region("create(vaultId", ".transaction(");
+    const mutateRegion = region("mutate(key", ".transaction(");
     const holds = (slice: string | undefined, settled: string, bare: string) =>
       slice !== undefined && slice.includes(settled) && !slice.includes(bare);
+    const count = (pattern: RegExp) => (source.match(pattern) ?? []).length;
     const pins: Array<[string, boolean]> = [
       [
         "settledLayout is a deferred transaction over layoutOf",
@@ -576,6 +580,20 @@ describe("T06: transactions", () => {
       [
         "mutate's pre-lock region reads the settled vault and no bare one",
         holds(mutateRegion, "requireSettledVault(db)", "requireVault(db)"),
+      ],
+      // The bare reads there should be, and no others: layoutOf's four are
+      // requireVault's body, settledLayout's body, and the in-transaction
+      // checks in create and header; requireVault's two callers are the
+      // in-transaction checks in read and mutate. A new reader, or an
+      // aliased spelling, moves these numbers and asks for this pin to be
+      // read again.
+      [
+        "the file holds exactly the four known bare layoutOf reads",
+        count(/layoutOf\(db\)/g) === 4,
+      ],
+      [
+        "the file holds exactly the two known bare requireVault calls",
+        count(/requireVault\(db\)/g) === 2,
       ],
     ];
     const missing = pins.filter(([, ok]) => !ok).map(([name]) => name);
