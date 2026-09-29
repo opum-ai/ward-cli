@@ -45,7 +45,6 @@ import {
   type AuditOutcome,
   type AuditRecord,
   type CheckoutIdentity,
-  findBinding,
   findProfileApproval,
   findSecret,
   parseVaultState,
@@ -53,6 +52,7 @@ import {
   type VaultState,
   withAuditRecord,
 } from "../domain/vault-state.ts";
+import { boundProject, requireBinding, requireManifest } from "./binding.ts";
 import type { KeyProvider } from "./key-provider.ts";
 import { type Checkout, readCheckout } from "./project.ts";
 import type { ProjectFiles } from "./project-files.ts";
@@ -94,8 +94,7 @@ async function withOpenVault<T>(
   run: (opened: OpenedVault) => Promise<T>,
 ): Promise<T> {
   const checkout = readCheckout(options.checkout, options.files);
-  if (checkout.manifest === undefined)
-    throw new WardError("project_not_registered");
+  requireManifest(checkout);
   const header = options.store.header();
   if (header === undefined) throw new WardError("vault_not_found");
   const key = await options.keyProvider.load(header.vaultId);
@@ -123,23 +122,6 @@ const notSentCodes = {
   "tls-failed": "run_tls_failed",
   "request-invalid": "run_request_invalid",
 } as const;
-
-// The binding this checkout has, or a refusal. `ward run` has no unbound
-// case to report the way `ward check` does: there is no approval to reach
-// and nothing to run, so this refuses rather than reporting.
-function boundProjectId(
-  state: VaultState,
-  identity: CheckoutIdentity,
-  checkout: Checkout,
-): string {
-  const manifest = checkout.manifest;
-  if (manifest === undefined) throw new WardError("project_not_registered");
-  const binding = findBinding(state, identity);
-  if (binding === undefined) throw new WardError("project_not_registered");
-  if (binding.projectId !== manifest.projectId)
-    throw new WardError("binding_conflict");
-  return binding.projectId;
-}
 
 // The approved operation, or the reason there is not one to run. The
 // declaration is normalized and compared here and is not returned: what the
@@ -197,10 +179,7 @@ function writeAudit(options: {
 }): void {
   options.store.mutate(options.key, (plaintext) => {
     const state = parseVaultState(plaintext);
-    const binding = findBinding(state, options.identity);
-    if (binding === undefined) throw new WardError("project_not_registered");
-    if (binding.projectId !== options.projectId)
-      throw new WardError("binding_conflict");
+    requireBinding(state, options.identity, options.projectId);
     // The approval must still be there, and must still be this declaration's,
     // at the moment the run is admitted.
     const approval = findProfileApproval(
@@ -291,11 +270,10 @@ export async function runOperation(
   if (!isProfileName(name)) throw new WardError("profile_name_invalid");
 
   return withOpenVault(options, async ({ checkout, key, state }) => {
-    const manifest = checkout.manifest;
-    if (manifest === undefined) throw new WardError("project_not_registered");
+    const manifest = requireManifest(checkout);
     if (!Object.hasOwn(manifest.profiles, name))
       throw new WardError("profile_not_found");
-    const projectId = boundProjectId(state, options.checkout, checkout);
+    const projectId = boundProject(checkout, state);
     const snapshot = approvedSnapshot({
       state,
       identity: options.checkout,
