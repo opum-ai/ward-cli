@@ -35,6 +35,11 @@ export const errorCatalog = {
     type: "usage",
     message: "A required argument is missing.",
   },
+  missing_required_option: {
+    type: "usage",
+    message: "An option this command requires is missing.",
+    hint: "Run `ward help <command>` for this command's options.",
+  },
   unexpected_argument: {
     type: "usage",
     message: "Too many arguments.",
@@ -189,6 +194,65 @@ export const errorCatalog = {
     type: "validation",
     message:
       "The vault's contents are not a state document this Ward can read.",
+  },
+  // Backup and restore (spec §10). None of these names a path, a passphrase
+  // or a byte of either, and none claims an old backup was erased or a
+  // provider revoked anything.
+  backup_requires_terminal: {
+    type: "denied",
+    message:
+      "Creating or opening a backup needs an interactive terminal, and this run has none Ward can read a passphrase from.",
+    hint: "Run the command yourself in a terminal. Ward never reads a backup passphrase from an argument, the environment or a pipe.",
+  },
+  backup_passphrase_rejected: {
+    type: "validation",
+    message:
+      "The backup passphrase was empty, the confirmation did not match, or the prompt was cancelled.",
+    hint: "A backup passphrase is only as strong as its entropy; length alone does not make it strong. Nothing was created or opened.",
+  },
+  backup_file_exists: {
+    type: "conflict",
+    message:
+      "Something already exists at the backup path — a file or a directory — and Ward does not replace or write through it.",
+    hint: "Choose another path, or move what is there, then run the command again.",
+  },
+  backup_file_unwritable: {
+    type: "denied",
+    message:
+      "Ward could not create or write the backup file. There is no usable backup at that path.",
+    hint: "Check that the directory exists and is writable by you, and that the path is not a link.",
+  },
+  backup_file_unreadable: {
+    type: "denied",
+    message:
+      "Ward could not read the backup file. There is no usable backup at that path.",
+    hint: "Check that the path names a regular file you can read, and that it is not a directory, a link, or another kind of entry.",
+  },
+  backup_not_found: {
+    type: "not_found",
+    message: "No backup file was found at that path.",
+    hint: "Check the path passed to --input.",
+  },
+  backup_malformed: {
+    type: "validation",
+    message:
+      "The file is not a Ward backup document of a shape this version understands. Nothing was changed.",
+    hint: "Check that the path names a file `ward backup` wrote, and that the file was copied without modification.",
+  },
+  backup_unsupported: {
+    type: "validation",
+    message:
+      "The backup names a format version or key-derivation parameters this version of Ward does not read, so Ward did not try to open it.",
+  },
+  backup_too_large: {
+    type: "validation",
+    message:
+      "The backup is larger than this version of Ward reads. Ward did not try to open it.",
+  },
+  backup_open_failed: {
+    type: "validation",
+    message:
+      "The backup could not be opened: the passphrase is wrong, or the file is damaged. Nothing was changed.",
   },
 } as const satisfies Record<
   string,

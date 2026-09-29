@@ -1,5 +1,4 @@
 import { Database, constants as sqlite } from "bun:sqlite";
-import { spawnSync } from "node:child_process";
 import {
   closeSync,
   constants as fileConstants,
@@ -17,6 +16,7 @@ import type {
   VaultStore,
 } from "../application/vault-store.ts";
 import { WardError } from "../contract/errors.ts";
+import { stripInheritedAcl } from "./inherited-acl.ts";
 import {
   envelopeLimits,
   open,
@@ -186,17 +186,11 @@ function inspect(
   return "file";
 }
 
-// An inherited ACL (macOS) can grant access beyond the 0700/0600 modes, so
-// entries Ward itself creates get their ACLs stripped. Detecting an ACL on
-// an entry that already exists would need a subprocess read, so pre-existing
-// entries are checked for mode, ownership and links only, and an ACL the
-// user placed there stays (documented in docs/adr/0001). Off macOS this is a
-// no-op: the Linux ACL story belongs to the Linux platform work (WCLI-21).
-function stripInheritedAcl(path: string): void {
-  if (process.platform !== "darwin") return;
-  const result = spawnSync("/bin/chmod", ["-N", path]);
-  if (result.error !== undefined || result.status !== 0)
-    throw new WardError("vault_store_insecure");
+// The ACL strip itself is shared with the backup file adapter
+// (adapters/inherited-acl.ts); this is the vault store's reading of a
+// failure to strip one.
+function requirePrivateAcl(path: string): void {
+  if (!stripInheritedAcl(path)) throw new WardError("vault_store_insecure");
 }
 
 // Ensures the directory exists with its final mode and no inherited ACLs,
@@ -215,7 +209,7 @@ export function prepareVaultDirectory(
       if (errnoCode(error) !== "EEXIST")
         throw new WardError("vault_store_failed");
     }
-    stripInheritedAcl(location.directory);
+    requirePrivateAcl(location.directory);
   }
   if (inspect(location, uid) === "absent")
     throw new WardError("vault_store_failed");
@@ -244,7 +238,7 @@ function prepare(location: Location, uid: number | undefined): void {
       if (errnoCode(error) !== "EEXIST")
         throw new WardError("vault_store_failed");
     }
-    if (created) stripInheritedAcl(location.file);
+    if (created) requirePrivateAcl(location.file);
   }
   if (inspect(location, uid) !== "file")
     throw new WardError("vault_store_failed");

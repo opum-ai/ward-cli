@@ -1,16 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createBackupFiles } from "../adapters/backup-file.ts";
 import { canonicalDirectory, locateCheckout } from "../adapters/checkout.ts";
 import {
   createKeychainKeyProvider,
   keychainService,
 } from "../adapters/keychain.ts";
+import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
 import { acquireSetupSession } from "../adapters/setup-session.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
 import { createTerminalConsent } from "../adapters/terminal-consent.ts";
 import type { RegistrationApprover } from "../application/approvals.ts";
+import {
+  type PassphraseSource,
+  runBackup,
+  runRestore,
+} from "../application/backup.ts";
 import {
   type CommandInput,
   type CommandOutput,
@@ -54,6 +61,10 @@ export interface RunOptions {
   // Who answers Ward's registration question. Defaults to the terminal
   // prompt; tests supply an answer.
   approver?: RegistrationApprover;
+  // Where a backup passphrase comes from. Defaults to the terminal with echo
+  // suppressed; tests and qualification probes supply one. There is no
+  // option, argument or environment path to it, here or anywhere.
+  passphrases?: PassphraseSource;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
 }
@@ -132,6 +143,93 @@ async function initCommand(
   return { kind: "init.complete", data, text };
 }
 
+// The composition root for `ward backup`. The passphrase is read from the
+// terminal through the adapter — never an argument, the environment or a
+// pipe — and the vault key comes from the platform credential store.
+async function backupCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<{ output: CommandOutput; exitExplicitly: boolean }> {
+  const path = input.flags.get("--output");
+  if (typeof path !== "string") throw new WardError("missing_required_option");
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const keyProvider =
+    options.keyProvider ??
+    createKeychainKeyProvider({ service: keychainService });
+  const result = await runBackup({
+    store: createSqliteVaultStore({ directory }),
+    keyProvider,
+    passphrases: options.passphrases ?? createTerminalPassphrase(),
+    files: createBackupFiles(),
+    path,
+  });
+  return {
+    output: {
+      kind: "backup.complete" as const,
+      data: result,
+      text: [
+        "Backup written.",
+        "",
+        `  file:     ${result.path}`,
+        `  vault:    ${result.vaultId}`,
+        `  revision: ${result.revision}`,
+        `  bytes:    ${result.bytes}`,
+        "",
+        "Ward cannot open it without the passphrase, and keeps no copy of either.",
+        "Keep it somewhere you control: recovery from a lost key or a damaged",
+        "vault needs this file and its passphrase, and the OS credential store",
+        "is not part of it. Ward does not erase old copies of a backup, and a",
+        "restore does not revoke anything at a credential's provider.",
+      ].join("\n"),
+    },
+    exitExplicitly: keyProvider.abandonedCall?.() ?? false,
+  };
+}
+
+// The composition root for `ward restore`. It restores only into an empty
+// vault directory, under a fresh key and vault id, and clears every local
+// binding, so the caller re-registers each checkout explicitly.
+async function restoreCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<{ output: CommandOutput; exitExplicitly: boolean }> {
+  const path = input.flags.get("--input");
+  if (typeof path !== "string") throw new WardError("missing_required_option");
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const keyProvider =
+    options.keyProvider ??
+    createKeychainKeyProvider({ service: keychainService });
+  const result = await runRestore({
+    store: createSqliteVaultStore({ directory }),
+    keyProvider,
+    passphrases: options.passphrases ?? createTerminalPassphrase(),
+    files: createBackupFiles(),
+    path,
+    newVaultId: () => randomUUID(),
+  });
+  return {
+    output: {
+      kind: "restore.complete" as const,
+      data: result,
+      text: [
+        "Vault restored.",
+        "",
+        `  vault:    ${result.vaultId}`,
+        `  revision: ${result.revision}`,
+        `  projects: ${result.projects}`,
+        "",
+        "It was restored under a new vault key and a new vault id, so this",
+        "machine's credential store was never part of opening it.",
+        "Every checkout binding is cleared: run `ward init` in each repository",
+        "that should use these projects again, and re-approve anything the old",
+        "vault had approved. Restoring an older backup does not revive authority",
+        "that was granted, changed or revoked since it was taken.",
+      ].join("\n"),
+    },
+    exitExplicitly: keyProvider.abandonedCall?.() ?? false,
+  };
+}
+
 async function dispatch(
   argv: readonly string[],
   options: RunOptions,
@@ -159,6 +257,14 @@ async function dispatch(
     exitExplicitly = run.exitExplicitly;
   } else if (command.name === "init") {
     output = await initCommand(parsed, options);
+  } else if (command.name === "backup") {
+    const run = await backupCommand(parsed, options);
+    output = run.output;
+    exitExplicitly = run.exitExplicitly;
+  } else if (command.name === "restore") {
+    const run = await restoreCommand(parsed, options);
+    output = run.output;
+    exitExplicitly = run.exitExplicitly;
   } else {
     const handler = handlers[command.name];
     if (handler === undefined) throw new WardError("unknown_command", 1);

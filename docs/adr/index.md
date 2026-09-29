@@ -6,4 +6,5 @@
 - [Profile approval authority](0003-profile-approval-authority.md)
 - [Committed platform target](0004-committed-platform-target.md)
 - [Project binding identity](0005-project-binding-identity.md)
+- [Backup container and restore authority](0006-backup-container-and-restore-authority.md)
 <!-- lore:index:end -->

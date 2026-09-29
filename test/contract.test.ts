@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
+import type { PassphraseSource } from "../src/application/backup.ts";
 import { handlers } from "../src/application/commands.ts";
 import { instructionTopics } from "../src/application/instructions.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
@@ -25,12 +26,23 @@ const root = mkdtempSync(join(tmpdir(), "ward-contract-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 // A throwaway checkout, so a command that resolves a project (`ward init`)
-// has a worktree root to find and never writes into this repository.
+// has a worktree root to find and never writes into this repository. One
+// directory for the whole example loop, so the relative paths an example
+// names land inside it.
 function checkout(): string {
   const directory = mkdtempSync(join(root, "repo-"));
   mkdirSync(join(directory, ".git"));
   return directory;
 }
+
+const exampleCheckout = checkout();
+
+// A passphrase without a terminal. The example runner cannot type one; the
+// adapter that reads a real one has its own tests.
+const passphrases: PassphraseSource = {
+  available: () => true,
+  read: () => new TextEncoder().encode("contract-example-passphrase"),
+};
 
 function options(): RunOptions {
   const keychain = new MemoryKeychain();
@@ -41,8 +53,38 @@ function options(): RunOptions {
       service: "opum.ward.contract",
       entry: keychain.entry,
     }),
-    cwd: checkout(),
+    cwd: exampleCheckout,
+    passphrases,
   };
+}
+
+// What an example needs from the machine before it can do what it says.
+// `ward setup` and `ward init` create whatever they use, so they need
+// nothing. `ward backup` needs a vault to copy, and `ward restore` needs an
+// empty vault directory plus a backup file where its example names one,
+// which is produced here by the command itself rather than by a fixture, so
+// the example exercises the format that actually ships.
+async function prepareExample(name: string): Promise<RunOptions> {
+  const prepared = options();
+  if (name === "backup") {
+    const setup = await runWard(["setup", "--json"], prepared);
+    expect(setup.exitCode).toBe(exitCodes.success);
+  } else if (name === "restore") {
+    // Whatever an earlier example left at the path is cleared first: the
+    // file this example opens is one the command itself writes here.
+    const exampleBackup = join(exampleCheckout, "ward-backup.json");
+    rmSync(exampleBackup, { force: true });
+    const source = options();
+    expect((await runWard(["setup", "--json"], source)).exitCode).toBe(
+      exitCodes.success,
+    );
+    const created = await runWard(
+      ["backup", "--output", exampleBackup, "--json"],
+      source,
+    );
+    expect(created.exitCode).toBe(exitCodes.success);
+  }
+  return prepared;
 }
 
 describe("manifest", () => {
@@ -63,10 +105,11 @@ describe("manifest", () => {
   });
 
   test("lists exactly the commands that have handlers", () => {
-    // `setup` and `init` are dispatched by the composition root in main.ts
-    // rather than by the synchronous handler table, because they need the
-    // injected store, provider, checkout and consent.
-    const compositionRoot = ["setup", "init"];
+    // `setup`, `init`, `backup` and `restore` are dispatched by the
+    // composition root in main.ts rather than by the synchronous handler
+    // table, because they need the injected store, provider, checkout,
+    // consent or terminal passphrase.
+    const compositionRoot = ["setup", "init", "backup", "restore"];
     expect(commands.map((command) => command.name).sort()).toEqual(
       [...Object.keys(handlers), ...compositionRoot].sort(),
     );
@@ -80,18 +123,33 @@ describe("manifest", () => {
   });
 
   test("every example emits a declared kind and a declared exit code", async () => {
-    for (const command of commands) {
-      expect(command.examples.length).toBeGreaterThan(0);
-      const declared: string[] = [command.kind, ...(command.resultKinds ?? [])];
-      for (const example of command.examples) {
-        const argv = example.split(" ").slice(1);
-        const result = await runWard(
-          argv.includes("--json") ? argv : [...argv, "--json"],
-          options(),
-        );
-        expect(command.exitCodes).toContain(result.exitCode);
-        expect(declared).toContain(json(result.stdout).kind as string);
+    // Examples are written the way a developer types them, so a path in one
+    // is relative to the directory the terminal is in. The loop therefore
+    // runs inside the throwaway checkout: without this, `--output
+    // ward-backup.json` would land in the repository running the tests.
+    // `RunOptions.cwd` cannot stand in for it, because it resolves the
+    // command's project, not the process's filesystem.
+    const previous = process.cwd();
+    process.chdir(exampleCheckout);
+    try {
+      for (const command of commands) {
+        expect(command.examples.length).toBeGreaterThan(0);
+        const declared: string[] = [
+          command.kind,
+          ...(command.resultKinds ?? []),
+        ];
+        for (const example of command.examples) {
+          const argv = example.split(" ").slice(1);
+          const result = await runWard(
+            argv.includes("--json") ? argv : [...argv, "--json"],
+            await prepareExample(command.name),
+          );
+          expect(command.exitCodes).toContain(result.exitCode);
+          expect(declared).toContain(json(result.stdout).kind as string);
+        }
       }
+    } finally {
+      process.chdir(previous);
     }
   });
 
