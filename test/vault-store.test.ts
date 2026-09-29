@@ -624,8 +624,11 @@ describe("T06: transactions", () => {
       ).toBe("vault_busy");
       expect(called).toBe(false);
       // Measured for WCLI-53: 67-76 ms against the 50 ms busy timeout, idle
-      // and under 2x-overcommitted CPU load, so this 2 s ceiling is more than
-      // 26x the cost it bounds and contention cannot reach it.
+      // and under 2x- and 6x-overcommitted CPU load, so this 2 s ceiling is
+      // more than 26x the cost it bounds. Its band is a wait between 2 s and
+      // the harness timeout; a lock wait that never returned is the harness
+      // timeout's case, and a busy timeout that stopped being applied returns
+      // in microseconds, under this ceiling rather than over it.
       expect(performance.now() - started).toBeLessThan(2_000);
     } finally {
       holder.exec("ROLLBACK");

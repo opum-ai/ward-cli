@@ -283,13 +283,14 @@ describe("every store call settles within its bound", () => {
     test(`${operation} gives up at the bound`, async () => {
       const { store, provider } = setup(150);
       store.mode = "hang";
-      // The bound is asserted, not waited out (WCLI-53). This test used to
-      // measure 150 ms on the wall clock and require it under 400 ms, which
-      // runner contention alone can break — run 36565512667 read 474 ms on
-      // bytes nobody had changed. Firing the timer at once and asserting the
-      // delay it was given tests the same property, that the configured
-      // bound is what ends the call, with the scheduler out of the middle.
+      // The bound is asserted, not waited out (WCLI-53). This used to require
+      // the wall clock to land in [140, 400) — run 36565512667 read 474 ms
+      // against that ceiling on bytes nobody had changed, because the timer
+      // it was waiting for was stretched by contention. Firing the timer at
+      // once and asserting the delay the code asked it for tests the same
+      // bound with the scheduler out of the middle.
       const timers = createImmediateTimers();
+      const started = performance.now();
       try {
         await rejectsWith("vault_key_unavailable", () =>
           operation === "load"
@@ -301,6 +302,15 @@ describe("every store call settles within its bound", () => {
         // the store never settles, and no write was reached.
         expect(store.readAttempts).toBe(1);
         expect(store.writeAttempts).toBe(0);
+        // The delay assertion proves the bound was applied; it cannot see
+        // latency added outside `globalThis.setTimeout` — a real wait before
+        // or around the bound — so a ceiling stays beside it. With the timer
+        // fired at once the measured cost is microseconds, which is why this
+        // one sits at 1 s (6.7x the configured bound) rather than at the
+        // 400 ms that used to flake; a regression of this shape costs orders
+        // of magnitude, not percent. What that band is, measured: 1.5 s of
+        // added latency fails here, 600 ms does not.
+        expect(performance.now() - started).toBeLessThan(1_000);
       } finally {
         timers.restore();
       }
