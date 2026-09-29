@@ -18,4 +18,5 @@
 - [A local skill file is drift, and only an exact copy is force-removable](0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable.md)
 - [ward init asks its file choice with the peers' multiselect](0016-ward-init-asks-its-file-choice-with-the-peers-multiselect.md)
 - [The init multiselect's prompt library is a pinned dependency](0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency.md)
+- [profileSnapshotVersion bumps at the first release](0018-profilesnapshotversion-bumps-at-the-first-release.md)
 <!-- lore:index:end -->

@@ -22,5 +22,7 @@ sources = [
   "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable",
   "adr/0016-ward-init-asks-its-file-choice-with-the-peers-multiselect",
   "adr/0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency",
+  "adr/0018-profilesnapshotversion-bumps-at-the-first-release",
   "runbooks/release-smoke-t24-s-manual-half",
+  "runbooks/cutting-a-ward-release",
 ]

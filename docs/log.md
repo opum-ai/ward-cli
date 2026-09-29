@@ -23,6 +23,7 @@
 - 2026-09-29T10:38:14-05:00 8fc98a1437d51b987515ad56cab7a9d9335cd415 chore(WCLI-58): handoff note on recycle at the WCLI-53 / WCLI-14 boundary (#114)
 - 2026-09-29T11:27:32-05:00 9c54c5cebd7595eb63bfbdd8f9d16669e4a76aa2 docs(WCLI-14): record DEC-44 and DEC-45, and correct the spec where they land (#121)
 - 2026-09-29T11:59:04-05:00 351ff7e05c6d90a36ab92bef0a5779ee9d07d80f feat(WCLI-46): reclaim stale test roots with an explicit clean:temp (DEC-49) (#127)
+- 2026-09-29T12:13:18-05:00 8b2a588098c85b75b69b74c0d861a4ac143040d7 feat(WCLI-14): skill-file drift and the init multiselect, with DEC-46..52 recorded (#128)
 
 ## docs/adr
 
