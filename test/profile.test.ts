@@ -1200,9 +1200,80 @@ describe("approving and revoking", () => {
     expect(result.exitCode).toBe(exitCodes.denied);
     expect(errorCode(result.stderr)).toBe("project_not_registered");
   });
+
+  test("a binding that vanishes while the question is open is not approved", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    // The world moves after the question is asked and before the answer is
+    // acted on: the approval is written inside a transaction that re-checks
+    // the binding, so a checkout that lost its authority is refused rather
+    // than approved against a state the earlier read no longer describes
+    // (application/binding.ts, WCLI-39).
+    h.approver.beforeAnswer = () =>
+      h.store.mutate(h.key(), (plaintext) => {
+        const current = parseVaultState(plaintext);
+        return serializeVaultState({ ...current, localBindings: [] });
+      });
+    const result = await h.ward(checkout, [
+      "profile",
+      "approve",
+      PROFILE,
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(result.stderr)).toBe("project_not_registered");
+    expect(h.state().profileApprovals).toHaveLength(0);
+  });
+
+  test("a binding that changes project while the question is open is not approved", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    const other = "8b0d1ff6-6f2f-4d5c-9c33-0f5a0f1c7d21";
+    h.approver.beforeAnswer = () =>
+      h.store.mutate(h.key(), (plaintext) => {
+        const current = parseVaultState(plaintext);
+        return serializeVaultState({
+          ...current,
+          localBindings: current.localBindings.map((binding) => ({
+            ...binding,
+            projectId: other,
+          })),
+        });
+      });
+    const result = await h.ward(checkout, [
+      "profile",
+      "approve",
+      PROFILE,
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("binding_conflict");
+    // The concurrent writer's binding stands, and no approval was recorded
+    // against either project.
+    expect(h.state().localBindings[0]?.projectId).toBe(other);
+    expect(h.state().profileApprovals).toHaveLength(0);
+  });
 });
 
 describe("ward check", () => {
+  test("a manifest naming another project than the binding is a conflict", async () => {
+    const h = harness();
+    const checkout = await h.registered();
+    // The readiness report has no field a conflict could be stated in
+    // (`binding` is registered or missing), so the reporting reading of the
+    // rule refuses a conflict the same way `ward run` does.
+    const path = join(checkout, ".ward", "project.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    manifest.projectId = "8b0d1ff6-6f2f-4d5c-9c33-0f5a0f1c7d21";
+    writeFileSync(path, `${JSON.stringify(manifest)}\n`);
+    const result = await h.ward(checkout, ["check", "--json"]);
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("binding_conflict");
+  });
+
   test("answers from local state and makes no network request", async () => {
     const h = harness();
     const checkout = await h.registered();

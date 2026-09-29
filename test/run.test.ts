@@ -76,6 +76,10 @@ const DECLARATION: Record<string, unknown> = {
   output: "status",
 };
 
+// The semantic code a refusal carries, read from the CLI's error envelope.
+const errorCode = (stderr: string) =>
+  (JSON.parse(stderr) as { code: string }).code;
+
 const encoder = new TextEncoder();
 const root = mkdtempSync(join(tmpdir(), "ward-run-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -185,6 +189,22 @@ function harness() {
     });
   };
 
+  // Fire an arbitrary vault change immediately before a chosen write, on the
+  // same counter `rotateBefore` uses. The run has already read the binding by
+  // then, so this is the race the admission transaction's re-check exists for
+  // (WCLI-39): the state the write is about to act on is not the one the run
+  // resolved its project from.
+  let mutateBeforeWrite:
+    | { write: number; change: (vaultState: VaultState) => VaultState }
+    | undefined;
+  const mutateVault = (
+    change: (vaultState: VaultState) => VaultState,
+  ): void => {
+    sqlite.mutate(key(), (plaintext) =>
+      serializeVaultState(change(parseVaultState(plaintext))),
+    );
+  };
+
   const controlled: VaultStore = {
     header: () => sqlite.header(),
     create: (vaultId, key, plaintext) => sqlite.create(vaultId, key, plaintext),
@@ -194,6 +214,14 @@ function harness() {
       if (rotateBeforeWrite !== undefined && writes === rotateBeforeWrite) {
         rotateBeforeWrite = undefined;
         rotateSecret();
+      }
+      if (
+        mutateBeforeWrite !== undefined &&
+        writes === mutateBeforeWrite.write
+      ) {
+        const hook = mutateBeforeWrite;
+        mutateBeforeWrite = undefined;
+        mutateVault(hook.change);
       }
       if (failWritesFrom !== undefined && writes >= failWritesFrom)
         throw new Error("the vault could not be written");
@@ -328,6 +356,13 @@ function harness() {
     rotateBefore: (write: number) => {
       rotateBeforeWrite = write;
     },
+    mutateBefore: (
+      write: number,
+      change: (vaultState: VaultState) => VaultState,
+    ) => {
+      mutateBeforeWrite = { write, change };
+    },
+    worktree,
     writes: () => writes,
   };
 }
@@ -584,6 +619,97 @@ describe("the approved snapshot is what runs", () => {
       code?: string;
     };
     expect(error.code).toBe("secret_changed");
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+  });
+});
+
+// `ward run` resolves its project through the same binding rule `ward secret`,
+// `ward profile` and `ward audit` apply (application/binding.ts). Before
+// WCLI-39 consolidated that rule this file asserted neither of its codes, so
+// each call site in run.ts is covered here rather than the extraction being
+// assumed safe because the body it replaced looks identical.
+describe("a run resolves its project through the binding rule", () => {
+  test("a checkout with no manifest is refused, vault present or not", async () => {
+    const h = harness();
+    // A vault exists for this harness; the refusal must not depend on it.
+    await h.ward(h.worktree(), ["setup", "--json"]);
+    const bare = h.worktree();
+    const result = await h.ward(bare, ["run", PROFILE, "--json"]);
+    expect(result.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(result.stderr)).toBe("project_not_registered");
+    expect(h.transport.count).toBe(0);
+  });
+
+  test("a manifest without a binding is not registered", async () => {
+    const h = harness();
+    await h.ward(h.worktree(), ["setup", "--json"]);
+    const prepared = h.worktree();
+    expect(
+      (await h.ward(prepared, ["init", "--no-register", "--json"])).exitCode,
+    ).toBe(exitCodes.success);
+    // The profile is declared, so the binding rule is the only thing that can
+    // explain the refusal; `ward run` answers an unknown profile before it
+    // resolves the binding.
+    h.addDeclaration(prepared, PROFILE, { ...DECLARATION });
+    const result = await h.ward(prepared, ["run", PROFILE, "--json"]);
+    expect(result.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(result.stderr)).toBe("project_not_registered");
+    expect(h.transport.count).toBe(0);
+  });
+
+  test("a manifest naming another project than the binding is a conflict", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    // The declaration is kept, so the binding rule is the only thing that
+    // can explain the refusal: the profile is still declared and approved.
+    const path = join(checkout, ".ward", "project.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    manifest.projectId = "8b0d1ff6-6f2f-4d5c-9c33-0f5a0f1c7d21";
+    writeFileSync(path, `${JSON.stringify(manifest)}\n`);
+    const result = await h.ward(checkout, ["run", PROFILE, "--json"]);
+    expect(result.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(result.stderr)).toBe("binding_conflict");
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+  });
+});
+
+describe("the admission re-checks the binding it resolved", () => {
+  test("a binding that vanished before the admission refuses the run", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    // The next write is the admission, so the binding is gone by the time
+    // that transaction re-reads the state the run resolved its project from.
+    h.mutateBefore(h.writes() + 1, (current) => ({
+      ...current,
+      localBindings: [],
+    }));
+    const error = (await h.operate(checkout).catch((e: unknown) => e)) as {
+      code?: string;
+    };
+    expect(error.code).toBe("project_not_registered");
+    expect(h.transport.count).toBe(0);
+    expect(h.state().auditRecords.length).toBe(0);
+  });
+
+  test("a binding that changed project before the admission refuses the run", async () => {
+    const h = harness();
+    const checkout = await h.ready();
+    h.mutateBefore(h.writes() + 1, (current) => ({
+      ...current,
+      localBindings: current.localBindings.map((binding) => ({
+        ...binding,
+        projectId: "8b0d1ff6-6f2f-4d5c-9c33-0f5a0f1c7d21",
+      })),
+    }));
+    const error = (await h.operate(checkout).catch((e: unknown) => e)) as {
+      code?: string;
+    };
+    expect(error.code).toBe("binding_conflict");
     expect(h.transport.count).toBe(0);
     expect(h.state().auditRecords.length).toBe(0);
   });
