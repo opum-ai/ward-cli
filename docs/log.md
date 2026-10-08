@@ -28,6 +28,7 @@
 - 2026-09-29T12:23:49-05:00 e7bec34e97d663a4f94538d3e475e78e20721314 docs(WCLI-30): point the bundle at the spec of record (DEC-51) (#130)
 - 2026-09-29T13:04:42-05:00 c0f48a154798793b799479ec1c91ba0ee9852068 docs(WCLI-61): record DEC-56 — the spec pointer keeps its two sections (#132)
 - 2026-09-29T13:39:21-05:00 45b68a35ee3433eee99c5d82c098c20b1f8172e8 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook
+- 2026-09-29T13:42:11-05:00 e04c287d4745d518495d5b5f7840dcb0b468c283 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook (#134)
 
 ## docs/adr
 
