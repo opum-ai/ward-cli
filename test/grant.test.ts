@@ -125,8 +125,8 @@ function machine() {
   const state = (): VaultState => parseVaultState(store.read(key()).plaintext);
   const revision = (): number => store.header()?.revision as number;
 
-  const ward = (cwd: string, args: string[]) =>
-    runWard([...args, "--json"], {
+  const ward = (cwd: string, args: string[], json = true) =>
+    runWard(json ? [...args, "--json"] : args, {
       wardDirectory: directory,
       keyProvider,
       approver: registration,
@@ -546,6 +546,44 @@ describe("T12: revocation and owner deletion block new admissions", () => {
     ]);
     expect(errorCode(again.stderr)).toBe("grant_not_found");
     expect(again.exitCode).toBe(exitCodes.notFound);
+  });
+
+  test("readiness reports a revoked grant as revoked and never advises storing a local secret", async () => {
+    const w = await granted();
+    const ready = await w.m.ward(w.target, ["check", PROFILE]);
+    expect(ready.exitCode).toBe(exitCodes.success);
+    const revoked = await w.m.ward(w.owner, [
+      "secret",
+      "revoke",
+      OWNER_ALIAS,
+      "--from",
+      w.targetId,
+    ]);
+    expect(revoked.exitCode).toBe(exitCodes.success);
+    const json = await w.m.ward(w.target, ["check", PROFILE]);
+    expect(json.exitCode).toBe(exitCodes.validation);
+    const reasons = JSON.parse(json.stdout).data.profiles[0]
+      .reasons as string[];
+    expect(reasons).toContain("grant-revoked");
+    expect(reasons).not.toContain("secret");
+    const listed = JSON.parse(
+      (await w.m.ward(w.target, ["profile", "list"])).stdout,
+    ).data.profiles as { secret: string }[];
+    expect(listed[0]?.secret).toBe("revoked");
+    // The text a person reads: it says why, and does not tell them to store a
+    // secret, which would block the owner's re-grant.
+    const text = await w.m.ward(w.target, ["check", PROFILE], false);
+    expect(text.stdout).toContain("revoked");
+    expect(text.stdout).not.toContain("ward secret set");
+    // And the advice it replaces really is harmful: a local secret under the
+    // alias refuses the re-grant.
+    expect(
+      (await w.m.ward(w.target, ["secret", "set", TARGET_ALIAS, "--stdin"]))
+        .exitCode,
+    ).toBe(exitCodes.success);
+    const regrant = await w.grant();
+    expect(regrant.exitCode).toBe(exitCodes.conflict);
+    expect(errorCode(regrant.stderr)).toBe("grant_alias_conflict");
   });
 
   test("deleting the owner secret revokes its grants in the same write, and a re-created alias is not the granted secret", async () => {

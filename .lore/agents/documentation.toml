@@ -26,5 +26,6 @@ sources = [
   "adr/0019-the-spec-of-record-is-a-pointer-concept-not-an-extract",
   "runbooks/release-smoke-t24-s-manual-half",
   "runbooks/cutting-a-ward-release",
+  "runbooks/restoring-a-ward-vault-from-a-backup",
   "reference/ward-s-spec-of-record-the-cli-contract-and-the-release-gates",
 ]
