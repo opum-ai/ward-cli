@@ -20,8 +20,10 @@ import {
   createTerminalConsent,
   createTerminalGrantApprover,
   createTerminalProfileApprover,
+  createTerminalUnregisterApprover,
 } from "../adapters/terminal-consent.ts";
 import type {
+  UnregisterApprover,
   GrantApprover,
   ProfileApprover,
   RegistrationApprover,
@@ -50,6 +52,7 @@ import {
   runStatus,
 } from "../application/reporting.ts";
 import { runSetup } from "../application/setup.ts";
+import { runUnregister } from "../application/unregister.ts";
 import { runSecret, type SecretValueSource } from "../application/secrets.ts";
 import {
   type ExitCode,
@@ -110,6 +113,9 @@ export interface RunOptions {
   // Who answers the question a secret grant asks. Defaults to the terminal
   // prompt; tests supply an answer.
   grantApprover?: GrantApprover;
+  // Who answers the questions `ward unregister` asks. Defaults to the
+  // terminal prompt; tests supply the answers.
+  unregisterApprover?: UnregisterApprover;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
   // The identifiers Ward writes into records it creates. Defaults to
@@ -458,6 +464,22 @@ async function secretCommand(
   return { kind: result.kind, data: result.data, text: result.text };
 }
 
+// The composition root for `ward unregister`. It needs the checkout's
+// identity and the vault, and a terminal to ask on; it reads no manifest.
+async function unregisterCommand(options: RunOptions): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const result = await runUnregister({
+    checkout,
+    store: createSqliteVaultStore({ directory }),
+    keyProvider:
+      options.keyProvider ??
+      createKeychainKeyProvider({ service: keychainService }),
+    approver: options.unregisterApprover ?? createTerminalUnregisterApprover(),
+  });
+  return { kind: result.kind, data: result.data, text: result.text };
+}
+
 // The composition root for `ward profile`. Approving and revoking are the
 // developer's acts, so the approver is the terminal adapter and the vault is
 // written only after an interactive answer.
@@ -618,6 +640,8 @@ async function dispatch(
     output = await secretCommand(parsed, options);
   } else if (command.name === "profile") {
     output = await profileCommand(parsed, options);
+  } else if (command.name === "unregister") {
+    output = await unregisterCommand(options);
   } else if (command.name === "agents") {
     output = agentsCommand(parsed, options);
   } else if (command.name === "check") {

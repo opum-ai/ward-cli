@@ -248,6 +248,12 @@ export const errorCatalog = {
       "This checkout is not registered with Ward, so it has no access to this project's secrets.",
     hint: "Run `ward init` in a terminal to register this checkout.",
   },
+  unregister_requires_terminal: {
+    type: "denied",
+    message:
+      "Unregistering a checkout needs an interactive terminal, and this run has none to ask on.",
+    hint: "Run `ward unregister` yourself in a terminal from the checkout. An agent cannot withdraw or change a checkout's registration; the developer does.",
+  },
   secret_action_unknown: {
     type: "usage",
     message: "Unknown secret action.",

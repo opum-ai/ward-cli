@@ -74,3 +74,18 @@ export interface GrantApprover {
   available(): boolean;
   ask(question: GrantQuestion): ProfileAnswer;
 }
+
+// The two questions `ward unregister` asks (DEC-217 Q4): whether to withdraw
+// this checkout's binding, and — only when it has approvals — whether to
+// remove them too. Identifiers and a count; no value.
+export interface UnregisterQuestion {
+  readonly kind: "binding" | "approvals";
+  readonly projectId: string;
+  readonly root: string;
+  readonly approvals: number;
+}
+
+export interface UnregisterApprover {
+  available(): boolean;
+  ask(question: UnregisterQuestion): ProfileAnswer;
+}

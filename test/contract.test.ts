@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import type {
+  UnregisterApprover,
   GrantApprover,
   ProfileApprover,
   RegistrationApprover,
@@ -78,6 +79,11 @@ const grantApprover: GrantApprover = {
   available: () => true,
   ask: () => "approved",
 };
+// The same, for `ward unregister`'s two questions.
+const unregisterApprover: UnregisterApprover = {
+  available: () => true,
+  ask: () => "approved",
+};
 const exampleGrantTarget = "7c1d9a52-3e84-4b6f-9a10-5d2e8f4b6c31";
 
 // The profile the profile and check examples name, written into the manifest
@@ -138,6 +144,7 @@ function options(): RunOptions {
 async function prepareExample(name: string, example = ""): Promise<RunOptions> {
   const prepared = options();
   prepared.grantApprover = grantApprover;
+  prepared.unregisterApprover = unregisterApprover;
   if (name === "backup") {
     const setup = await runWard(["setup", "--json"], prepared);
     expect(setup.exitCode).toBe(exitCodes.success);
@@ -204,6 +211,14 @@ async function prepareExample(name: string, example = ""): Promise<RunOptions> {
         ).exitCode,
       ).toBe(exitCodes.success);
     }
+  } else if (name === "unregister") {
+    // A vault and a registered checkout: there has to be a binding to remove.
+    expect((await runWard(["setup", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await runWard(["init", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
   } else if (name === "audit") {
     // A vault and a registered checkout: `ward audit` reads this project's
     // events through the binding, so the binding has to exist. An empty
@@ -298,6 +313,7 @@ describe("manifest", () => {
       "restore",
       "secret",
       "profile",
+      "unregister",
       "check",
       "run",
       "agents",
