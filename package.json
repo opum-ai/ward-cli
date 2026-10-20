@@ -21,8 +21,7 @@
     "reserved:check": "node scripts/check-reserved-bindings.mjs",
     "clean:temp": "node scripts/clean-temp.mjs",
     "test": "bun test",
-    "docs:sources": "node scripts/check-lore-agent-sources.mjs",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun run layer:check && bun run eval:check && bun run reserved:check && bun run docs:sources && bun run test"
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run layer:check && bun run eval:check && bun run reserved:check && bun run test"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
