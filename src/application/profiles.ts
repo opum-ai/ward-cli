@@ -39,7 +39,7 @@ import {
 import {
   type CheckoutIdentity,
   findProfileApproval,
-  findSecret,
+  resolveSecret,
   type ProfileApprovalRecord,
   parseVaultState,
   serializeVaultState,
@@ -226,10 +226,11 @@ function readinessFor(options: {
       : differing.length > 0
         ? "stale"
         : "approved";
-  const secret: SecretState =
-    findSecret(state, authority.projectId, snapshot.auth.secret) === undefined
-      ? "missing"
-      : "present";
+  const secret: SecretState = ["owned", "granted"].includes(
+    resolveSecret(state, authority.projectId, snapshot.auth.secret).kind,
+  )
+    ? "present"
+    : "missing";
   return {
     profile: name,
     declaration,

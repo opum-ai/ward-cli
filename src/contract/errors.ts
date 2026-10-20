@@ -294,6 +294,59 @@ export const errorCatalog = {
       "The secret changed while this command was running, so Ward did not write it.",
     hint: "Run the command again to see the current state and confirm a replacement.",
   },
+  // Cross-project grants (spec §7.2, docs/adr/0020). None of these echoes an
+  // alias or a project id: both come from the command line.
+  secret_granted_readonly: {
+    type: "denied",
+    message:
+      "That alias is granted to this project from another project, and it is use-only here.",
+    hint: "Only the owning project can change, delete, share or revoke it. Run the command in the owner's checkout.",
+  },
+  grant_project_invalid: {
+    type: "usage",
+    message: "The target project id is not a valid project id.",
+    hint: "Use the project id from the target repository's `.ward/project.json`.",
+  },
+  grant_target_unknown: {
+    type: "not_found",
+    message: "This vault has no registered project with that id.",
+    hint: "Register the target checkout with `ward init` there first; a grant names a project this vault already knows.",
+  },
+  grant_target_is_owner: {
+    type: "validation",
+    message: "A project cannot be granted its own secret.",
+  },
+  grant_exists: {
+    type: "conflict",
+    message: "That secret is already granted to that project.",
+    hint: "Revoke it with `ward secret revoke` before granting it again under another alias.",
+  },
+  grant_alias_conflict: {
+    type: "conflict",
+    message:
+      "The target project already has a secret or a grant under that alias.",
+    hint: "Choose another alias with --as.",
+  },
+  grant_not_found: {
+    type: "not_found",
+    message: "There is no active grant of that secret to that project.",
+  },
+  grant_requires_terminal: {
+    type: "denied",
+    message:
+      "Granting a secret needs an interactive terminal, and this run has none to ask on.",
+    hint: "Run `ward secret grant` yourself in a terminal. An agent cannot extend a secret to another project; the developer does.",
+  },
+  grant_declined: {
+    type: "denied",
+    message: "The grant was not approved, so Ward did not record it.",
+  },
+  grant_revoked: {
+    type: "denied",
+    message:
+      "The grant behind that alias has been revoked, or its owner secret was deleted.",
+    hint: "Ask the owning project's developer to grant it again, then approve the profile if it has expired or changed.",
+  },
   // HTTPS profiles (spec §9.1-9.2, §8, docs/adr/0003). None of these echoes
   // a profile name, a URL, a header value or an alias: a declaration came
   // from a file Ward did not write, and a message is not a place to quote it.

@@ -18,9 +18,11 @@ import { createTerminalInstructionChoice } from "../adapters/init-prompt.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
 import {
   createTerminalConsent,
+  createTerminalGrantApprover,
   createTerminalProfileApprover,
 } from "../adapters/terminal-consent.ts";
 import type {
+  GrantApprover,
   ProfileApprover,
   RegistrationApprover,
 } from "../application/approvals.ts";
@@ -105,6 +107,9 @@ export interface RunOptions {
   // Who answers Ward's approval question for an HTTPS profile. Defaults to
   // the terminal prompt; tests supply an answer.
   profileApprover?: ProfileApprover;
+  // Who answers the question a secret grant asks. Defaults to the terminal
+  // prompt; tests supply an answer.
+  grantApprover?: GrantApprover;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
   // The identifiers Ward writes into records it creates. Defaults to
@@ -431,6 +436,9 @@ async function secretCommand(
       action,
       alias: input.positionals[1],
       viaStdin: input.flags.has("--stdin"),
+      to: optionalFlag(input, "--to"),
+      as: optionalFlag(input, "--as"),
+      from: optionalFlag(input, "--from"),
     },
     {
       checkout,
@@ -440,8 +448,10 @@ async function secretCommand(
         options.keyProvider ??
         createKeychainKeyProvider({ service: keychainService }),
       values: options.secrets ?? createTerminalSecretValues(),
+      grants: options.grantApprover ?? createTerminalGrantApprover(),
       now: options.now ?? (() => new Date()),
       newSecretId: () => randomUUID(),
+      newGrantId: () => randomUUID(),
     },
   );
   return { kind: result.kind, data: result.data, text: result.text };

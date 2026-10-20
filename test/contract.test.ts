@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import type {
+  GrantApprover,
   ProfileApprover,
   RegistrationApprover,
 } from "../src/application/approvals.ts";
@@ -71,6 +72,14 @@ const profileApprover: ProfileApprover = {
   ask: () => "approved",
 };
 
+// The grant examples' answer, and the target project they name. Both are fixed
+// because an example is a line a developer could type.
+const grantApprover: GrantApprover = {
+  available: () => true,
+  ask: () => "approved",
+};
+const exampleGrantTarget = "7c1d9a52-3e84-4b6f-9a10-5d2e8f4b6c31";
+
 // The profile the profile and check examples name, written into the manifest
 // `ward init` created for them. The declaration and the examples move
 // together: an example naming a profile the fixture does not declare fails
@@ -126,8 +135,9 @@ function options(): RunOptions {
 // empty vault directory plus a backup file where its example names one,
 // which is produced here by the command itself rather than by a fixture, so
 // the example exercises the format that actually ships.
-async function prepareExample(name: string): Promise<RunOptions> {
+async function prepareExample(name: string, example = ""): Promise<RunOptions> {
   const prepared = options();
+  prepared.grantApprover = grantApprover;
   if (name === "backup") {
     const setup = await runWard(["setup", "--json"], prepared);
     expect(setup.exitCode).toBe(exitCodes.success);
@@ -162,6 +172,38 @@ async function prepareExample(name: string): Promise<RunOptions> {
         )
       ).exitCode,
     ).toBe(exitCodes.success);
+    // The project the grant examples name as their target, registered in the
+    // same vault from a second checkout so a grant has someone to go to. The
+    // revoke example needs a grant to revoke, so it is made first.
+    const target = checkout();
+    mkdirSync(join(target, ".ward"));
+    writeFileSync(
+      join(target, ".ward", "project.json"),
+      `${JSON.stringify({ schemaVersion: 1, projectId: exampleGrantTarget })}\n`,
+    );
+    expect(
+      (await runWard(["init", "--json"], { ...prepared, cwd: target }))
+        .exitCode,
+    ).toBe(exitCodes.success);
+    if (example.includes(" revoke ")) {
+      expect(
+        (
+          await runWard(
+            [
+              "secret",
+              "grant",
+              "example-alias",
+              "--to",
+              exampleGrantTarget,
+              "--as",
+              "shared-alias",
+              "--json",
+            ],
+            prepared,
+          )
+        ).exitCode,
+      ).toBe(exitCodes.success);
+    }
   } else if (name === "audit") {
     // A vault and a registered checkout: `ward audit` reads this project's
     // events through the binding, so the binding has to exist. An empty
@@ -315,7 +357,7 @@ describe("manifest", () => {
           const argv = example.split(" ").slice(1);
           const result = await runWard(
             argv.includes("--json") ? argv : [...argv, "--json"],
-            await prepareExample(command.name),
+            await prepareExample(command.name, example),
           );
           expect(command.exitCodes).toContain(result.exitCode);
           expect(declared).toContain(json(result.stdout).kind as string);

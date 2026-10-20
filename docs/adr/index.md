@@ -20,4 +20,5 @@
 - [The init multiselect's prompt library is a pinned dependency](0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency.md)
 - [profileSnapshotVersion bumps at the first release](0018-profilesnapshotversion-bumps-at-the-first-release.md)
 - [The spec of record is a pointer concept, not an extract](0019-the-spec-of-record-is-a-pointer-concept-not-an-extract.md)
+- [Cross-project grants are alias-bound, and restore clears them](0020-cross-project-grants-are-alias-bound-and-restore-clears-them.md)
 <!-- lore:index:end -->

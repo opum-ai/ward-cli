@@ -104,6 +104,7 @@ describe("the vault's state document", () => {
       localBindings: [],
       secrets: [],
       profileApprovals: [],
+      sharingGrants: [],
       auditRecords: [],
     });
     expect(parseVaultState(serializeVaultState(emptyVaultState()))).toEqual(
@@ -135,6 +136,7 @@ describe("the vault's state document", () => {
         ],
         secrets: [],
         profileApprovals: [],
+        sharingGrants: [],
         auditRecords: [],
       }),
     );

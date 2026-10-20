@@ -207,6 +207,7 @@ export async function runRestore(options: {
         // stored approval live again — and T21 requires a restored vault's
         // approvals to be inactive until they are reviewed explicitly.
         profileApprovals: [],
+        sharingGrants: [],
         secrets: backup.secrets,
         // The audit history is carried, unlike the bindings and approvals
         // above it, because of what separates them: a restore deactivates

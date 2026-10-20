@@ -208,8 +208,10 @@ function harness() {
       store: hooked,
       keyProvider,
       values,
+      grants: { available: () => false, ask: () => "unavailable" },
       now: () => new Date(clock),
       newSecretId: () => randomUUID(),
+      newGrantId: () => randomUUID(),
     });
   };
 
@@ -390,6 +392,7 @@ describe("T08: entry, metadata and deletion", () => {
     ]);
     expect(Object.keys(listed[0] ?? {}).sort()).toEqual([
       "alias",
+      "ownership",
       "revision",
       "updatedAt",
     ]);
@@ -832,7 +835,12 @@ describe("the secrets collection", () => {
     expect(replaced.secrets).toHaveLength(2);
     expect(findSecret(replaced, a, "shared")?.revision).toBe(2);
     expect(findSecret(replaced, b, "shared")?.revision).toBe(1);
-    const removed = withoutSecret(replaced, a, "shared");
+    const removed = withoutSecret(
+      replaced,
+      a,
+      "shared",
+      "2026-01-01T00:00:00.000Z",
+    );
     expect(findSecret(removed, a, "shared")).toBeUndefined();
     expect(findSecret(removed, b, "shared")?.revision).toBe(1);
   });

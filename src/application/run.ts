@@ -40,15 +40,19 @@ import {
   type NormalizedProfile,
   profilesMatch,
 } from "../domain/profile.ts";
-import { decodeSecretValue, isSecretAlias } from "../domain/secret.ts";
+import {
+  decodeSecretValue,
+  isSecretAlias,
+  type SecretRecord,
+} from "../domain/secret.ts";
 import {
   type AuditOutcome,
   type AuditRecord,
   type CheckoutIdentity,
   findProfileApproval,
-  findSecret,
   type ObservedMachine,
   parseVaultState,
+  resolveSecret,
   serializeVaultState,
   type VaultState,
   withAuditRecord,
@@ -157,6 +161,24 @@ function approvedSnapshot(options: {
   return approval.snapshot;
 }
 
+// The secret an alias resolves to inside this project, or the fixed refusal.
+// One function for the pre-read and the admission transaction, so the two
+// cannot disagree about what a granted, revoked or missing alias is. A revoked
+// grant and a deleted owner secret are the same refusal: either way the alias
+// no longer reaches a secret this project may use (spec §7.2).
+function usableSecret(
+  state: VaultState,
+  projectId: string,
+  alias: string,
+): SecretRecord {
+  const resolved = resolveSecret(state, projectId, alias);
+  if (resolved.kind === "owned" || resolved.kind === "granted")
+    return resolved.secret;
+  throw new WardError(
+    resolved.kind === "revoked" ? "grant_revoked" : "secret_not_found",
+  );
+}
+
 // Writes one audit event, re-reading the state inside the transaction. What
 // is re-checked there is re-checked because it is the authority this run is
 // about to act on and another Ward process may have changed it since the
@@ -190,6 +212,12 @@ function writeAudit(options: {
   // credential it is about to deliver.
   executing?: NormalizedProfile;
   executingSecret?: { readonly id: string; readonly revision: number };
+  // Present at completion only: the secret the admission recorded. A run that
+  // was admitted may finish (spec §7.2), so completion is not a second
+  // admission and does not resolve the alias again — a grant revoked or an
+  // owner secret deleted while the request was in flight must not turn a
+  // request that was sent into a run Ward cannot account for.
+  completingSecretId?: string;
 }): void {
   options.store.mutate(options.key, (plaintext) => {
     const state = parseVaultState(plaintext);
@@ -208,8 +236,17 @@ function writeAudit(options: {
       !profilesMatch(options.executing, approval.snapshot)
     )
       throw new WardError("profile_approval_stale");
-    const secret = findSecret(state, options.projectId, options.alias);
-    if (secret === undefined) throw new WardError("secret_not_found");
+    // The grant (if the alias is granted) and the owner record are read here,
+    // in this one transaction, and both must still hold: the alias resolves
+    // through an active grant to an existing owner secret, or to this
+    // project's own. A revocation or owner deletion that landed first blocks
+    // the run before anything is sent.
+    const secret =
+      options.completingSecretId === undefined
+        ? usableSecret(state, options.projectId, options.alias)
+        : undefined;
+    const secretId = secret?.id ?? options.completingSecretId;
+    if (secretId === undefined) throw new WardError("uncaught");
     // The credential's bytes were decoded before this transaction opened, so
     // its revision is what says the value about to be delivered is still the
     // value the vault holds. Without this, a rotation landing in that window
@@ -218,6 +255,7 @@ function writeAudit(options: {
     // because a rotation keeps the record's id (WCLI-10 review, F2).
     if (
       options.executingSecret !== undefined &&
+      secret !== undefined &&
       (secret.id !== options.executingSecret.id ||
         secret.revision !== options.executingSecret.revision)
     )
@@ -227,7 +265,7 @@ function writeAudit(options: {
       runId: options.runId,
       projectId: options.projectId,
       profile: options.profile,
-      secretId: secret.id,
+      secretId,
       phase: options.phase,
       outcome: options.outcome,
       at: options.at,
@@ -326,8 +364,7 @@ export async function runOperation(
     if (snapshot.requestBody !== "none")
       throw new WardError("run_body_unsupported");
 
-    const secret = findSecret(state, projectId, snapshot.auth.secret);
-    if (secret === undefined) throw new WardError("secret_not_found");
+    const secret = usableSecret(state, projectId, snapshot.auth.secret);
     const value = decodeSecretValue(secret.value);
     if (value === undefined) throw new WardError("vault_state_malformed");
 
@@ -395,6 +432,7 @@ export async function runOperation(
             actorLabel,
             taskLabel,
             newId: options.newId,
+            completingSecretId: secret.id,
           });
         } catch {
           auditRecorded = false;
