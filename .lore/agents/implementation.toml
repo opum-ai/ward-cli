@@ -14,6 +14,7 @@ sources = [
   "adr/0007-status-and-doctor-reporting",
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
+  "adr/0021-a-profile-approval-expires-24-hours-by-default",
   "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
   "adr/0014-ward-stores-no-skill-source-selection",
   "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable",

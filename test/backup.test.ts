@@ -601,6 +601,7 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
     // check exists for.
     const approval = {
       approvedAt: "2026-09-29T00:00:00.000Z",
+      expiresAt: "2026-09-30T00:00:00.000Z",
       device: "1",
       inode: "2",
       profile: "example-profile",

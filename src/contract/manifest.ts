@@ -445,7 +445,15 @@ export const commands: CommandSpec[] = [
       { name: "action", required: true },
       { name: "name", required: false },
     ],
-    flags: [jsonFlag],
+    flags: [
+      {
+        name: "--ttl",
+        takesValue: true,
+        summary:
+          "With approve: how long the approval lasts, a whole number and one unit (m, h or d), from 1m to 30d. Defaults to 24h. After it Ward refuses the profile until a developer approves again.",
+      },
+      jsonFlag,
+    ],
     kind: "profile.list",
     resultKinds: ["profile.approve", "profile.revoke"],
     mutates: true,
@@ -468,6 +476,7 @@ export const commands: CommandSpec[] = [
     examples: [
       "ward profile list",
       "ward profile approve example-profile",
+      "ward profile approve example-profile --ttl 8h",
       "ward profile revoke example-profile",
     ],
   },

@@ -251,6 +251,7 @@ function harness() {
   const checkOptions = (checkout: string): CheckOptions => {
     const identity = locateCheckout(checkout);
     return {
+      now: () => new Date(clock),
       checkout: identity,
       files: createProjectFiles(identity.root),
       store,

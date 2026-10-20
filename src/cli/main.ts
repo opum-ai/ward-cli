@@ -470,7 +470,11 @@ async function profileCommand(
   const action = input.positionals[0];
   if (action === undefined) throw new WardError("missing_argument");
   const result = await runProfile(
-    { action, profile: input.positionals[1] },
+    {
+      action,
+      profile: input.positionals[1],
+      ttl: optionalFlag(input, "--ttl"),
+    },
     {
       checkout,
       files: createProjectFiles(checkout.root),
@@ -498,6 +502,7 @@ async function checkCommand(
   const result = await runCheck(
     { profile: input.positionals[0] },
     {
+      now: options.now ?? (() => new Date()),
       checkout,
       files: createProjectFiles(checkout.root),
       store: createSqliteVaultStore({ directory }),

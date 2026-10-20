@@ -49,6 +49,7 @@ import {
   type AuditOutcome,
   type AuditRecord,
   type CheckoutIdentity,
+  approvalExpired,
   findProfileApproval,
   type ObservedMachine,
   parseVaultState,
@@ -142,6 +143,7 @@ const notSentCodes = {
 // declaration is normalized and compared here and is not returned: what the
 // caller goes on to execute is the snapshot.
 function approvedSnapshot(options: {
+  now: Date;
   state: VaultState;
   identity: CheckoutIdentity;
   projectId: string;
@@ -158,6 +160,8 @@ function approvedSnapshot(options: {
   if (approval === undefined) throw new WardError("profile_not_approved");
   if (!profilesMatch(declared, approval.snapshot))
     throw new WardError("profile_approval_stale");
+  if (approvalExpired(approval, options.now))
+    throw new WardError("profile_approval_expired");
   return approval.snapshot;
 }
 
@@ -236,6 +240,14 @@ function writeAudit(options: {
       !profilesMatch(options.executing, approval.snapshot)
     )
       throw new WardError("profile_approval_stale");
+    // Expiry is an admission rule like revocation: judged here, in the
+    // transaction, against the time of admission. A run admitted before the
+    // approval ran out may finish, so completion does not judge it again.
+    if (
+      options.executing !== undefined &&
+      approvalExpired(approval, new Date(options.at))
+    )
+      throw new WardError("profile_approval_expired");
     // The grant (if the alias is granted) and the owner record are read here,
     // in this one transaction, and both must still hold: the alias resolves
     // through an active grant to an existing owner secret, or to this
@@ -349,6 +361,7 @@ export async function runOperation(
       throw new WardError("profile_not_found");
     const projectId = boundProject(checkout, state);
     const snapshot = approvedSnapshot({
+      now: options.now(),
       state,
       identity: options.checkout,
       projectId,

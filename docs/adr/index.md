@@ -21,4 +21,5 @@
 - [profileSnapshotVersion bumps at the first release](0018-profilesnapshotversion-bumps-at-the-first-release.md)
 - [The spec of record is a pointer concept, not an extract](0019-the-spec-of-record-is-a-pointer-concept-not-an-extract.md)
 - [Cross-project grants are alias-bound, and restore clears them](0020-cross-project-grants-are-alias-bound-and-restore-clears-them.md)
+- [A profile approval expires, 24 hours by default](0021-a-profile-approval-expires-24-hours-by-default.md)
 <!-- lore:index:end -->

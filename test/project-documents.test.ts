@@ -72,6 +72,7 @@ const approvalRecord = (
   device: identity.device,
   inode: identity.inode,
   approvedAt: timestamp,
+  expiresAt: "2026-09-29T12:00:00.000Z",
   snapshotVersion: profileSnapshotVersion,
   snapshot: { ...snapshot },
   ...overrides,
