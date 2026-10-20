@@ -752,6 +752,11 @@ describe("T21: restore clears grants and approvals", () => {
       file,
     ]);
     expect(restore.exitCode).toBe(exitCodes.success);
+    expect(JSON.parse(restore.stdout).data).toMatchObject({
+      bindings: "cleared",
+      approvals: "cleared",
+      grants: "cleared",
+    });
     const state = restored.state();
     expect(state.sharingGrants).toEqual([]);
     expect(state.profileApprovals).toEqual([]);

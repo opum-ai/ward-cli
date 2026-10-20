@@ -75,6 +75,8 @@ export interface RestoreResult {
   readonly revision: number;
   readonly projects: number;
   readonly bindings: "cleared";
+  readonly approvals: "cleared";
+  readonly grants: "cleared";
   readonly backupVaultId: string;
 }
 
@@ -226,6 +228,8 @@ export async function runRestore(options: {
       revision: created.revision,
       projects: backup.projects.length,
       bindings: "cleared",
+      approvals: "cleared",
+      grants: "cleared",
       backupVaultId: record.vaultId,
     };
   } finally {
