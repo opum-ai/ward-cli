@@ -146,6 +146,7 @@ function machine() {
 
   return {
     ward,
+    directory,
     keyProvider,
     store,
     key,
@@ -259,9 +260,8 @@ describe("T12: exact sharing works", () => {
     });
     // The target sees the alias, marked as granted, and not the owner's alias
     // or record.
-    const listed = JSON.parse(
-      (await w.m.ward(w.target, ["secret", "list"])).stdout,
-    ).data.secrets as {
+    const listRaw = await w.m.ward(w.target, ["secret", "list"]);
+    const listed = JSON.parse(listRaw.stdout).data.secrets as {
       alias: string;
       ownership: string;
       updatedAt: string | null;
@@ -286,7 +286,7 @@ describe("T12: exact sharing works", () => {
     for (const text of [
       result.stdout,
       result.stderr,
-      listed.toString(),
+      listRaw.stdout,
       inspected.stdout,
     ])
       expect(text).not.toContain(OWNER_VALUE);
@@ -412,6 +412,39 @@ describe("T12: exact sharing works", () => {
     expect(errorCode(declined.stderr)).toBe("grant_declined");
     expect(w.m.state().sharingGrants).toEqual([]);
     expect(w.m.revision()).toBe(revision);
+  });
+
+  test("the reports a person reads mark the alias as granted and state the admission-time rule", async () => {
+    // `--json` never prints the human text, so this measures it without.
+    const w = await world();
+    const text = (cwd: string, args: string[]) =>
+      runWard(args, {
+        wardDirectory: w.m.directory,
+        keyProvider: w.m.keyProvider,
+        approver: registration,
+        profileApprover,
+        grantApprover: { available: () => true, ask: () => "approved" },
+        secrets: w.m.values,
+        cwd,
+        now: () => new Date("2026-10-20T00:00:00.000Z"),
+      });
+    expect((await w.grant()).exitCode).toBe(exitCodes.success);
+    const rule =
+      "Revocation blocks runs admitted after it. A run admitted before it may finish, and Ward cannot recall a credential already sent.";
+    const list = await text(w.target, ["secret", "list"]);
+    const inspect = await text(w.target, ["secret", "inspect", TARGET_ALIAS]);
+    const revoke = await text(w.owner, [
+      "secret",
+      "revoke",
+      OWNER_ALIAS,
+      "--from",
+      w.targetId,
+    ]);
+    expect(list.stdout).toContain(`${TARGET_ALIAS}  (granted, use only)`);
+    expect(inspect.stdout).toContain("ownership: granted, use only");
+    expect(revoke.stdout).toContain(rule);
+    for (const output of [list, inspect, revoke])
+      expect(output.stdout + output.stderr).not.toContain(OWNER_VALUE);
   });
 
   test("grant and revoke take only their own options", async () => {

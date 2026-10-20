@@ -87,7 +87,8 @@ Granting extends authority across a logical boundary that is not an OS
 boundary ([ADR 0002](0002-p0-threat-model-and-non-guarantees.md)): any process
 running as the developer can still run an approved profile. Neither revocation
 nor deletion revokes the credential at its provider. The vault format gains
-one collection and stays at version 1 (DEC-38); a build without the collection
-reads an older document, since a missing key is an empty collection, and the
-release decisions on format tolerance are Q3 of DEC-217. The T12 and T21 gates
+one collection and stays at version 1 (DEC-38). This build reads a document
+written before the collection existed, since a missing key is an empty
+collection; an older build refuses a newer document, because its top-level key
+allowlist does not know the key. The release decisions on format tolerance are Q3 of DEC-217. The T12 and T21 gates
 are recorded in the [security test matrix](../security-tests.md).

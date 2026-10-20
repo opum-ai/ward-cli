@@ -22,8 +22,8 @@ the merge SHA.
 
 | Gate | What it proves | Test | Recorded result |
 |---|---|---|---|
-| T12 | Exact sharing works; the target cannot edit, delete or re-grant; an owner update is visible to the next use; revoke and owner delete block new admissions | `test/grant.test.ts`, the `T12: exact sharing works` and `T12: revocation and owner deletion block new admissions` groups, and `the grant record is exact and its relations are enforced` | Passing, WCLI-12 |
-| T21 | A restore leaves no grant or approval active, with a positive control that the same profile runs before it | `test/grant.test.ts`, `T21: restore clears grants and approvals` | Passing, WCLI-12 |
+| T12 | Exact sharing works; the target cannot edit, delete or re-grant; an owner update is visible to the next use; revoke and owner delete block new admissions | `test/grant.test.ts`, the `T12: exact sharing works` and `T12: revocation and owner deletion block new admissions` groups, and `the grant record is exact and its relations are enforced` | Passing before merge: `bun test` 722 pass, 0 fail, Bun 1.3.14 (WCLI-12 branch). Filled with the merge SHA and CI run at finalization |
+| T21 | A restore leaves no grant or approval active, with a positive control that the same profile runs before it | `test/grant.test.ts`, `T21: restore clears grants and approvals` | Passing before merge: `bun test` 722 pass, 0 fail, Bun 1.3.14 (WCLI-12 branch). Filled with the merge SHA and CI run at finalization |
 
 ## How T12 is measured
 
