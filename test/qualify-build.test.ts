@@ -25,6 +25,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  assertQualifyService,
   buildCommand,
   buildExecutable,
   entry,
@@ -78,6 +79,37 @@ describe("the qualification build", () => {
       serviceDefine(service),
     );
     expect(newQualifyService()).not.toBe(service);
+  });
+
+  test("the delete guard refuses every name outside the qualification prefix and accepts one under it", () => {
+    for (const name of [
+      productionService,
+      "opum.ward.other",
+      "opum.ward.qualify",
+      qualifyServicePrefix,
+      `x${qualifyServicePrefix}a`,
+      "",
+    ])
+      expect(() => assertQualifyService(name)).toThrow(/refusing/);
+    // The positive controls: a generated name and a hand-written one pass.
+    expect(() => assertQualifyService(newQualifyService())).not.toThrow();
+    expect(() =>
+      assertQualifyService(`${qualifyServicePrefix}0123abcd`),
+    ).not.toThrow();
+  });
+
+  test("deleteService runs the guard before it spawns anything", () => {
+    // The script exits at import on a non-macOS host or without its opt-in, so
+    // it cannot be imported here; the order is read from its source.
+    const source = readFileSync(
+      join(ROOT, "scripts", "qualify-packaged.ts"),
+      "utf8",
+    );
+    const body = source.slice(source.indexOf("function deleteService("));
+    expect(body.indexOf("assertQualifyService(name)")).toBeGreaterThan(0);
+    expect(body.indexOf("assertQualifyService(name)")).toBeLessThan(
+      body.indexOf("Bun.spawnSync"),
+    );
   });
 
   test("the bundles differ in the service constant and nothing else", () => {

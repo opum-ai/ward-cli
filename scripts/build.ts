@@ -35,6 +35,19 @@ export function serviceDefine(service: string): string {
   return `WARD_KEYCHAIN_SERVICE=${JSON.stringify(service)}`;
 }
 
+// The guard for anything that deletes a credential-store item by service name:
+// only a name under the qualification prefix, with a non-empty suffix, is
+// accepted, so the production service can never be named by a caller.
+export function assertQualifyService(name: string): void {
+  if (
+    !name.startsWith(qualifyServicePrefix) ||
+    name.length === qualifyServicePrefix.length
+  )
+    throw new Error(
+      `refusing to touch credential-store service ${JSON.stringify(name)}: only a name beginning ${qualifyServicePrefix} is allowed`,
+    );
+}
+
 export function newQualifyService(): string {
   const suffix = [...crypto.getRandomValues(new Uint8Array(4))]
     .map((byte) => byte.toString(16).padStart(2, "0"))

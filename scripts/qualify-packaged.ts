@@ -45,6 +45,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import {
+  assertQualifyService,
   buildExecutable,
   entry,
   newQualifyService,
@@ -318,6 +319,7 @@ const parse = (run: Run): Record<string, unknown> => {
 // the owner of this item", measured); /usr/bin/security can. Neither command
 // asks for the secret.
 function deleteService(name: string): { deleted: number; remaining: boolean } {
+  assertQualifyService(name);
   let deleted = 0;
   for (let attempt = 0; attempt < 50; attempt++) {
     const removed = Bun.spawnSync([
