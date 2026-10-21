@@ -25,6 +25,7 @@
 - 2026-10-20T20:03:59-05:00 e2ee2ea09946df61f5b1b09ed2065d733de6e7ea feat(WCLI-72): profile approvals expire, 24h default, --ttl (#152)
 - 2026-10-20T23:08:38-05:00 6d4f0e25f533bbe85009313b899226725e615714 test(WCLI-15): T05 full, T23, T15-T17 forms, matrix scored clause by clause (#156)
 - 2026-10-20T23:14:33-05:00 81caf85563b8e9283e62638bc1420b013cd3f7ff feat(WCLI-15): T26 qualification build and packaged-binary run on macOS (#157)
+- 2026-10-20T23:16:27-05:00 5600b0049c83b722c98556720ab68f3e203cbb50 chore(WCLI-15): complete, with the follow-up WCLI-76 and the handoff record WCLI-77 (#158)
 
 ## docs/adr
 
