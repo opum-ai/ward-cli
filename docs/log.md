@@ -23,6 +23,7 @@
 - 2026-10-20T18:21:00-05:00 408161b10a758d13ef13739963dd6df0801e10ea test(WCLI-12): measure the text reports and the list disclosure properly; record the matrix result; fix stale restore comments
 - 2026-10-20T19:07:16-05:00 a6ed38658d65bee387c183bb4df7162d643e33da feat(WCLI-12): alias-bound cross-project grants (#149)
 - 2026-10-20T20:03:59-05:00 e2ee2ea09946df61f5b1b09ed2065d733de6e7ea feat(WCLI-72): profile approvals expire, 24h default, --ttl (#152)
+- 2026-10-20T20:45:06-05:00 f62b903a87f87658ff3c8675ead780821bbf3ebe test(WCLI-15): T05 across every command path, T23, T15-T17 forms, and the matrix scored clause by clause
 
 ## docs/adr
 

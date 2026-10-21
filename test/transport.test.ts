@@ -334,6 +334,31 @@ describe("the connection is bound to the validated address, and TLS still names 
     await wrong.close();
   });
 
+  // T16's TLS-disable attempt, measured in a child process that starts with
+  // the variable set: the fixture's own control shows the variable is live
+  // there (a plain https request to a wrong-name server is answered), and
+  // Ward's transport still refuses the same server.
+  test("NODE_TLS_REJECT_UNAUTHORIZED=0 does not turn verification off", async () => {
+    const probe = join(
+      import.meta.dir,
+      "fixtures",
+      "transport-tls-disable-probe.ts",
+    );
+    const child = Bun.spawn([process.execPath, probe], {
+      env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = await new Response(child.stdout).text();
+    await child.exited;
+    const parsed = JSON.parse(output.trim().split("\n").at(-1) ?? "{}");
+    expect(parsed).toEqual({
+      control: "responded",
+      outcome: { kind: "not-sent", reason: "connection-failed" },
+      requestsFromTransport: 0,
+    });
+  });
+
   test("a destination given as an IP literal sends no SNI and verifies against the address", async () => {
     // The literal is refused by policy, so this asserts the shape of the
     // refusal rather than a handshake: that the transport treats an IP
@@ -407,6 +432,106 @@ describe("a response is read as a status line and nothing else", () => {
       await send(transport, `https://${APPROVED}:${harness.port}/rate_limit`),
     ).toEqual({ kind: "indeterminate", reason: "disconnected" });
     await harness.close();
+  });
+
+  // T15 names four redirect targets. The transport reads a status line and
+  // nothing else, so none can be followed, and each is run as its own case
+  // rather than argued from the one above: the server must be contacted
+  // exactly once and the listener the Location names must see nothing.
+  describe("T15: a redirect is not followed, whatever it names", () => {
+    const targets: [
+      label: string,
+      location: (port: number, other: number) => string,
+    ][] = [
+      ["another host", () => `https://${OTHER}/moved`],
+      ["the same host", (port) => `https://${APPROVED}:${port}/elsewhere`],
+      ["a local IP", (_port, other) => `https://127.0.0.1:${other}/moved`],
+      [
+        "a URL echoing the credential",
+        (port) => `https://${APPROVED}:${port}/?token=${SYNTHETIC}`,
+      ],
+    ];
+    for (const status of [301, 302, 307, 308])
+      for (const [label, location] of targets)
+        test(`${status} to ${label}`, async () => {
+          const harness = await tlsHarness(APPROVED);
+          const elsewhere = await countingListener();
+          harness.setResponse(
+            `HTTP/1.1 ${status} Moved\r\nLocation: ${location(harness.port, elsewhere.port)}\r\nContent-Length: 0\r\n\r\n`,
+          );
+          const transport = transportTo([{ address: "127.0.0.1", family: 4 }], {
+            harness: { addressPolicy: () => true },
+          });
+          const outcome = await send(
+            transport,
+            `https://${APPROVED}:${harness.port}/rate_limit`,
+          );
+          expect({
+            outcome,
+            contacts: harness.connections.length,
+            redirected: elsewhere.count(),
+          }).toEqual({
+            outcome: { kind: "response", httpStatus: status },
+            contacts: 1,
+            redirected: 0,
+          });
+          expect(JSON.stringify(outcome)).not.toContain(SYNTHETIC);
+          await harness.close();
+          await elsewhere.close();
+        });
+  });
+
+  // T17's remaining forms: the credential split across chunks and across
+  // header lines, escaped, and echoed in an error body. The outcome type has
+  // no field a body could occupy, so each is asserted as the whole serialized
+  // outcome, which is the only thing the agent-facing interface is built from.
+  describe("T17: echoes in any form never reach the caller", () => {
+    const half = Math.floor(SYNTHETIC.length / 2);
+    const chunk = (text: string) =>
+      `${text.length.toString(16)}\r\n${text}\r\n`;
+    const bodies: [label: string, status: number, response: string][] = [
+      [
+        "split across chunks",
+        200,
+        `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n${chunk(SYNTHETIC.slice(0, half))}${chunk(SYNTHETIC.slice(half))}0\r\n\r\n`,
+      ],
+      [
+        "JSON-escaped",
+        200,
+        `HTTP/1.1 200 OK\r\nContent-Length: ${JSON.stringify({ k: SYNTHETIC }).length}\r\n\r\n${JSON.stringify({ k: SYNTHETIC })}`,
+      ],
+      [
+        "in an error body",
+        500,
+        `HTTP/1.1 500 Internal Server Error\r\nContent-Length: ${SYNTHETIC.length + 7}\r\n\r\nbad key ${SYNTHETIC}`,
+      ],
+      [
+        "in a status text and several headers",
+        200,
+        `HTTP/1.1 200 ${SYNTHETIC}\r\nX-A: ${SYNTHETIC.slice(0, half)}\r\nX-B: ${SYNTHETIC.slice(half)}\r\nContent-Length: 0\r\n\r\n`,
+      ],
+    ];
+    for (const [label, status, response] of bodies)
+      test(label, async () => {
+        const harness = await tlsHarness(APPROVED);
+        harness.setResponse(response);
+        const transport = transportTo([{ address: "127.0.0.1", family: 4 }], {
+          harness: { addressPolicy: () => true },
+        });
+        const outcome = await send(
+          transport,
+          `https://${APPROVED}:${harness.port}/rate_limit`,
+        );
+        const serialized = JSON.stringify(outcome);
+        expect(serialized).toBe(`{"kind":"response","httpStatus":${status}}`);
+        for (const piece of [
+          SYNTHETIC,
+          SYNTHETIC.slice(0, half),
+          SYNTHETIC.slice(half),
+        ])
+          expect(serialized.includes(piece)).toBe(false);
+        await harness.close();
+      });
   });
 });
 
