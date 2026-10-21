@@ -21,6 +21,8 @@ import {
   writeSync,
 } from "node:fs";
 import type {
+  UnregisterApprover,
+  UnregisterQuestion,
   GrantApprover,
   GrantQuestion,
   ProfileAnswer,
@@ -262,6 +264,61 @@ export function createTerminalGrantApprover(
       if (!available()) return "unavailable";
       try {
         writePrompt(grantPrompt(question));
+        return isConsentAnswer(readAnswer()) ? "approved" : "declined";
+      } catch {
+        return "unavailable";
+      }
+    },
+  };
+}
+
+function unregisterPrompt(question: UnregisterQuestion): string {
+  if (question.kind === "binding")
+    return [
+      "Ward is asking you to unregister this checkout.",
+      "",
+      `  project:  ${question.projectId}`,
+      `  checkout: ${escapeForDisplay(question.root)}`,
+      "",
+      "This checkout loses access to the project's secrets until it is",
+      "registered again. No other checkout is touched, and nothing is revoked",
+      "at a credential's provider.",
+      "Answer y to unregister, anything else to leave it registered. [y/N] ",
+    ].join("\n");
+  return [
+    `This checkout holds ${question.approvals} profile approval${question.approvals === 1 ? "" : "s"}.`,
+    "",
+    `  checkout: ${escapeForDisplay(question.root)}`,
+    "",
+    "Remove them too? If you keep them, registering this same directory",
+    "again makes them live until they expire or are revoked.",
+    "Answer y to remove the approvals, anything else to keep them. [y/N] ",
+  ].join("\n");
+}
+
+// The same rule as every other question: an answer Ward could not read is
+// "unavailable", never consent (spec §4.3).
+export function createTerminalUnregisterApprover(
+  parts: TerminalConsentParts = {},
+): UnregisterApprover {
+  const isInteractive =
+    parts.isInteractive ?? (() => process.stdin.isTTY === true);
+  const writePrompt = parts.writePrompt ?? defaultWritePrompt;
+  const readAnswer = parts.readAnswer ?? readAnswerLine;
+  const available = (): boolean => {
+    try {
+      return isInteractive();
+    } catch {
+      return false;
+    }
+  };
+
+  return {
+    available,
+    ask(question): ProfileAnswer {
+      if (!available()) return "unavailable";
+      try {
+        writePrompt(unregisterPrompt(question));
         return isConsentAnswer(readAnswer()) ? "approved" : "declined";
       } catch {
         return "unavailable";

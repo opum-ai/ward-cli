@@ -438,6 +438,31 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "unregister",
+    summary:
+      "Withdraw this checkout's registration: remove its binding, and after a second confirmation its profile approvals. Run in a trusted terminal from the checkout; it touches no other checkout and revokes nothing at a credential's provider.",
+    args: [],
+    flags: [jsonFlag],
+    kind: "unregister.result",
+    mutates: true,
+    unlocksVault: true,
+    // A developer's act: it withdraws access, and what holds the line is the
+    // interactive terminal the questions need, as with `ward setup`.
+    admin: true,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+      exitCodes.indeterminate,
+    ],
+    examples: ["ward unregister"],
+  },
+  {
     name: "profile",
     summary:
       "List this project's HTTPS profiles, or approve and revoke one. A manifest declares a request; the developer's approval, given in a trusted terminal, is what authorizes an operation.",

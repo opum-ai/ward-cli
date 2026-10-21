@@ -123,6 +123,9 @@ registration the developer confirms.**
   the vault by any command; the conflict above is resolved from the repository
   side (restore or remove the manifest). Tracked as a gap rather than left
   implicit; it is a decision for the orchestrator when a command is added.
+  **Superseded in part by [ADR 0022](0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes.md):**
+  `ward unregister` now removes one checkout's binding. There is still no
+  rebind command.
 - **The block is text, not a contract with a host.** Ward writes the same
   block to CLAUDE.md and AGENTS.md and never checks whether the host read it.
   The per-host skill files and the `ward agents --check/--update-instructions`
