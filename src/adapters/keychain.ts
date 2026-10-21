@@ -10,7 +10,19 @@ import { envelopeLimits, isVaultId } from "../domain/envelope.ts";
 //
 // The production service name is passed in by the CLI composition root; this
 // module has no default, so a test cannot reach the real item by omission.
-export const keychainService = "opum.ward";
+//
+// It is fixed when the executable is compiled, never read at runtime:
+// scripts/build.ts always defines WARD_KEYCHAIN_SERVICE, to "opum.ward" for the
+// shipped build and to a distinct `opum.ward.qualify-<random>` for the
+// qualification build (WCLI-15, DEC-217 (a2)). The compiler folds the check
+// below, so the shipped binary carries one literal and no override: no
+// environment variable, argument or file can redirect it to another service.
+// Run from source, where nothing is defined, it is the production name.
+declare const WARD_KEYCHAIN_SERVICE: string | undefined;
+export const keychainService: string =
+  typeof WARD_KEYCHAIN_SERVICE === "string"
+    ? WARD_KEYCHAIN_SERVICE
+    : "opum.ward";
 
 // Every credential-store call is bounded. This bounds the promise only: a
 // native call can outlive its abort and keep the process alive, so a
