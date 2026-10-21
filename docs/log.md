@@ -21,6 +21,7 @@
 - 2026-09-29T13:39:21-05:00 45b68a35ee3433eee99c5d82c098c20b1f8172e8 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook
 - 2026-10-20T18:13:37-05:00 b821ac2c5333a49c091adc4301a4a00d2d889f68 feat(WCLI-12): alias-bound cross-project grants, revocation, restore clears authority
 - 2026-10-20T18:21:00-05:00 408161b10a758d13ef13739963dd6df0801e10ea test(WCLI-12): measure the text reports and the list disclosure properly; record the matrix result; fix stale restore comments
+- 2026-10-20T19:07:16-05:00 a6ed38658d65bee387c183bb4df7162d643e33da feat(WCLI-12): alias-bound cross-project grants (#149)
 
 ## docs/adr
 
