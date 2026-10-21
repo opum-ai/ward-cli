@@ -30,6 +30,7 @@ import {
 } from "../src/adapters/sqlite-vault-store.ts";
 import { errorEnvelope, WardError } from "../src/contract/errors.ts";
 import { envelopeLimits, generateVaultKey } from "../src/domain/envelope.ts";
+import { filesContaining } from "./support/disk-scan.ts";
 import { createTempRoot } from "./support/temp-root.ts";
 
 const VAULT_ID = "3f1c2b7e-9a4d-4e6f-8b21-5c7d9e0a1b2c";
@@ -75,21 +76,6 @@ function codeOf(run: () => unknown): string | undefined {
 }
 
 // Raw, base64 and hex forms of the needle, in every file under the path.
-function filesContaining(directory: string, needle: string): string[] {
-  const forms = [
-    needle,
-    Buffer.from(needle).toString("base64"),
-    Buffer.from(needle).toString("hex"),
-  ].map((form) => Buffer.from(form));
-  return readdirSync(directory, { recursive: true })
-    .map(String)
-    .filter((name) => statSync(join(directory, name)).isFile())
-    .filter((name) => {
-      const content = readFileSync(join(directory, name));
-      return forms.some((form) => content.includes(form));
-    });
-}
-
 // Raw SQL against a vault file, through a connection of its own.
 //
 // The helper asserts its own premise: the mutation must change the file. Every

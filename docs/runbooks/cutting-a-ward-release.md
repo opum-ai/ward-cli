@@ -47,7 +47,10 @@ that named a release-time obligation.
    `test/plugin-manifest.test.ts` fails when they disagree; bump both in the
    same commit. `0.0.0` is the pre-release placeholder, and the plugin version
    must track the CLI version per the peer (lore-cli) pattern.
-3. **Run T24's manual Codex smoke** exactly as
+3. **Run T24's two behavioural halves.** The Claude half is
+   `scripts/run-eval.sh`, a workstation run that bills API usage and is never a
+   CI job; record its score under `evals/results/` and treat a case below 1.0
+   as blocking the release. The Codex half is the manual smoke, exactly as
    [Release smoke: T24's manual half](release-smoke-t24-s-manual-half.md)
    describes, and record its result with the release's other gate results.
    Failures there are findings about the artifacts or the skill, not about the
