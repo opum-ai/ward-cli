@@ -4,7 +4,8 @@
 // half, the developer's way to take it back. It is interactive and narrow: it
 // removes the binding for the directory it is run in — matched by path, device
 // and inode, exactly as a binding is matched everywhere — and never another
-// root's binding, whatever project it names. Removing the binding is one
+// root's binding, whatever project it names. Its approvals are matched the same
+// way plus the project. Removing the binding is one
 // confirmation. Removing that binding's profile approvals is a second one,
 // asked only when there are some, and declining it keeps them.
 //
@@ -44,17 +45,19 @@ export interface UnregisterResult {
   readonly text: string;
 }
 
-// The approvals that belong to exactly this directory: all three parts of its
-// identity, so another checkout of the same project keeps its own.
-function approvalsOf(
-  state: VaultState,
-  checkout: CheckoutIdentity,
-): readonly ProfileApprovalRecord[] {
-  return state.profileApprovals.filter(
-    (approval) =>
-      approval.root === checkout.root &&
-      approval.device === checkout.device &&
-      approval.inode === checkout.inode,
+// An approval belongs to a binding when it names the same project and all three
+// parts of the same directory identity: "that binding's approvals" (DEC-217
+// Q4). Another checkout of the project keeps its own, and so does an approval
+// of a different project recorded at this identity.
+function belongsTo(
+  approval: ProfileApprovalRecord,
+  binding: BindingRecord,
+): boolean {
+  return (
+    approval.projectId === binding.projectId &&
+    approval.root === binding.root &&
+    approval.device === binding.device &&
+    approval.inode === binding.inode
   );
 }
 
@@ -73,10 +76,7 @@ function withoutBinding(
     ),
     profileApprovals: removeApprovals
       ? state.profileApprovals.filter(
-          (approval) =>
-            approval.root !== binding.root ||
-            approval.device !== binding.device ||
-            approval.inode !== binding.inode,
+          (approval) => !belongsTo(approval, binding),
         )
       : state.profileApprovals,
   };
@@ -102,7 +102,9 @@ export async function runUnregister(
     }
     const binding = findBinding(state, options.checkout);
     if (binding === undefined) throw new WardError("project_not_registered");
-    const approvals = approvalsOf(state, options.checkout).length;
+    const approvals = state.profileApprovals.filter((approval) =>
+      belongsTo(approval, binding),
+    ).length;
 
     const first = options.approver.ask({
       kind: "binding",

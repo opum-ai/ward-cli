@@ -21,12 +21,14 @@ the "no unregister" gap [ADR 0005](0005-project-binding-identity.md) recorded.
 
 ## Context
 
-A binding could not be removed by any command. A moved checkout or a discarded
-clone left its binding, and every approval tied to it, in the vault, so a
-developer had no way to withdraw a checkout's access. That contradicts the
+A binding could not be removed by any command. A discarded clone left its
+binding, and every approval tied to it, in the vault, so a developer had no way
+to withdraw that checkout's access. That contradicts the
 product's own revocation principle, and approvals are now time-bound
 ([ADR 0021](0021-a-profile-approval-expires-24-hours-by-default.md)) but a
-binding is not.
+binding is not. A moved checkout's binding is a different case: it is matched by
+path, device and inode, so it is not reachable from the new location and
+`unregister` cannot free it.
 
 ## Decision
 
@@ -36,8 +38,9 @@ binding is not.
    developer's act and is marked `admin` in the manifest.
 2. **It removes this checkout's binding only**, matched by path, device and
    inode as every binding is, and never another root's binding, whatever project
-   that binding names. A checkout with no binding is refused with
-   `project_not_registered` and the vault is not written.
+   that binding names. Its approvals are matched by the same identity and the
+   binding's project, so another project's approval at this identity is kept. A
+   checkout with no binding is refused with `project_not_registered` and the vault is not written.
 3. **Removing the binding is one confirmation; removing that binding's profile
    approvals is a second.** The second is asked only when the checkout has
    approvals. Declining it removes the binding and keeps the approvals.

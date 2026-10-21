@@ -10,9 +10,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   copyFileSync,
   mkdirSync,
+  renameSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +38,10 @@ import type {
 import { runUnregister } from "../src/application/unregister.ts";
 import { runWard } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
-import { parseVaultState } from "../src/domain/vault-state.ts";
+import {
+  parseVaultState,
+  serializeVaultState,
+} from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
 const PROFILE = "example-profile";
@@ -278,6 +283,67 @@ describe("ward unregister", () => {
     const result = await w.ward(stranger, ["unregister"], approver);
     expect(result.exitCode).toBe(exitCodes.denied);
     expect(errorCode(result.stderr)).toBe("project_not_registered");
+    expect(asked).toEqual([]);
+    expect(JSON.stringify(w.state())).toBe(before);
+    expect(w.revision()).toBe(revision);
+  });
+
+  test("an approval of another project at this identity is neither counted nor removed", async () => {
+    const w = await world();
+    // Another project's approval recorded at the first checkout's identity.
+    const foreign = "00000000-0000-4000-8000-0000000000ff";
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.profileApprovals.find(
+        (approval) => approval.root === locateCheckout(w.first).root,
+      );
+      if (mine === undefined) throw new Error("fixture has no approval");
+      return serializeVaultState({
+        ...current,
+        profileApprovals: [
+          ...current.profileApprovals,
+          { ...mine, projectId: foreign },
+        ],
+      });
+    });
+    expect(w.state().profileApprovals).toHaveLength(3);
+    const { approver, asked } = scripted(["approved", "approved"]);
+    const result = await w.ward(w.first, ["unregister"], approver);
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(asked.map((question) => question.approvals)).toEqual([1, 1]);
+    expect(JSON.parse(result.stdout).data.approvalsRemoved).toBe(1);
+    const kept = w.state().profileApprovals;
+    expect(kept).toHaveLength(2);
+    expect(kept.some((approval) => approval.projectId === foreign)).toBe(true);
+  });
+
+  test("a symlink to the checkout resolves to the physical directory", async () => {
+    const w = await world();
+    const link = join(root, `link-${++cases}`);
+    symlinkSync(w.first, link);
+    const result = await w.ward(
+      link,
+      ["unregister"],
+      scripted(["approved", "approved"]).approver,
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(w.state().localBindings.map((binding) => binding.root)).toEqual([
+      locateCheckout(w.second).root,
+    ]);
+  });
+
+  test("a moved checkout and a separate worktree are refused and change nothing", async () => {
+    const w = await world();
+    const moved = join(root, `moved-${++cases}`);
+    renameSync(w.first, moved);
+    const before = JSON.stringify(w.state());
+    const revision = w.revision();
+    const { approver, asked } = scripted(["approved", "approved"]);
+    for (const cwd of [moved, w.worktree()]) {
+      const result = await w.ward(cwd, ["unregister"], approver);
+      expect(result.exitCode).toBe(exitCodes.denied);
+      expect(errorCode(result.stderr)).toBe("project_not_registered");
+    }
     expect(asked).toEqual([]);
     expect(JSON.stringify(w.state())).toBe(before);
     expect(w.revision()).toBe(revision);
