@@ -443,7 +443,7 @@ describe("a response is read as a status line and nothing else", () => {
       label: string,
       location: (port: number, other: number) => string,
     ][] = [
-      ["another host", () => `https://${OTHER}/moved`],
+      ["another host", (_port, other) => `https://${OTHER}:${other}/moved`],
       ["the same host", (port) => `https://${APPROVED}:${port}/elsewhere`],
       ["a local IP", (_port, other) => `https://127.0.0.1:${other}/moved`],
       [

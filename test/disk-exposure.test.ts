@@ -11,8 +11,10 @@
 // mkdtemp or tmpdir. The scan keeps that true.)
 //
 // Three guards keep the scan from passing vacuously:
-//   - the set of commands exercised must equal the manifest's, so a command
-//     added later fails here until it is driven or exempted with a reason;
+//   - the set of command PATHS exercised must equal the manifest's: a command
+//     that takes an action is expanded into `command action` for every action
+//     its vocabulary declares, so a new command, or a new action such as
+//     `secret export`, fails here until it is driven or exempted with a reason;
 //   - every scan reports how many files it read, and that must be positive;
 //   - a planted-value case proves the scan finds the value in every form it
 //     claims to (raw, base64, hex), in a sidecar, and in a backup-named file.
@@ -43,6 +45,8 @@ import type {
   TransportOutcome,
   TransportRequest,
 } from "../src/application/transport.ts";
+import { profileActions } from "../src/application/profiles.ts";
+import { secretActions } from "../src/application/secrets.ts";
 import { runWard } from "../src/cli/main.ts";
 import { type ExitCode, exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
@@ -71,6 +75,13 @@ afterAll(() => {
 // The commands this file does not drive, each with the reason. Empty today:
 // every command in the manifest has a step below.
 const EXEMPT: Record<string, string> = {};
+
+// The commands that take an action, and the vocabulary each declares. The
+// manifest says a command takes one (an `action` argument); these say which.
+const actionVocabulary: Record<string, readonly string[]> = {
+  secret: secretActions,
+  profile: profileActions,
+};
 
 // A transport that answers or fails as told, and records nothing of the
 // request: what reaches the network is T14/T17's concern, not the disk's.
@@ -122,7 +133,11 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
     };
 
     const ward = async (cwd: string, args: string[], dir = vault) => {
-      exercised.add(args[0] as string);
+      exercised.add(
+        actionVocabulary[args[0] as string] === undefined
+          ? (args[0] as string)
+          : `${args[0]} ${args[1]}`,
+      );
       return runWard([...args, "--json"], {
         wardDirectory: dir.directory,
         keyProvider: dir.keyProvider,
@@ -209,6 +224,7 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
     await step("secret list", first, ["secret", "list"]);
     await step("secret inspect", first, ["secret", "inspect", ALIAS]);
     await step("profile approve", first, ["profile", "approve", PROFILE]);
+    await step("profile list", first, ["profile", "list"]);
     await step("check", first, ["check"]);
     await step("run", first, ["run", PROFILE]);
     await step("status", first, ["status"]);
@@ -270,6 +286,7 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
     settle("restore", restore);
 
     await step("secret delete", first, ["secret", "delete", ALIAS_B]);
+    await step("profile revoke", first, ["profile", "revoke", PROFILE]);
     await step("unregister", first, ["unregister"]);
 
     // Failure paths, each followed by the same scan.
@@ -291,7 +308,21 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
     // Guards against a vacuous pass.
     expect(scans).toBeGreaterThan(30);
     expect(filesRead).toBeGreaterThan(scans);
-    const manifested = new Set(commands.map((command) => command.name));
+    // Every command the manifest gives an action argument has a vocabulary
+    // here, so a new action-taking command cannot be missed.
+    expect(
+      commands
+        .filter((command) => command.args.some((arg) => arg.name === "action"))
+        .map((command) => command.name)
+        .sort(),
+    ).toEqual(Object.keys(actionVocabulary).sort());
+    const manifested = new Set(
+      commands.flatMap((command) =>
+        (actionVocabulary[command.name] ?? [undefined]).map((action) =>
+          action === undefined ? command.name : `${command.name} ${action}`,
+        ),
+      ),
+    );
     const driven = new Set([...exercised, ...Object.keys(EXEMPT)]);
     expect([...manifested].filter((name) => !driven.has(name))).toEqual([]);
     expect([...driven].filter((name) => !manifested.has(name))).toEqual([]);

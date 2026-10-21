@@ -3,9 +3,10 @@
 // build gains no way to be redirected.
 //
 // Measured four ways, none of which touches a credential store:
-//   - the build command refuses any service that is neither the production
-//     service nor one under the qualification prefix, so a qualification build
-//     can never be made to name opum.ward;
+//   - the build command (the one buildExecutable runs) refuses any service
+//     that is neither the production service nor one under the qualification
+//     prefix. It is that function's guard, not a property of the compiler: a
+//     person can still run `bun build` with a define of their own;
 //   - the two JavaScript bundles, built with the exact define each ships with,
 //     differ in exactly one line, and substituting the qualification service
 //     back makes them byte-identical. A bundle is compared rather than the
@@ -15,8 +16,11 @@
 //     bun would only make the comparison stronger);
 //   - the qualification executable embeds its service and the shipped one does
 //     not embed the qualification prefix;
-//   - neither executable carries the define's identifier, so the value is a
-//     compiled-in literal and nothing is read at runtime.
+//   - neither executable carries the define's identifier, so the service is not
+//     looked up under that name at runtime. This is evidence about the compiled
+//     form and not a proof that nothing anywhere reads an environment variable;
+//     the source has no such read (grep keychainService), and the bundle
+//     comparison above shows the one line that differs.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

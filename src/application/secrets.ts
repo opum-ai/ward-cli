@@ -107,7 +107,7 @@ interface BoundVault {
   readonly projectId: string;
 }
 
-const secretActions = [
+export const secretActions = [
   "set",
   "list",
   "inspect",

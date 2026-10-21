@@ -24,6 +24,8 @@
 - 2026-10-20T19:07:16-05:00 a6ed38658d65bee387c183bb4df7162d643e33da feat(WCLI-12): alias-bound cross-project grants (#149)
 - 2026-10-20T20:03:59-05:00 e2ee2ea09946df61f5b1b09ed2065d733de6e7ea feat(WCLI-72): profile approvals expire, 24h default, --ttl (#152)
 - 2026-10-20T20:45:06-05:00 f62b903a87f87658ff3c8675ead780821bbf3ebe test(WCLI-15): T05 across every command path, T23, T15-T17 forms, and the matrix scored clause by clause
+- 2026-10-20T20:53:10-05:00 1392fc7578e5150ad60d0fa2cb378cfa7790d286 docs(WCLI-15): record the T26 packaged-binary run and how it was isolated
+- 2026-10-20T23:08:38-05:00 6d4f0e25f533bbe85009313b899226725e615714 test(WCLI-15): T05 full, T23, T15-T17 forms, matrix scored clause by clause (#156)
 
 ## docs/adr
 

@@ -160,10 +160,14 @@ const report: Record<string, unknown> = {
 const steps = report.steps as unknown[];
 let failed = false;
 let lastRun: Run | undefined;
+// Commands whose output held the synthetic value, or (when run without a
+// terminal, where nothing echoes) the passphrase.
+const leaks: string[] = [];
 const check = (label: string, ok: boolean, detail?: unknown): void => {
-  // A failing step carries the last command's output, clipped. Nothing the
-  // executable prints holds the synthetic value (asserted below), so this is
-  // safe to keep in a report.
+  // A failing step carries the last command's output, clipped to 600 bytes.
+  // Every command's output is checked for the synthetic value as it is read
+  // (see ward() and the "no command output" check), so a report that reaches
+  // this point has not been found to hold it.
   const output =
     ok || lastRun === undefined
       ? {}
@@ -287,6 +291,9 @@ async function ward(
   const exit = await child.exited;
   clearTimeout(timeout);
   lastRun = { exit, stdout: out, stderr: err };
+  const output = out + err;
+  if (output.includes(VALUE) || (!options.tty && output.includes(PASSPHRASE)))
+    leaks.push(args.slice(0, 2).join(" "));
   return lastRun;
 }
 
@@ -303,54 +310,71 @@ const parse = (run: Run): Record<string, unknown> => {
   }
 };
 
-async function cleanup(): Promise<void> {
-  const results: unknown[] = [];
-  for (const [name, home] of Object.entries(homes)) {
-    try {
-      const id = createSqliteVaultStore({
-        directory: join(home, ".ward"),
-      }).header()?.vaultId;
-      if (id === undefined) {
-        results.push({ home: name, vault: "none created" });
-        continue;
-      }
-      // Deleted with /usr/bin/security, by exact service and account, because
-      // an item is owned by the build that created it: this process is not
-      // that build, and AsyncEntry refuses with "Invalid attempt to change the
-      // owner of this item" (measured). Neither command asks for the secret.
-      const account = `vault-${id}`;
-      const removed = Bun.spawnSync([
-        "/usr/bin/security",
-        "delete-generic-password",
-        "-s",
-        service,
-        "-a",
-        account,
-      ]);
-      const deleted = removed.exitCode === 0;
-      const lookup = Bun.spawnSync([
-        "/usr/bin/security",
-        "find-generic-password",
-        "-s",
-        service,
-        "-a",
-        account,
-      ]);
-      const goneBy =
-        lookup.exitCode !== 0 ? "lookup finds nothing" : "STILL PRESENT";
-      if (!deleted || lookup.exitCode === 0) failed = true;
-      results.push({ home: name, deleted, afterDelete: goneBy });
-    } catch (error) {
-      results.push({ home: name, error: String(error) });
-      failed = true;
-    }
+// Deletes EVERY item under a service this run named, by service alone and then
+// by lookup, because the run cannot know which items a child created: a setup
+// that died after creating its key leaves no vault to read an id from. An item
+// is owned by the build that created it, so this process cannot use the
+// keychain library for it (AsyncEntry refuses with "Invalid attempt to change
+// the owner of this item", measured); /usr/bin/security can. Neither command
+// asks for the secret.
+function deleteService(name: string): { deleted: number; remaining: boolean } {
+  let deleted = 0;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const removed = Bun.spawnSync([
+      "/usr/bin/security",
+      "delete-generic-password",
+      "-s",
+      name,
+    ]);
+    if (removed.exitCode !== 0) break;
+    deleted++;
   }
-  report.cleanup = results;
+  const lookup = Bun.spawnSync([
+    "/usr/bin/security",
+    "find-generic-password",
+    "-s",
+    name,
+  ]);
+  return { deleted, remaining: lookup.exitCode === 0 };
 }
 
-process.on("SIGINT", () => {
-  void cleanup().finally(() => process.exit(130));
-});
+const probeService = newQualifyService();
+let finishing = false;
+
+// The one way out, for a normal end and for a signal alike: remove every item
+// either service holds, take the second digest, remove the temporary root,
+// print the report. A second caller waits on the first rather than racing it.
+async function finish(interrupted?: string): Promise<never> {
+  if (finishing) return new Promise<never>(() => {});
+  finishing = true;
+  if (interrupted !== undefined) {
+    failed = true;
+    report.interrupted = interrupted;
+  }
+  const cleanup = [service, probeService].map((name) => ({
+    service: name,
+    ...deleteService(name),
+  }));
+  report.cleanup = cleanup;
+  if (cleanup.some((entry) => entry.remaining)) failed = true;
+  const after = treeDigest(realWard);
+  report.realWard = {
+    path: realWard,
+    before,
+    after,
+    unchanged: before.digest === after.digest,
+  };
+  if (before.digest !== after.digest) failed = true;
+  rmSync(tmpRoot, { recursive: true, force: true });
+  report.result = failed ? "FAILED" : "PASSED";
+  console.log(JSON.stringify(report, null, 2));
+  process.exit(failed ? 1 : 0);
+}
+
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+  process.on(signal, () => {
+    void finish(signal);
+  });
 
 try {
   // Build, and the proof that the build names its own service.
@@ -471,7 +495,7 @@ try {
   check(
     "run is admitted and refused at the destination, sending nothing",
     run.exit !== 0 &&
-      typeof runError.code === "string" &&
+      runError.code === "run_destination_unresolved" &&
       !run.stdout.includes(VALUE) &&
       !run.stderr.includes(VALUE),
     { exit: run.exit, code: runError.code },
@@ -537,6 +561,12 @@ try {
     });
   }
 
+  check(
+    "no command output held the secret value or the backup passphrase",
+    leaks.length === 0,
+    { leaks },
+  );
+
   // The key provider on its own, through the real keychain: create, load, a
   // second create refused, delete.
   const probePath = buildExecutable({
@@ -548,7 +578,9 @@ try {
       PATH: SYSTEM_PATH,
       HOME: homes.second,
       WARD_QUALIFY_REAL_KEYCHAIN: "1",
+      WARD_QUALIFY_SERVICE: probeService,
     },
+    timeout: 60_000,
   });
   const probeResult = JSON.parse(
     probe.stdout.toString().trim().split("\n").pop() ?? "{}",
@@ -563,24 +595,12 @@ try {
       probeResult.secondCreate !== "ok" &&
       probeResult.stillOriginal === true &&
       probeResult.deleted === true &&
-      String(probeResult.service).startsWith("opum.ward.qualify-"),
+      probeResult.service === probeService,
     { exit: probe.exitCode },
   );
 } catch (error) {
   failed = true;
   report.error = String(error);
 } finally {
-  await cleanup();
-  const after = treeDigest(realWard);
-  report.realWard = {
-    path: realWard,
-    before,
-    after,
-    unchanged: before.digest === after.digest,
-  };
-  if (before.digest !== after.digest) failed = true;
-  rmSync(tmpRoot, { recursive: true, force: true });
-  report.result = failed ? "FAILED" : "PASSED";
-  console.log(JSON.stringify(report, null, 2));
-  process.exit(failed ? 1 : 0);
+  await finish();
 }

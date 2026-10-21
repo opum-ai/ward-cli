@@ -23,7 +23,16 @@ if (process.env.WARD_QUALIFY_REAL_KEYCHAIN !== "1") {
   process.exit(2);
 }
 
-const service = `opum.ward.qualify-${randomBytes(4).toString("hex")}`;
+// The service is the caller's when it names one under the qualification
+// prefix, so a run that creates this item also deletes it by name even if this
+// probe dies first; otherwise it is a fresh random one.
+const requested = process.env.WARD_QUALIFY_SERVICE;
+if (requested !== undefined && !requested.startsWith("opum.ward.qualify-")) {
+  process.stderr.write("refusing: a service must begin opum.ward.qualify-\n");
+  process.exit(2);
+}
+const service =
+  requested ?? `opum.ward.qualify-${randomBytes(4).toString("hex")}`;
 const vaultId = randomUUID();
 const provider = createKeychainKeyProvider({ service });
 

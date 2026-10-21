@@ -14,6 +14,7 @@ sources = [
   "adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke",
   "adr/0018-profilesnapshotversion-bumps-at-the-first-release",
   "adr/0020-cross-project-grants-are-alias-bound-and-restore-clears-them",
+  "adr/0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes",
   "security-tests",
   "runbooks/release-smoke-t24-s-manual-half",
   "runbooks/cutting-a-ward-release",
