@@ -39,7 +39,7 @@
 - 2026-09-29T09:58:00-05:00 e08c848d9bc770321a5f88469280fb777b89a618 fix(WCLI-52): refuse a backup of a state document that does not parse (#110)
 - 2026-09-29T11:59:04-05:00 351ff7e05c6d90a36ab92bef0a5779ee9d07d80f feat(WCLI-46): reclaim stale test roots with an explicit clean:temp (DEC-49) (#127)
 - 2026-09-29T12:13:18-05:00 8b2a588098c85b75b69b74c0d861a4ac143040d7 feat(WCLI-14): skill-file drift and the init multiselect, with DEC-46..52 recorded (#128)
-- 2026-10-20T20:06:50-05:00 b13523b83fdbdd9227b2392383072226c5cd5ac5 feat(WCLI-73): ward unregister withdraws one checkout; approvals go on a second confirmation
+- 2026-10-20T20:33:44-05:00 1142ac1e8f30896f8a08b009453329cf6277b89d feat(WCLI-73): ward unregister withdraws one checkout (#154)
 
 ## docs/runbooks
 
