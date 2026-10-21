@@ -24,6 +24,7 @@ the merge SHA.
 |---|---|---|---|
 | T12 | Exact sharing works; the target cannot edit, delete or re-grant; an owner update is visible to the next use; revoke and owner delete block new admissions | `test/grant.test.ts`, the `T12: exact sharing works` and `T12: revocation and owner deletion block new admissions` groups, and `the grant record is exact and its relations are enforced` | Passing before merge: `bun test` 722 pass, 0 fail, Bun 1.3.14 (WCLI-12 branch). Filled with the merge SHA and CI run at finalization |
 | T21 | A restore leaves no grant or approval active, with a positive control that the same profile runs before it | `test/grant.test.ts`, `T21: restore clears grants and approvals` | Passing before merge: `bun test` 722 pass, 0 fail, Bun 1.3.14 (WCLI-12 branch). Filled with the merge SHA and CI run at finalization |
+| T13 | An expired approval is refused at admission with exit 4, no send, no audit and no revision; the check runs inside the store transaction, and a read-valid then admit-expired race is refused; `--ttl` accepts and refuses the documented forms; approving again renews the lifetime | `test/approval-expiry.test.ts` | Passing before merge: `bun test` 731 pass, 0 fail, Bun 1.3.14 (WCLI-72 branch). Filled with the merge SHA and CI run at finalization |
 
 ## How T12 is measured
 

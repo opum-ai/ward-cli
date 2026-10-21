@@ -33,7 +33,10 @@ format-compatibility question.
 1. **Every approval carries `expiresAt`**, a timestamp strictly after
    `approvedAt`. The reader keeps the record's exact key set and refuses a
    missing, malformed or non-later expiry as a damaged document. The format
-   version stays 1 (DEC-38).
+   version stays 1 (DEC-38). The reader now refuses an approval that lacks
+   `expiresAt`, so a vault written by the previous build fails to parse. That
+   is allowed before the first release (WCLI-38); the recovery is to
+   re-approve, or to restore from a fresh backup.
 2. **The default lifetime is 24 hours.** `ward profile approve <name> --ttl <n>
    <unit>` names another, written as one whole number and one unit (`m`, `h`
    or `d`), for example `--ttl 8h`. The bounds are 1 minute to 30 days, a build
