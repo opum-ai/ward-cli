@@ -3,8 +3,9 @@
 // the file name has no .test.ts suffix, and it refuses to run without
 // WARD_QUALIFY_REAL_KEYCHAIN=1. It writes one throwaway item to the
 // developer's real login keychain, so run it only with their explicit
-// authorisation. It uses a fresh opum.ward.probe-* service, never the
-// production opum.ward service, prints no key bytes, and deletes the item.
+// authorisation. It uses a fresh opum.ward.qualify-* service (the qualification
+// build's namespace, scripts/build.ts), never the production opum.ward
+// service, prints no key bytes, and deletes the item.
 //
 //   bun -e 'import("./scripts/build.ts").then((m) => m.buildExecutable({
 //     entry: "test/qualification/keychain-roundtrip.ts",
@@ -22,7 +23,16 @@ if (process.env.WARD_QUALIFY_REAL_KEYCHAIN !== "1") {
   process.exit(2);
 }
 
-const service = `opum.ward.probe-${randomBytes(4).toString("hex")}`;
+// The service is the caller's when it names one under the qualification
+// prefix, so a run that creates this item also deletes it by name even if this
+// probe dies first; otherwise it is a fresh random one.
+const requested = process.env.WARD_QUALIFY_SERVICE;
+if (requested !== undefined && !requested.startsWith("opum.ward.qualify-")) {
+  process.stderr.write("refusing: a service must begin opum.ward.qualify-\n");
+  process.exit(2);
+}
+const service =
+  requested ?? `opum.ward.qualify-${randomBytes(4).toString("hex")}`;
 const vaultId = randomUUID();
 const provider = createKeychainKeyProvider({ service });
 

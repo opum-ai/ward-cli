@@ -638,7 +638,7 @@ async function revokeProfile(
   };
 }
 
-const profileActions = ["list", "approve", "revoke"] as const;
+export const profileActions = ["list", "approve", "revoke"] as const;
 
 type ProfileAction = (typeof profileActions)[number];
 

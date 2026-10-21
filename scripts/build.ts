@@ -23,17 +23,52 @@ export const hardeningFlags = [
   "--no-compile-autoload-package-json",
 ] as const;
 
+export const productionService = "opum.ward";
+// The qualification build's service namespace. It must never equal the
+// production service, so a qualification run cannot reach the real item.
+export const qualifyServicePrefix = "opum.ward.qualify-";
+export const qualifyOutfile = join(root, "dist", "ward-qualify");
+
+// The compile-time definition both builds pass, so a test measures the same
+// flag that ships.
+export function serviceDefine(service: string): string {
+  return `WARD_KEYCHAIN_SERVICE=${JSON.stringify(service)}`;
+}
+
+export function newQualifyService(): string {
+  const suffix = [...crypto.getRandomValues(new Uint8Array(4))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `${qualifyServicePrefix}${suffix}`;
+}
+
 // The argv buildExecutable runs, exposed so a test can assert what is
 // actually passed to `bun build` rather than what the list above declares.
+// The credential-store service is always defined at compile time (see
+// src/adapters/keychain.ts): the production service unless a qualification
+// service is named, and a qualification service must sit under its own prefix.
 export function buildCommand(options: {
   entry: string;
   outfile: string;
+  service?: string;
 }): string[] {
+  const service = options.service ?? productionService;
+  if (
+    service !== productionService &&
+    !service.startsWith(qualifyServicePrefix)
+  )
+    throw new Error(
+      `a build's credential-store service is ${productionService} or begins ${qualifyServicePrefix}`,
+    );
+  if (/[^A-Za-z0-9._-]/.test(service))
+    throw new Error("a credential-store service is letters, digits and . _ -");
   return [
     process.execPath,
     "build",
     "--compile",
     ...hardeningFlags,
+    "--define",
+    serviceDefine(service),
     options.entry,
     "--outfile",
     options.outfile,
@@ -45,6 +80,7 @@ export function buildCommand(options: {
 export function buildExecutable(options: {
   entry: string;
   outfile: string;
+  service?: string;
 }): string {
   const run = Bun.spawnSync(buildCommand(options), { cwd: root });
   if (run.exitCode !== 0)
@@ -54,4 +90,13 @@ export function buildExecutable(options: {
   return options.outfile;
 }
 
-if (import.meta.main) buildExecutable({ entry, outfile });
+// `bun scripts/build.ts` builds the shipped executable. `--qualify` builds the
+// qualification executable beside it, under a fresh service of its own, and
+// prints the service so a run can name it and clean up after itself.
+if (import.meta.main) {
+  if (process.argv.includes("--qualify")) {
+    const service = newQualifyService();
+    buildExecutable({ entry, outfile: qualifyOutfile, service });
+    console.log(JSON.stringify({ outfile: qualifyOutfile, service }));
+  } else buildExecutable({ entry, outfile });
+}
