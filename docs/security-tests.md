@@ -51,7 +51,7 @@ the merge SHA.
 | T23 | The full P0 workflow runs with neither Lore nor Quest on PATH, checked as a precondition; with failing `lore` and `quest` on PATH it still succeeds and neither is called, with a positive control that the record can be written | `test/standalone.test.ts`, `T23: standalone`. In process with a memory credential store; the packaged confirmation is T26's run under a stripped PATH. Ward spawns no external tool but `/bin/chmod` by absolute path | Passing before merge: `bun test` 767 pass, 0 fail, Bun 1.3.14 (WCLI-15 branch). Filled with the merge SHA and CI run at finalization |
 | T24 | The agent contract. Automated half: the guidance block and packaged skill for both hosts, judged by `ward agents --check`, and the eval suite's structure. Behavioural halves: Claude through `scripts/run-eval.sh`, Codex through the manual smoke (ADR 0012) | `test/agents.test.ts`, `test/init-multiselect.test.ts` and `bun run eval:check` run in CI. The five `evals/` cases measure when the skill triggers and how it handles an exposed credential; none runs `check` or `run` on synthetic data, so that clause rests on the Codex smoke and on T14's tests. Claude's last full run is under `evals/results/` | Automated half passing, as for every row. Behavioural halves are discharged at release, per ADR 0012 and `docs/runbooks/release-smoke-t24-s-manual-half.md`; not run here |
 | T25 | The skill, plugin and CLI release references agree, and the federated index resolves to an existing artifact | `test/plugin-manifest.test.ts` for the references in this repository. The federated entry cannot exist before a release artifact does (spec section 11.3) | References: passing, as for every row. Federated index: discharged at release, step 4 of `docs/runbooks/cutting-a-ward-release.md` |
-| T26 | Real native key-provider integration and packaged-binary smoke tests on macOS; mocked unit tests do not count | Planned under WCLI-15's second pull request, as DEC-217 (a2) rules it: a qualification build with its own credential-store service, run against a temporary store | Not yet recorded |
+| T26 | Real native key-provider integration and a packaged-binary smoke on macOS; mocked unit tests do not count | `scripts/qualify-packaged.ts` (not in `bun test`: it needs `WARD_QUALIFY_REAL_KEYCHAIN=1` and a person to start it), with the build measured by `test/qualify-build.test.ts`. See How T26 is measured | Passing on macOS 27.0.1, Bun 1.3.14: 20 of 20 checks, run at 8a52c0c, build `d35e8c16fa98`; `~/.ward` tree digest unchanged. Re-run at each release. This is macOS only: Linux and Windows are not advertised platforms for the first preview (ADR 0004) |
 
 ## Release gates this matrix cannot discharge before a release
 
@@ -60,6 +60,61 @@ the merge SHA.
 | `profileSnapshotVersion` bump | The release commit changes the constant from 1 and updates the comment in `src/domain/profile.ts`, so the released build refuses every dev-era snapshot with no migration (DEC-50, ADR 0018) | Step 1 of `docs/runbooks/cutting-a-ward-release.md`; recorded when the release is cut, not before |
 | T24 behavioural halves | The Claude eval run and the Codex manual smoke | Step 3 of the same runbook, which names both |
 | T25 federated index | The marketplace entry resolves to the release artifact | Step 4 of the same runbook, and spec section 11.3 |
+
+## How T26 is measured
+
+DEC-217 (a2) rules the isolation. The run builds `dist/ward-qualify`, the shipped
+program compiled with a credential-store service of its own,
+`opum.ward.qualify-<random>`, and drives that binary against a temporary store.
+The shipped binary gains no override: `scripts/build.ts` always defines
+`WARD_KEYCHAIN_SERVICE`, to `opum.ward` for the shipped build, and the compiler
+folds the check, so nothing at runtime can redirect it.
+
+What the run proves, and how:
+
+- **The build differs by one constant.** The two JavaScript bundles, built with
+  the exact define each ships with, differ in one line, and substituting the
+  qualification service back makes them byte-identical
+  (`test/qualify-build.test.ts`). The compiled executables are not compared
+  byte for byte, because two builds of identical input differ in about 700,000
+  bytes of signature and layout (measured once, bun 1.3.14). The run prints the
+  one differing line and finds the service inside the executable.
+- **The developer's `~/.ward` is untouched.** HOME is a temporary directory, and
+  a digest of the real `~/.ward` tree (path, type, size, mode, mtime and content
+  hash of every entry) is taken before and after and must match. The run does
+  not read, list or probe the real `opum.ward` credential-store item, not even
+  its metadata, because a read can raise a keychain prompt with no operator at
+  the host.
+- **What it created is deleted**, by exact service and account, and a lookup
+  then finds nothing.
+- **The workflow runs on the packaged binary** with `PATH=/usr/bin:/bin`, which
+  holds neither Lore nor Quest (T23 on the shipped form): setup, init, secret
+  set, profile approve, check, run, audit, status, doctor, backup, restore into
+  a second store with only the passphrase, unregister, and a refused run after
+  it. `ward run` reaches admission and is refused at an unresolvable `.invalid`
+  destination with `run_destination_unresolved`, so nothing is sent; the only
+  network activity is that name lookup. The audit holds exactly one admission and
+  one completion. The whole temporary root is then scanned for the secret value
+  and the backup passphrase (T05 on the packaged form) and holds neither.
+- **The key provider on its own** is exercised through the real keychain by
+  `test/qualification/keychain-roundtrip.ts`: create, load, a second create
+  refused with `vault_key_exists`, delete, and a load after delete reporting
+  `vault_key_missing`.
+
+Findings from building it, kept because each changes how the run must be done:
+
+- A bare temporary HOME makes every credential-store call fail with
+  `vault_key_unavailable`, because the Security framework finds the login
+  keychain under `$HOME/Library/Keychains`. Each temporary HOME therefore links
+  that one file, the login keychain, and nothing else of the real HOME.
+- An item is owned by the build that created it. The run's own process cannot
+  delete the executable's item (`Invalid attempt to change the owner of this
+  item`), so cleanup uses `/usr/bin/security delete-generic-password` by exact
+  service and account. An earlier run that failed at this step left two items
+  under its own service; they were removed the same way and a lookup found
+  nothing.
+- `/usr/bin/script` refuses a socket for stdin, so the terminal the prompts need
+  is a small Python pty bridge.
 
 ## How T12 is measured
 
