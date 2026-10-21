@@ -51,6 +51,7 @@ import {
   qualifyOutfile,
   serviceDefine,
 } from "./build.ts";
+import { deleteService } from "./qualify-cleanup.ts";
 
 if (process.platform !== "darwin") {
   console.error("refusing: the macOS qualification runs on macOS");
@@ -309,34 +310,6 @@ const parse = (run: Run): Record<string, unknown> => {
     return {};
   }
 };
-
-// Deletes EVERY item under a service this run named, by service alone and then
-// by lookup, because the run cannot know which items a child created: a setup
-// that died after creating its key leaves no vault to read an id from. An item
-// is owned by the build that created it, so this process cannot use the
-// keychain library for it (AsyncEntry refuses with "Invalid attempt to change
-// the owner of this item", measured); /usr/bin/security can. Neither command
-// asks for the secret.
-function deleteService(name: string): { deleted: number; remaining: boolean } {
-  let deleted = 0;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const removed = Bun.spawnSync([
-      "/usr/bin/security",
-      "delete-generic-password",
-      "-s",
-      name,
-    ]);
-    if (removed.exitCode !== 0) break;
-    deleted++;
-  }
-  const lookup = Bun.spawnSync([
-    "/usr/bin/security",
-    "find-generic-password",
-    "-s",
-    name,
-  ]);
-  return { deleted, remaining: lookup.exitCode === 0 };
-}
 
 const probeService = newQualifyService();
 let finishing = false;
