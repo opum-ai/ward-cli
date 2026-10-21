@@ -96,6 +96,24 @@ export interface ProfileApprovalRecord {
   readonly snapshot: NormalizedProfile;
 }
 
+// A use-only grant of one owner secret to one alias in one other project
+// (spec §7.2, DEC-217 Q1). It names the owner's secret by id and not by alias,
+// so deleting the secret and creating another under the same alias does not
+// revive it, while an owner update — which keeps the id — shows on the next
+// use. `revokedAt` is a timestamp or null and never absent: this document's
+// reader compares key sets exactly, and JSON drops a key whose value is
+// undefined. A revoked record stays as a tombstone, so a refusal can say
+// "revoked" rather than "missing", and a re-grant is a new record.
+export interface SharingGrantRecord {
+  readonly id: string;
+  readonly ownerProjectId: string;
+  readonly ownerSecretId: string;
+  readonly targetProjectId: string;
+  readonly targetAlias: string;
+  readonly createdAt: string;
+  readonly revokedAt: string | null;
+}
+
 // One operational event from a `ward run` (spec §9.4). Two are written per
 // run and they are two records rather than one with two timestamps, because
 // the point of the pair is that the first exists *before* a credential is
@@ -190,6 +208,7 @@ export interface VaultState {
   readonly localBindings: readonly BindingRecord[];
   readonly secrets: readonly SecretRecord[];
   readonly profileApprovals: readonly ProfileApprovalRecord[];
+  readonly sharingGrants: readonly SharingGrantRecord[];
   readonly auditRecords: readonly AuditRecord[];
 }
 
@@ -207,6 +226,7 @@ export function emptyVaultState(): VaultState {
     localBindings: [],
     secrets: [],
     profileApprovals: [],
+    sharingGrants: [],
     auditRecords: [],
   };
 }
@@ -389,6 +409,68 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   };
 }
 
+function ownSharingGrant(value: unknown): SharingGrantRecord {
+  if (!isRecord(value)) malformed();
+  const expected = [
+    "createdAt",
+    "id",
+    "ownerProjectId",
+    "ownerSecretId",
+    "revokedAt",
+    "targetAlias",
+    "targetProjectId",
+  ];
+  const keys = Object.keys(value).sort();
+  if (keys.length !== expected.length) malformed();
+  for (const [index, key] of expected.entries())
+    if (keys[index] !== key) malformed();
+  if (!isOpaqueId(value.id)) malformed();
+  if (!isOpaqueId(value.ownerProjectId)) malformed();
+  if (!isOpaqueId(value.ownerSecretId)) malformed();
+  if (!isOpaqueId(value.targetProjectId)) malformed();
+  // A grant to the owner's own project is not a grant: it would be a second
+  // name for a record the project already owns.
+  if (value.ownerProjectId === value.targetProjectId) malformed();
+  if (!isSecretAlias(value.targetAlias)) malformed();
+  if (!isTimestamp(value.createdAt)) malformed();
+  if (value.revokedAt !== null && !isTimestamp(value.revokedAt)) malformed();
+  return {
+    id: value.id,
+    ownerProjectId: value.ownerProjectId,
+    ownerSecretId: value.ownerSecretId,
+    targetProjectId: value.targetProjectId,
+    targetAlias: value.targetAlias,
+    createdAt: value.createdAt,
+    revokedAt: value.revokedAt,
+  };
+}
+
+// The relations between records that no single record can state. An active
+// grant must name a secret that exists and is owned by the grant's owner
+// project, and no two active grants may give one target the same alias, and
+// no active grant may share an alias with a secret its target owns. A
+// document that breaks one of these was not written by this build, and
+// resolving an alias through it would be an authority decision about
+// something nobody approved, so it is refused rather than repaired.
+function requireGrantRelations(state: VaultState): void {
+  const seen = new Set<string>();
+  for (const grant of state.sharingGrants) {
+    if (grant.revokedAt !== null) continue;
+    const key = `${grant.targetProjectId}\0${grant.targetAlias}`;
+    if (seen.has(key)) malformed();
+    seen.add(key);
+    const secret = state.secrets.find(
+      (entry) => entry.id === grant.ownerSecretId,
+    );
+    if (secret === undefined || secret.projectId !== grant.ownerProjectId)
+      malformed();
+    if (
+      findSecret(state, grant.targetProjectId, grant.targetAlias) !== undefined
+    )
+      malformed();
+  }
+}
+
 // How long one observed OS value may be. Real user and host names are far
 // shorter than this on every platform Ward targets; the bound is here so a
 // damaged document cannot carry an unbounded string, and it is wide enough
@@ -529,6 +611,7 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
       key !== "localBindings" &&
       key !== "secrets" &&
       key !== "profileApprovals" &&
+      key !== "sharingGrants" &&
       key !== "auditRecords"
     )
       malformed();
@@ -538,7 +621,7 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
   // for the second to be about — a `typeof` check would only split off a case
   // that reaches the same refusal one line later.
   if (parsed.formatVersion !== vaultStateFormatVersion) malformed();
-  return {
+  const state: VaultState = {
     formatVersion: parsed.formatVersion,
     projects: ownCollection(parsed.projects ?? [], ownProject),
     localBindings: ownCollection(parsed.localBindings ?? [], ownBinding),
@@ -547,11 +630,18 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
       parsed.profileApprovals ?? [],
       ownProfileApproval,
     ),
+    sharingGrants: ownCollection(parsed.sharingGrants ?? [], ownSharingGrant),
     auditRecords: ownCollection(parsed.auditRecords ?? [], ownAuditRecord),
   };
+  requireGrantRelations(state);
+  return state;
 }
 
 export function serializeVaultState(state: VaultState): Uint8Array {
+  // The reader refuses a document whose grants break the relations above, and
+  // there is no repair command, so a writer that would produce one fails here
+  // instead of leaving a vault nothing can open.
+  requireGrantRelations(state);
   const document = {
     formatVersion: vaultStateFormatVersion,
     projects: state.projects.map(({ id, createdAt }) => ({ id, createdAt })),
@@ -608,6 +698,25 @@ export function serializeVaultState(state: VaultState): Uint8Array {
           requestBody: snapshot.requestBody,
           output: snapshot.output,
         },
+      }),
+    ),
+    sharingGrants: state.sharingGrants.map(
+      ({
+        id,
+        ownerProjectId,
+        ownerSecretId,
+        targetProjectId,
+        targetAlias,
+        createdAt,
+        revokedAt,
+      }) => ({
+        id,
+        ownerProjectId,
+        ownerSecretId,
+        targetProjectId,
+        targetAlias,
+        createdAt,
+        revokedAt,
       }),
     ),
     auditRecords: state.auditRecords.map(
@@ -698,6 +807,7 @@ export function registerCheckout(options: {
     // records a project already holds.
     secrets: state.secrets,
     profileApprovals: state.profileApprovals,
+    sharingGrants: state.sharingGrants,
   };
 }
 
@@ -741,15 +851,125 @@ export function withSecret(
   };
 }
 
+// Removes a secret and, in the same state, revokes every active grant of it
+// (spec §7.2: deleting an owner record invalidates its aliases and grants
+// atomically). It is one function so no caller can delete a record and leave
+// a grant naming it; the document reader would refuse that state.
 export function withoutSecret(
   state: VaultState,
   projectId: string,
   alias: string,
+  revokedAt: string,
 ): VaultState {
+  const removed = findSecret(state, projectId, alias);
   return {
     ...state,
     secrets: state.secrets.filter(
       (secret) => secret.projectId !== projectId || secret.alias !== alias,
+    ),
+    sharingGrants:
+      removed === undefined
+        ? state.sharingGrants
+        : state.sharingGrants.map((grant) =>
+            grant.ownerSecretId === removed.id && grant.revokedAt === null
+              ? { ...grant, revokedAt }
+              : grant,
+          ),
+  };
+}
+
+// The active grant that gives `projectId` the alias, if any.
+export function findActiveGrant(
+  state: VaultState,
+  projectId: string,
+  alias: string,
+): SharingGrantRecord | undefined {
+  return state.sharingGrants.find(
+    (grant) =>
+      grant.targetProjectId === projectId &&
+      grant.targetAlias === alias &&
+      grant.revokedAt === null,
+  );
+}
+
+// The active grant of one owner secret to one target project, if any.
+export function findActiveGrantOf(
+  state: VaultState,
+  ownerSecretId: string,
+  targetProjectId: string,
+): SharingGrantRecord | undefined {
+  return state.sharingGrants.find(
+    (grant) =>
+      grant.ownerSecretId === ownerSecretId &&
+      grant.targetProjectId === targetProjectId &&
+      grant.revokedAt === null,
+  );
+}
+
+// What an alias means inside one project. This is the single place a read
+// turns an alias into a secret, so `ward run`, its admission transaction,
+// `ward check` and `profile approve` cannot disagree about it. A project's own
+// secret answers first; the relations the reader enforces mean an own secret
+// and an active grant never share an alias, so the order is not a precedence
+// that could hide one behind the other. "revoked" is an alias whose only grant
+// has been revoked, kept distinct from "missing" so a refusal can say why.
+export type ResolvedSecret =
+  | { readonly kind: "owned"; readonly secret: SecretRecord }
+  | {
+      readonly kind: "granted";
+      readonly secret: SecretRecord;
+      readonly grant: SharingGrantRecord;
+    }
+  | { readonly kind: "revoked" }
+  | { readonly kind: "missing" };
+
+export function resolveSecret(
+  state: VaultState,
+  projectId: string,
+  alias: string,
+): ResolvedSecret {
+  const owned = findSecret(state, projectId, alias);
+  if (owned !== undefined) return { kind: "owned", secret: owned };
+  const grant = findActiveGrant(state, projectId, alias);
+  if (grant !== undefined) {
+    // The relation the reader enforces, checked again where the authority is
+    // used: the grant names a secret by id, and it must still be the
+    // owner project's.
+    const secret = state.secrets.find(
+      (entry) =>
+        entry.id === grant.ownerSecretId &&
+        entry.projectId === grant.ownerProjectId,
+    );
+    return secret === undefined
+      ? { kind: "revoked" }
+      : { kind: "granted", secret, grant };
+  }
+  return state.sharingGrants.some(
+    (entry) =>
+      entry.targetProjectId === projectId && entry.targetAlias === alias,
+  )
+    ? { kind: "revoked" }
+    : { kind: "missing" };
+}
+
+export function withGrant(
+  state: VaultState,
+  record: SharingGrantRecord,
+): VaultState {
+  return { ...state, sharingGrants: [...state.sharingGrants, record] };
+}
+
+export function withRevokedGrant(
+  state: VaultState,
+  grantId: string,
+  revokedAt: string,
+): VaultState {
+  return {
+    ...state,
+    sharingGrants: state.sharingGrants.map((grant) =>
+      grant.id === grantId && grant.revokedAt === null
+        ? { ...grant, revokedAt }
+        : grant,
     ),
   };
 }

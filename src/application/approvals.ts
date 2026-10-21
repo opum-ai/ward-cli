@@ -58,3 +58,19 @@ export interface ProfileApprover {
   available(): boolean;
   ask(question: ProfileQuestion): ProfileAnswer;
 }
+
+// The question a developer answers before a secret is shared with another
+// project (spec §7.2, docs/adr/0020). A grant extends authority, so it is asked
+// the way a profile approval is: on a terminal, with "unavailable" never
+// treated as consent. Every field is an identifier or an alias; no value.
+export interface GrantQuestion {
+  readonly ownerProjectId: string;
+  readonly alias: string;
+  readonly targetProjectId: string;
+  readonly targetAlias: string;
+}
+
+export interface GrantApprover {
+  available(): boolean;
+  ask(question: GrantQuestion): ProfileAnswer;
+}

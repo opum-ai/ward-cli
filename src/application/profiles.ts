@@ -39,7 +39,7 @@ import {
 import {
   type CheckoutIdentity,
   findProfileApproval,
-  findSecret,
+  resolveSecret,
   type ProfileApprovalRecord,
   parseVaultState,
   serializeVaultState,
@@ -106,7 +106,7 @@ export interface CheckResult {
 // evaluation.
 export type DeclarationState = "valid" | "invalid";
 export type ApprovalState = "approved" | "missing" | "stale" | "not-evaluated";
-export type SecretState = "present" | "missing" | "not-evaluated";
+export type SecretState = "present" | "missing" | "revoked" | "not-evaluated";
 
 export interface ProfileReadiness {
   readonly profile: string;
@@ -127,6 +127,7 @@ export const profileCheckReasons = [
   "approval",
   "approval-stale",
   "secret",
+  "grant-revoked",
 ] as const;
 
 export type ProfileCheckReason = (typeof profileCheckReasons)[number];
@@ -226,10 +227,20 @@ function readinessFor(options: {
       : differing.length > 0
         ? "stale"
         : "approved";
+  // A revoked grant is its own state and not "missing": the advice for a
+  // missing credential is to store one, and storing a local secret under a
+  // revoked grant's alias would block the owner from granting it again.
+  const resolved = resolveSecret(
+    state,
+    authority.projectId,
+    snapshot.auth.secret,
+  ).kind;
   const secret: SecretState =
-    findSecret(state, authority.projectId, snapshot.auth.secret) === undefined
-      ? "missing"
-      : "present";
+    resolved === "owned" || resolved === "granted"
+      ? "present"
+      : resolved === "revoked"
+        ? "revoked"
+        : "missing";
   return {
     profile: name,
     declaration,
@@ -297,6 +308,7 @@ function checkReasons(
   if (entry.approval === "missing") reasons.push("approval");
   if (entry.approval === "stale") reasons.push("approval-stale");
   if (entry.secret === "missing") reasons.push("secret");
+  if (entry.secret === "revoked") reasons.push("grant-revoked");
   return reasons;
 }
 
@@ -306,6 +318,8 @@ const reasonPhrases: Record<ProfileCheckReason, string> = {
   approval: "no approval in this checkout",
   "approval-stale": "the declaration changed after approval",
   secret: "the credential is not stored in this project",
+  "grant-revoked":
+    "the grant behind the credential was revoked, or its owner secret was deleted",
 };
 
 function reasonPhrase(
@@ -336,6 +350,10 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
   if (reasons.has("secret"))
     guidance.push(
       "A developer stores a missing credential in a terminal with `ward secret set <alias>`.",
+    );
+  if (reasons.has("grant-revoked"))
+    guidance.push(
+      "The owning project's developer grants the secret again with `ward secret grant`. Do not store a local secret under that alias: it would block the grant.",
     );
   if (reasons.has("declaration"))
     guidance.push(

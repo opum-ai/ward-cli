@@ -19,6 +19,8 @@
 - 2026-09-29T12:23:49-05:00 e7bec34e97d663a4f94538d3e475e78e20721314 docs(WCLI-30): point the bundle at the spec of record (DEC-51) (#130)
 - 2026-09-29T13:04:42-05:00 c0f48a154798793b799479ec1c91ba0ee9852068 docs(WCLI-61): record DEC-56 — the spec pointer keeps its two sections (#132)
 - 2026-09-29T13:39:21-05:00 45b68a35ee3433eee99c5d82c098c20b1f8172e8 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook
+- 2026-10-20T18:13:37-05:00 b821ac2c5333a49c091adc4301a4a00d2d889f68 feat(WCLI-12): alias-bound cross-project grants, revocation, restore clears authority
+- 2026-10-20T18:21:00-05:00 408161b10a758d13ef13739963dd6df0801e10ea test(WCLI-12): measure the text reports and the list disclosure properly; record the matrix result; fix stale restore comments
 
 ## docs/adr
 
@@ -39,3 +41,4 @@
 ## docs/runbooks
 
 - 2026-09-29T13:42:11-05:00 e04c287d4745d518495d5b5f7840dcb0b468c283 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook (#134)
+- 2026-10-20T18:36:39-05:00 66604baf4ced9270ab51ca84311cb2db48934b3c fix(WCLI-12): report a revoked grant distinctly; add the restore recovery runbook

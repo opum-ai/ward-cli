@@ -370,7 +370,7 @@ export const commands: CommandSpec[] = [
   {
     name: "secret",
     summary:
-      "Set, list, inspect or delete this project's secrets. A value is entered hidden in a trusted terminal, or piped with --stdin for trusted automation; it is never an argument and never printed. Setting and deleting are the developer's acts.",
+      "Set, list, inspect or delete this project's secrets, or grant one to another project for use only and revoke the grant. A value is entered hidden in a trusted terminal, or piped with --stdin for trusted automation; it is never an argument and never printed. Setting, deleting and granting are the developer's acts, and a granted alias is use-only in the project that receives it.",
     args: [
       { name: "action", required: true },
       { name: "alias", required: false },
@@ -382,10 +382,34 @@ export const commands: CommandSpec[] = [
         summary:
           "Read the value from standard input to EOF as exact bytes. For trusted automation; replaces an existing alias without an interactive prompt. Not a way for an agent to request or handle a real value.",
       },
+      {
+        name: "--to",
+        takesValue: true,
+        summary:
+          "With grant: the id of the target project, which must already be registered in this vault. One owner secret, one target project; there is no wildcard.",
+      },
+      {
+        name: "--as",
+        takesValue: true,
+        summary:
+          "With grant: the alias the target project will use for the secret. Refused if the target already has a secret or grant under it.",
+      },
+      {
+        name: "--from",
+        takesValue: true,
+        summary:
+          "With revoke: the id of the target project whose grant of this secret to revoke. Blocks runs admitted afterwards; it recalls nothing already sent and revokes nothing at the provider.",
+      },
       jsonFlag,
     ],
     kind: "secret.set",
-    resultKinds: ["secret.list", "secret.inspect", "secret.delete"],
+    resultKinds: [
+      "secret.list",
+      "secret.inspect",
+      "secret.delete",
+      "secret.grant",
+      "secret.revoke",
+    ],
     mutates: true,
     // Reads and writes the encrypted vault through the project binding.
     unlocksVault: true,
@@ -409,6 +433,8 @@ export const commands: CommandSpec[] = [
       "ward secret list",
       "ward secret inspect example-alias",
       "ward secret delete example-alias",
+      "ward secret grant example-alias --to 7c1d9a52-3e84-4b6f-9a10-5d2e8f4b6c31 --as shared-alias",
+      "ward secret revoke example-alias --from 7c1d9a52-3e84-4b6f-9a10-5d2e8f4b6c31",
     ],
   },
   {

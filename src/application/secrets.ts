@@ -14,6 +14,7 @@
 // lookup that misses stays a miss: no other project's records are consulted,
 // filtered in or counted.
 import type { ResultKind } from "../contract/envelope.ts";
+import type { GrantApprover } from "./approvals.ts";
 import { WardError } from "../contract/errors.ts";
 import { isOpaqueId } from "../domain/identifiers.ts";
 import {
@@ -24,11 +25,16 @@ import {
 } from "../domain/secret.ts";
 import {
   type CheckoutIdentity,
+  findActiveGrant,
+  findActiveGrantOf,
   findSecret,
   parseVaultState,
+  resolveSecret,
   secretsFor,
   serializeVaultState,
   type VaultState,
+  withGrant,
+  withRevokedGrant,
   withoutSecret,
   withSecret,
 } from "../domain/vault-state.ts";
@@ -65,14 +71,25 @@ export interface SecretOptions {
   readonly store: VaultStore;
   readonly keyProvider: KeyProvider;
   readonly values: SecretValueSource;
+  // The question a grant is asked on. A grant extends authority to another
+  // project, so it is a developer's act in a terminal, like a profile approval.
+  readonly grants: GrantApprover;
   readonly now: () => Date;
   readonly newSecretId: () => string;
+  // Identifies a grant record. Supplied like `newSecretId`, so a test can
+  // predict the identifiers it asserts on.
+  readonly newGrantId: () => string;
 }
 
 export interface SecretCommandInput {
   readonly action: string;
   readonly alias: string | undefined;
   readonly viaStdin: boolean;
+  // `--to` and `--as` (grant) and `--from` (revoke): a target project id and
+  // the alias the target will see it under.
+  readonly to?: string | undefined;
+  readonly as?: string | undefined;
+  readonly from?: string | undefined;
 }
 
 export interface SecretResult {
@@ -90,7 +107,14 @@ interface BoundVault {
   readonly projectId: string;
 }
 
-const secretActions = ["set", "list", "inspect", "delete"] as const;
+const secretActions = [
+  "set",
+  "list",
+  "inspect",
+  "delete",
+  "grant",
+  "revoke",
+] as const;
 
 function isSecretAction(
   value: string,
@@ -205,35 +229,76 @@ function requireAlias(input: SecretCommandInput): string {
 }
 
 function listSecrets(bound: BoundVault): SecretResult {
-  const records = secretsFor(bound.state, bound.projectId)
-    .slice()
-    .sort((left, right) =>
-      left.alias < right.alias ? -1 : left.alias > right.alias ? 1 : 0,
-    );
+  const owned = secretsFor(bound.state, bound.projectId).map(
+    ({ alias, updatedAt, revision }) => ({
+      alias,
+      ownership: "owner" as const,
+      updatedAt: updatedAt as string | null,
+      revision: revision as number | null,
+    }),
+  );
+  // A granted alias is listed so an agent can name it in a profile, and is
+  // marked so it is never mistaken for one this project owns. The owner's
+  // revision and update time are not reported here: the target needs the
+  // name, not the owner's history.
+  const granted = bound.state.sharingGrants
+    .filter(
+      (grant) =>
+        grant.targetProjectId === bound.projectId && grant.revokedAt === null,
+    )
+    .map((grant) => ({
+      alias: grant.targetAlias,
+      ownership: "granted" as const,
+      updatedAt: null as string | null,
+      revision: null as number | null,
+    }));
+  const entries = [...owned, ...granted].sort((left, right) =>
+    left.alias < right.alias ? -1 : left.alias > right.alias ? 1 : 0,
+  );
   return {
     kind: "secret.list",
-    data: {
-      projectId: bound.projectId,
-      secrets: records.map(({ alias, updatedAt, revision }) => ({
-        alias,
-        updatedAt,
-        revision,
-      })),
-    },
+    data: { projectId: bound.projectId, secrets: entries },
     text:
-      records.length === 0
+      entries.length === 0
         ? "No secrets in this project."
         : [
             "Secrets in this project:",
             "",
-            ...records.map((record) => `  ${record.alias}`),
+            ...entries.map(
+              (entry) =>
+                `  ${entry.alias}${entry.ownership === "granted" ? "  (granted, use only)" : ""}`,
+            ),
           ].join("\n"),
   };
 }
 
 function inspectSecret(bound: BoundVault, alias: string): SecretResult {
-  const record = findSecret(bound.state, bound.projectId, alias);
-  if (record === undefined) throw new WardError("secret_not_found");
+  const resolved = resolveSecret(bound.state, bound.projectId, alias);
+  if (resolved.kind === "granted")
+    return {
+      kind: "secret.inspect",
+      data: {
+        alias,
+        projectId: bound.projectId,
+        ownership: "granted",
+        grantId: resolved.grant.id,
+        ownerProjectId: resolved.grant.ownerProjectId,
+        grantedAt: resolved.grant.createdAt,
+      },
+      text: [
+        "Secret metadata.",
+        "",
+        `  alias:     ${alias}`,
+        `  project:   ${bound.projectId}`,
+        "  ownership: granted, use only",
+        `  owner:     ${resolved.grant.ownerProjectId}`,
+        `  granted:   ${resolved.grant.createdAt}`,
+        "",
+        storedValueNote,
+      ].join("\n"),
+    };
+  if (resolved.kind !== "owned") throw new WardError("secret_not_found");
+  const record = resolved.secret;
   return {
     kind: "secret.inspect",
     data: { ...recordMetadata(record), ownership: "owner" },
@@ -241,22 +306,43 @@ function inspectSecret(bound: BoundVault, alias: string): SecretResult {
   };
 }
 
+// A granted alias is use-only here: the target cannot write, delete, share or
+// revoke it (spec §7.2). Named once so every target-side path refuses it the
+// same way, and checked before the not-found answer so a target learns the
+// alias is not its to change rather than that it does not exist.
+function refuseGranted(
+  state: VaultState,
+  projectId: string,
+  alias: string,
+): void {
+  if (findActiveGrant(state, projectId, alias) !== undefined)
+    throw new WardError("secret_granted_readonly");
+}
+
 function deleteSecret(
   bound: BoundVault,
   alias: string,
   options: SecretOptions,
 ): SecretResult {
+  refuseGranted(bound.state, bound.projectId, alias);
   const record = findSecret(bound.state, bound.projectId, alias);
   if (record === undefined) throw new WardError("secret_not_found");
+  const at = options.now().toISOString();
   options.store.mutate(bound.key, (plaintext) => {
     // The authority decision, repeated inside the transaction so a change
     // that raced another writer cannot act on a state the earlier read no
     // longer describes.
     const current = parseVaultState(plaintext);
     requireBinding(current, options.checkout, bound.projectId);
+    refuseGranted(current, bound.projectId, alias);
     if (findSecret(current, bound.projectId, alias) === undefined)
       throw new WardError("secret_not_found");
-    return serializeVaultState(withoutSecret(current, bound.projectId, alias));
+    // Deleting the record revokes its grants in the same document (spec
+    // §7.2): there is no state in which the secret is gone and a target can
+    // still be admitted through it.
+    return serializeVaultState(
+      withoutSecret(current, bound.projectId, alias, at),
+    );
   });
   return {
     kind: "secret.delete",
@@ -271,6 +357,7 @@ async function setSecret(
   input: SecretCommandInput,
   options: SecretOptions,
 ): Promise<SecretResult> {
+  refuseGranted(bound.state, bound.projectId, alias);
   const existing = findSecret(bound.state, bound.projectId, alias);
   let value: Uint8Array | undefined;
   try {
@@ -307,6 +394,9 @@ async function setSecret(
       // longer describes.
       const current = parseVaultState(plaintext);
       requireBinding(current, options.checkout, bound.projectId);
+      // A grant that landed after the read would give this alias to the
+      // project from outside; writing an own record over it is refused.
+      refuseGranted(current, bound.projectId, alias);
       const previous = findSecret(current, bound.projectId, alias);
       // The confirmation belongs to the state the value was read against. An
       // alias that appeared in between was never covered by it, so the write
@@ -342,18 +432,212 @@ async function setSecret(
   }
 }
 
+// The flags each action takes. A flag that belongs to another action is a
+// usage fault, judged before anything is opened, like `--stdin` on a non-set.
+function requireActionFlags(input: SecretCommandInput): void {
+  const { action } = input;
+  const hasTo = input.to !== undefined;
+  const hasAs = input.as !== undefined;
+  const hasFrom = input.from !== undefined;
+  if (action === "grant") {
+    if (hasFrom) throw new WardError("secret_option_unexpected");
+    if (!hasTo || !hasAs) throw new WardError("missing_required_option");
+    return;
+  }
+  if (action === "revoke") {
+    if (hasTo || hasAs) throw new WardError("secret_option_unexpected");
+    if (!hasFrom) throw new WardError("missing_required_option");
+    return;
+  }
+  if (hasTo || hasAs || hasFrom)
+    throw new WardError("secret_option_unexpected");
+}
+
+// What a grant would do to this state, or the reason it cannot. It is the one
+// function the pre-check and the transaction both run, so the decision made
+// before the question is asked is the decision made when the record is
+// written: the owner secret exists, the target is another project this vault
+// knows, and neither the secret nor the target alias is already taken.
+function grantInto(
+  state: VaultState,
+  options: {
+    ownerProjectId: string;
+    alias: string;
+    targetProjectId: string;
+    targetAlias: string;
+    id: string;
+    at: string;
+  },
+): VaultState {
+  refuseGranted(state, options.ownerProjectId, options.alias);
+  const secret = findSecret(state, options.ownerProjectId, options.alias);
+  if (secret === undefined) throw new WardError("secret_not_found");
+  if (options.targetProjectId === options.ownerProjectId)
+    throw new WardError("grant_target_is_owner");
+  if (!state.projects.some((project) => project.id === options.targetProjectId))
+    throw new WardError("grant_target_unknown");
+  if (
+    findActiveGrantOf(state, secret.id, options.targetProjectId) !== undefined
+  )
+    throw new WardError("grant_exists");
+  if (
+    findSecret(state, options.targetProjectId, options.targetAlias) !==
+      undefined ||
+    findActiveGrant(state, options.targetProjectId, options.targetAlias) !==
+      undefined
+  )
+    throw new WardError("grant_alias_conflict");
+  return withGrant(state, {
+    id: options.id,
+    ownerProjectId: options.ownerProjectId,
+    ownerSecretId: secret.id,
+    targetProjectId: options.targetProjectId,
+    targetAlias: options.targetAlias,
+    createdAt: options.at,
+    revokedAt: null,
+  });
+}
+
+const admissionRule =
+  "Revocation blocks runs admitted after it. A run admitted before it may finish, and Ward cannot recall a credential already sent.";
+
+function grantSecret(
+  bound: BoundVault,
+  alias: string,
+  targetProjectId: string,
+  targetAlias: string,
+  options: SecretOptions,
+): SecretResult {
+  const at = options.now().toISOString();
+  const grantId = options.newGrantId();
+  if (!isOpaqueId(grantId)) throw new WardError("uncaught");
+  const attempt = {
+    ownerProjectId: bound.projectId,
+    alias,
+    targetProjectId,
+    targetAlias,
+    id: grantId,
+    at,
+  };
+  // Judged before the question, so a grant that cannot succeed costs the
+  // developer no prompt and never reaches the vault.
+  grantInto(bound.state, attempt);
+  if (!options.grants.available())
+    throw new WardError("grant_requires_terminal");
+  const answer = options.grants.ask({
+    ownerProjectId: bound.projectId,
+    alias,
+    targetProjectId,
+    targetAlias,
+  });
+  if (answer === "unavailable") throw new WardError("grant_requires_terminal");
+  if (answer === "declined") throw new WardError("grant_declined");
+  options.store.mutate(bound.key, (plaintext) => {
+    const current = parseVaultState(plaintext);
+    requireBinding(current, options.checkout, bound.projectId);
+    return serializeVaultState(grantInto(current, attempt));
+  });
+  return {
+    kind: "secret.grant",
+    data: {
+      grantId,
+      ownerProjectId: bound.projectId,
+      alias,
+      targetProjectId,
+      targetAlias,
+      createdAt: at,
+    },
+    text: [
+      "Secret granted.",
+      "",
+      `  alias:          ${alias}`,
+      `  owner project:  ${bound.projectId}`,
+      `  target project: ${targetProjectId}`,
+      `  target alias:   ${targetAlias}`,
+      "",
+      "The target can use this secret, and cannot read, change, delete or",
+      "re-share it. The target's developer still has to approve a profile that",
+      "names the target alias.",
+      admissionRule,
+    ].join("\n"),
+  };
+}
+
+function revokeGrant(
+  bound: BoundVault,
+  alias: string,
+  targetProjectId: string,
+  options: SecretOptions,
+): SecretResult {
+  const at = options.now().toISOString();
+  const revokedGrantId = (state: VaultState): string => {
+    refuseGranted(state, bound.projectId, alias);
+    const secret = findSecret(state, bound.projectId, alias);
+    if (secret === undefined) throw new WardError("secret_not_found");
+    const grant = findActiveGrantOf(state, secret.id, targetProjectId);
+    if (grant === undefined) throw new WardError("grant_not_found");
+    return grant.id;
+  };
+  revokedGrantId(bound.state);
+  let grantId = "";
+  options.store.mutate(bound.key, (plaintext) => {
+    const current = parseVaultState(plaintext);
+    requireBinding(current, options.checkout, bound.projectId);
+    grantId = revokedGrantId(current);
+    return serializeVaultState(withRevokedGrant(current, grantId, at));
+  });
+  return {
+    kind: "secret.revoke",
+    data: {
+      grantId,
+      ownerProjectId: bound.projectId,
+      alias,
+      targetProjectId,
+      revokedAt: at,
+    },
+    text: [
+      "Grant revoked.",
+      "",
+      `  alias:          ${alias}`,
+      `  target project: ${targetProjectId}`,
+      "",
+      admissionRule,
+      "Revoking a grant does not revoke the credential at its provider.",
+    ].join("\n"),
+  };
+}
+
 export async function runSecret(
   input: SecretCommandInput,
   options: SecretOptions,
 ): Promise<SecretResult> {
   const { action } = input;
   if (!isSecretAction(action)) throw new WardError("secret_action_unknown");
+  requireActionFlags(input);
   if (action === "list") {
     if (input.alias !== undefined) throw new WardError("unexpected_argument");
     if (input.viaStdin) throw new WardError("secret_option_unexpected");
     return withBoundVault(options, (bound) => listSecrets(bound));
   }
   const alias = requireAlias(input);
+  // Grammar judged before the vault is opened, like the alias.
+  if (action === "grant") {
+    const targetAlias = input.as as string;
+    const target = input.to as string;
+    if (!isSecretAlias(targetAlias))
+      throw new WardError("secret_alias_invalid");
+    if (!isOpaqueId(target)) throw new WardError("grant_project_invalid");
+    return withBoundVault(options, (bound) =>
+      grantSecret(bound, alias, target, targetAlias, options),
+    );
+  }
+  if (action === "revoke") {
+    const target = input.from as string;
+    if (!isOpaqueId(target)) throw new WardError("grant_project_invalid");
+    return withBoundVault(options, (bound) =>
+      revokeGrant(bound, alias, target, options),
+    );
+  }
   return withBoundVault(options, (bound) => {
     if (action === "inspect") return inspectSecret(bound, alias);
     if (action === "delete") return deleteSecret(bound, alias, options);

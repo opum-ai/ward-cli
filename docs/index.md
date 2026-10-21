@@ -27,4 +27,5 @@ entry point and the only one that carries `okf_version`.
 - [adr](adr/index.md)
 - [reference](reference/index.md)
 - [runbooks](runbooks/index.md)
+- [Ward's security test matrix](security-tests.md)
 <!-- lore:index:end -->

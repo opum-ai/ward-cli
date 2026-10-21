@@ -18,9 +18,11 @@ import { createTerminalInstructionChoice } from "../adapters/init-prompt.ts";
 import { createSqliteVaultStore } from "../adapters/sqlite-vault-store.ts";
 import {
   createTerminalConsent,
+  createTerminalGrantApprover,
   createTerminalProfileApprover,
 } from "../adapters/terminal-consent.ts";
 import type {
+  GrantApprover,
   ProfileApprover,
   RegistrationApprover,
 } from "../application/approvals.ts";
@@ -105,6 +107,9 @@ export interface RunOptions {
   // Who answers Ward's approval question for an HTTPS profile. Defaults to
   // the terminal prompt; tests supply an answer.
   profileApprover?: ProfileApprover;
+  // Who answers the question a secret grant asks. Defaults to the terminal
+  // prompt; tests supply an answer.
+  grantApprover?: GrantApprover;
   // The clock, for timestamps recorded in the vault.
   now?: () => Date;
   // The identifiers Ward writes into records it creates. Defaults to
@@ -334,10 +339,11 @@ async function restoreCommand(
         "",
         "It was restored under a new vault key and a new vault id, so this",
         "machine's credential store was never part of opening it.",
-        "Every checkout binding is cleared: run `ward init` in each repository",
-        "that should use these projects again, and re-approve anything the old",
-        "vault had approved. Restoring an older backup does not revive authority",
-        "that was granted, changed or revoked since it was taken.",
+        "Every checkout binding, every profile approval and every cross-project",
+        "grant is cleared: run `ward init` in each repository that should use",
+        "these projects again, re-approve its profiles, and have each owner",
+        "grant a shared secret again. Restoring an older backup does not revive",
+        "authority that was granted, changed or revoked since it was taken.",
       ].join("\n"),
     },
     exitExplicitly: keyProvider.abandonedCall?.() ?? false,
@@ -431,6 +437,9 @@ async function secretCommand(
       action,
       alias: input.positionals[1],
       viaStdin: input.flags.has("--stdin"),
+      to: optionalFlag(input, "--to"),
+      as: optionalFlag(input, "--as"),
+      from: optionalFlag(input, "--from"),
     },
     {
       checkout,
@@ -440,8 +449,10 @@ async function secretCommand(
         options.keyProvider ??
         createKeychainKeyProvider({ service: keychainService }),
       values: options.secrets ?? createTerminalSecretValues(),
+      grants: options.grantApprover ?? createTerminalGrantApprover(),
       now: options.now ?? (() => new Date()),
       newSecretId: () => randomUUID(),
+      newGrantId: () => randomUUID(),
     },
   );
   return { kind: result.kind, data: result.data, text: result.text };

@@ -11,12 +11,11 @@
 // restoring an old backup cannot silently revive authority that was granted,
 // or revoked, since it was taken.
 //
-// Owed to WCLI-9 and WCLI-12, and deliberately visible rather than implied:
-// when approvals and sharing grants exist in the vault state, a restore must
-// leave them inactive too. The state document below is rebuilt as a fixed
-// projection of the backup — projects carried over, bindings emptied — so
-// any field those layers add is dropped on restore until this function is
-// taught to carry it deliberately.
+// A restore leaves approvals and sharing grants inactive too: both are
+// cleared (docs/adr/0020, DEC-217 Q2). The state document below is rebuilt as
+// a fixed projection of the backup — projects carried over, bindings,
+// approvals and grants emptied — so any field a later layer adds is dropped
+// on restore until this function is taught to carry it deliberately.
 import { WardError } from "../contract/errors.ts";
 import {
   backupLimits,
@@ -75,6 +74,8 @@ export interface RestoreResult {
   readonly revision: number;
   readonly projects: number;
   readonly bindings: "cleared";
+  readonly approvals: "cleared";
+  readonly grants: "cleared";
   readonly backupVaultId: string;
 }
 
@@ -207,6 +208,11 @@ export async function runRestore(options: {
         // stored approval live again — and T21 requires a restored vault's
         // approvals to be inactive until they are reviewed explicitly.
         profileApprovals: [],
+        // A grant gives one project the use of another's secret, and it is
+        // cleared with the approvals it served: restoring an older backup must
+        // not revive access that was granted or revoked since it was taken
+        // (docs/adr/0020). The owner grants again after re-registering.
+        sharingGrants: [],
         secrets: backup.secrets,
         // The audit history is carried, unlike the bindings and approvals
         // above it, because of what separates them: a restore deactivates
@@ -225,6 +231,8 @@ export async function runRestore(options: {
       revision: created.revision,
       projects: backup.projects.length,
       bindings: "cleared",
+      approvals: "cleared",
+      grants: "cleared",
       backupVaultId: record.vaultId,
     };
   } finally {

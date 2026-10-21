@@ -21,6 +21,8 @@ import {
   writeSync,
 } from "node:fs";
 import type {
+  GrantApprover,
+  GrantQuestion,
   ProfileAnswer,
   ProfileApprovalQuestion,
   ProfileApprover,
@@ -211,6 +213,55 @@ export function createTerminalProfileApprover(
       if (!available()) return "unavailable";
       try {
         writePrompt(promptForProfileQuestion(question));
+        return isConsentAnswer(readAnswer()) ? "approved" : "declined";
+      } catch {
+        return "unavailable";
+      }
+    },
+  };
+}
+
+function grantPrompt(question: GrantQuestion): string {
+  return [
+    "Ward is asking you to share a secret with another project.",
+    "",
+    `  owner project:  ${question.ownerProjectId}`,
+    `  secret alias:   ${escapeForDisplay(question.alias)}`,
+    `  target project: ${question.targetProjectId}`,
+    `  target alias:   ${escapeForDisplay(question.targetAlias)}`,
+    "",
+    "The target project may then use this secret, under the target alias,",
+    "in operations its own developer approves. It cannot read, change,",
+    "delete or re-share it, and you can revoke the grant. A revoked grant",
+    "blocks new runs; it recalls nothing already sent and revokes nothing at",
+    "the credential's provider.",
+    "Answer y to grant, anything else to decline. [y/N] ",
+  ].join("\n");
+}
+
+// The same rule as every other question: an answer Ward could not read is
+// "unavailable", never consent (spec §4.3).
+export function createTerminalGrantApprover(
+  parts: TerminalConsentParts = {},
+): GrantApprover {
+  const isInteractive =
+    parts.isInteractive ?? (() => process.stdin.isTTY === true);
+  const writePrompt = parts.writePrompt ?? defaultWritePrompt;
+  const readAnswer = parts.readAnswer ?? readAnswerLine;
+  const available = (): boolean => {
+    try {
+      return isInteractive();
+    } catch {
+      return false;
+    }
+  };
+
+  return {
+    available,
+    ask(question): ProfileAnswer {
+      if (!available()) return "unavailable";
+      try {
+        writePrompt(grantPrompt(question));
         return isConsentAnswer(readAnswer()) ? "approved" : "declined";
       } catch {
         return "unavailable";
