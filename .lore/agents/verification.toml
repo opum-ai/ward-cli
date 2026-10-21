@@ -12,7 +12,6 @@ sources = [
   "adr/0003-profile-approval-authority",
   "index",
   "adr/0005-project-binding-identity",
-  "adr/0006-backup-container-and-restore-authority",
   "adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke",
   "adr/0018-profilesnapshotversion-bumps-at-the-first-release",
   "adr/0020-cross-project-grants-are-alias-bound-and-restore-clears-them",
