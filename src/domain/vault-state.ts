@@ -92,6 +92,9 @@ export interface ProfileApprovalRecord {
   readonly device: string;
   readonly inode: string;
   readonly approvedAt: string;
+  // When the approval stops admitting runs (DEC-217 Q5). Always after
+  // `approvedAt`, and judged at admission against the clock, never at read.
+  readonly expiresAt: string;
   readonly snapshotVersion: number;
   readonly snapshot: NormalizedProfile;
 }
@@ -367,6 +370,7 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   const expected = [
     "approvedAt",
     "device",
+    "expiresAt",
     "inode",
     "profile",
     "projectId",
@@ -382,7 +386,11 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   if (!isOpaqueId(value.projectId)) malformed();
   if (!isCanonicalAbsolutePath(value.root)) malformed();
   if (!isCounter(value.device) || !isCounter(value.inode)) malformed();
-  if (!isTimestamp(value.approvedAt)) malformed();
+  if (!isTimestamp(value.approvedAt) || !isTimestamp(value.expiresAt))
+    malformed();
+  // An approval that expires no later than it began admitted nothing and
+  // is not one this build wrote.
+  if (Date.parse(value.expiresAt) <= Date.parse(value.approvedAt)) malformed();
   // A version that is missing or is not a number is a damaged record; a
   // version this build does not implement is a record from another build.
   // The second is answered rather than re-normalized, because running this
@@ -404,6 +412,7 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
     device: value.device,
     inode: value.inode,
     approvedAt: value.approvedAt,
+    expiresAt: value.expiresAt,
     snapshotVersion: value.snapshotVersion,
     snapshot,
   };
@@ -673,6 +682,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         device,
         inode,
         approvedAt,
+        expiresAt,
         snapshotVersion,
         snapshot,
       }) => ({
@@ -682,6 +692,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         device,
         inode,
         approvedAt,
+        expiresAt,
         snapshotVersion,
         // Written in the same shape a manifest declares it, so one
         // normalizer reads both and a stored snapshot cannot drift into a
@@ -991,6 +1002,15 @@ function isApprovalFor(
     approval.device === checkout.device &&
     approval.inode === checkout.inode
   );
+}
+
+// Whether an approval has run out at `now`. The boundary instant is expired:
+// an approval admits runs strictly before `expiresAt`.
+export function approvalExpired(
+  approval: ProfileApprovalRecord,
+  now: Date,
+): boolean {
+  return Date.parse(approval.expiresAt) <= now.getTime();
 }
 
 export function findProfileApproval(

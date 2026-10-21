@@ -410,6 +410,23 @@ export const errorCatalog = {
     message:
       "A run label must start with a letter, be at most 64 characters, and use only letters, digits, dot, underscore or dash.",
   },
+  profile_approval_expired: {
+    type: "denied",
+    message:
+      "This checkout's approval of the profile has expired, so Ward did not run it.",
+    hint: "A developer approves again in a terminal with `ward profile approve <name>`. An approval lasts 24 hours unless approved with `--ttl`.",
+  },
+  profile_ttl_invalid: {
+    type: "usage",
+    message:
+      "The approval lifetime must be a whole number and one unit (m, h or d), from 1m to 30d.",
+    hint: "For example `--ttl 8h`. Without `--ttl` an approval lasts 24 hours.",
+  },
+  profile_option_unexpected: {
+    type: "usage",
+    message: "That option belongs to another `ward profile` action.",
+    hint: "Run `ward help profile` for usage.",
+  },
   profile_approval_stale: {
     type: "denied",
     message:

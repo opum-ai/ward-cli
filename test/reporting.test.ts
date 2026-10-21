@@ -573,6 +573,7 @@ describe("ward doctor", () => {
               device: identity.device,
               inode: identity.inode,
               approvedAt: "2026-09-29T00:00:00.000Z",
+              expiresAt: "2026-09-30T00:00:00.000Z",
               snapshotVersion: profileSnapshotVersion + 1,
               snapshot: {
                 adapter: "http",

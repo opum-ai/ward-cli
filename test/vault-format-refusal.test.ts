@@ -114,6 +114,7 @@ describe("the refusal that remains, and the one that is gone", () => {
                 device: "16777232",
                 inode: "8429931",
                 approvedAt: timestamp,
+                expiresAt: "2026-09-30T00:00:00.000Z",
                 snapshotVersion: 99,
                 snapshot: {
                   adapter: "http",

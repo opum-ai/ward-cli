@@ -42,7 +42,10 @@ access that was granted, changed or revoked in the meantime (DEC-217 Q2).
    confirm the registration.
 3. In each of those checkouts, re-approve each profile the checkout runs with
    `ward profile approve <name>`. An approval lasts 24 hours unless approved
-   with `--ttl`.
+   with `--ttl`. A vault or backup written before approvals carried an expiry
+   fails to parse because its approvals lack `expiresAt`; before the first
+   release the recovery is to re-approve, or to restore from a backup taken by
+   the current build.
 4. For every secret that one project shared with another, have the owning
    project's developer run `ward secret grant <alias> --to <project-id> --as
    <alias>` again from the owner's checkout. The target's profiles keep naming

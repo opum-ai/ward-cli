@@ -22,6 +22,10 @@ import {
   type ResultKind,
 } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
+import {
+  defaultApprovalTtlMs,
+  parseApprovalTtl,
+} from "../domain/approval-ttl.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import {
   differingProfileFields,
@@ -37,6 +41,7 @@ import {
   parseProjectManifest,
 } from "../domain/project-manifest.ts";
 import {
+  approvalExpired,
   type CheckoutIdentity,
   findProfileApproval,
   resolveSecret,
@@ -70,6 +75,7 @@ export interface ProfileOptions {
 }
 
 export interface CheckOptions {
+  readonly now: () => Date;
   readonly checkout: CheckoutIdentity;
   readonly files: ProjectFiles;
   readonly store: VaultStore;
@@ -79,6 +85,8 @@ export interface CheckOptions {
 export interface ProfileCommandInput {
   readonly action: string;
   readonly profile: string | undefined;
+  // `--ttl` on approve: the approval's lifetime, as typed.
+  readonly ttl?: string | undefined;
 }
 
 export interface CheckCommandInput {
@@ -105,7 +113,12 @@ export interface CheckResult {
 // inventory and `ward check` can report what is missing, from one
 // evaluation.
 export type DeclarationState = "valid" | "invalid";
-export type ApprovalState = "approved" | "missing" | "stale" | "not-evaluated";
+export type ApprovalState =
+  | "approved"
+  | "missing"
+  | "stale"
+  | "expired"
+  | "not-evaluated";
 export type SecretState = "present" | "missing" | "revoked" | "not-evaluated";
 
 export interface ProfileReadiness {
@@ -126,6 +139,7 @@ export const profileCheckReasons = [
   "declaration",
   "approval",
   "approval-stale",
+  "approval-expired",
   "secret",
   "grant-revoked",
 ] as const;
@@ -178,6 +192,7 @@ async function withOpenVault<T>(
 // invalid declaration rather than thrown: the other profiles in the same
 // manifest are still answerable, and a broken one must not hide them.
 function readinessFor(options: {
+  now: Date;
   name: string;
   manifest: ProjectManifest;
   state: VaultState;
@@ -221,12 +236,16 @@ function readinessFor(options: {
     approved === undefined
       ? []
       : differingProfileFields(snapshot, approved.snapshot);
+  // A changed declaration is stale whatever the clock says; an unchanged one
+  // is expired once its lifetime has run out (DEC-217 Q5).
   const approval: ApprovalState =
     approved === undefined
       ? "missing"
       : differing.length > 0
         ? "stale"
-        : "approved";
+        : approvalExpired(approved, options.now)
+          ? "expired"
+          : "approved";
   // A revoked grant is its own state and not "missing": the advice for a
   // missing credential is to store one, and storing a local secret under a
   // revoked grant's alias would block the owner from granting it again.
@@ -266,6 +285,7 @@ function selectedProfiles(
 }
 
 function readinessReport(options: {
+  now: Date;
   checkout: Checkout;
   state: VaultState;
   identity: CheckoutIdentity;
@@ -275,6 +295,7 @@ function readinessReport(options: {
   const authority = bindingAuthority(options.checkout, options.state);
   const profiles = selectedProfiles(manifest, options.profile).map((name) =>
     readinessFor({
+      now: options.now,
       name,
       manifest,
       state: options.state,
@@ -307,6 +328,7 @@ function checkReasons(
   if (entry.declaration === "invalid") reasons.push("declaration");
   if (entry.approval === "missing") reasons.push("approval");
   if (entry.approval === "stale") reasons.push("approval-stale");
+  if (entry.approval === "expired") reasons.push("approval-expired");
   if (entry.secret === "missing") reasons.push("secret");
   if (entry.secret === "revoked") reasons.push("grant-revoked");
   return reasons;
@@ -317,6 +339,7 @@ const reasonPhrases: Record<ProfileCheckReason, string> = {
   declaration: "the declaration is not one Ward can use",
   approval: "no approval in this checkout",
   "approval-stale": "the declaration changed after approval",
+  "approval-expired": "the approval has expired",
   secret: "the credential is not stored in this project",
   "grant-revoked":
     "the grant behind the credential was revoked, or its owner secret was deleted",
@@ -403,6 +426,7 @@ const approvalWords: Record<ApprovalState, string> = {
   approved: "approved",
   missing: "not approved",
   stale: "approval out of date",
+  expired: "approval expired",
   "not-evaluated": "not evaluated",
 };
 
@@ -477,6 +501,7 @@ async function approveProfile(
   opened: OpenedVault,
   projectId: string,
   options: ProfileOptions,
+  ttlMs: number,
 ): Promise<ProfileResult> {
   const manifest = requireManifest(opened.checkout);
   if (!Object.hasOwn(manifest.profiles, name))
@@ -508,7 +533,9 @@ async function approveProfile(
   if (answer !== "approved") throw new WardError("profile_requires_terminal");
   if (!stillApproved(options, projectId, name, snapshot))
     throw new WardError("profile_changed");
-  const approvedAt = options.now().toISOString();
+  const approvedNow = options.now();
+  const approvedAt = approvedNow.toISOString();
+  const expiresAt = new Date(approvedNow.getTime() + ttlMs).toISOString();
   const record: ProfileApprovalRecord = {
     profile: name,
     projectId,
@@ -516,6 +543,7 @@ async function approveProfile(
     device: options.checkout.device,
     inode: options.checkout.inode,
     approvedAt,
+    expiresAt,
     // Written with the record so a later build reads the snapshot under the
     // rules that produced it rather than under its own (spec §6.2).
     snapshotVersion: profileSnapshotVersion,
@@ -526,7 +554,13 @@ async function approveProfile(
   );
   return {
     kind: "profile.approve",
-    data: { profile: name, projectId, status: "approved", approvedAt },
+    data: {
+      profile: name,
+      projectId,
+      status: "approved",
+      approvedAt,
+      expiresAt,
+    },
     text: [
       "Profile approved.",
       "",
@@ -536,10 +570,12 @@ async function approveProfile(
       // format bytes, exactly as the prompt this was answered on assumes.
       `  checkout:  ${escapeForDisplay(options.checkout.root)}`,
       `  approved:  ${approvedAt}`,
+      `  expires:   ${expiresAt}`,
       "",
       "Ward runs this operation only while the declared profile still matches",
-      "what was approved. A change to the destination, method, authentication",
-      "reference, headers, body policy or output policy needs approval again.",
+      "what was approved, and only until the approval expires. A change to the",
+      "destination, method, authentication reference, headers, body policy or",
+      "output policy needs approval again, and so does an expired approval.",
     ].join("\n"),
   };
 }
@@ -625,10 +661,13 @@ export async function runProfile(
 ): Promise<ProfileResult> {
   const { action } = input;
   if (!isProfileAction(action)) throw new WardError("profile_action_unknown");
+  if (input.ttl !== undefined && action !== "approve")
+    throw new WardError("profile_option_unexpected");
   if (action === "list") {
     if (input.profile !== undefined) throw new WardError("unexpected_argument");
     return withOpenVault(options, options.checkout, ({ checkout, state }) => {
       const report = readinessReport({
+        now: options.now(),
         checkout,
         state,
         identity: options.checkout,
@@ -652,10 +691,17 @@ export async function runProfile(
     });
   }
   const name = requireProfileName(input.profile);
+  // Judged before the vault is opened, like the name: a lifetime Ward will
+  // not record costs no key prompt.
+  const ttlMs =
+    input.ttl === undefined
+      ? defaultApprovalTtlMs
+      : parseApprovalTtl(input.ttl);
+  if (ttlMs === undefined) throw new WardError("profile_ttl_invalid");
   return withOpenVault(options, options.checkout, async (opened) => {
     const projectId = boundProject(opened.checkout, opened.state);
     return action === "approve"
-      ? await approveProfile(name, opened, projectId, options)
+      ? await approveProfile(name, opened, projectId, options, ttlMs)
       : await revokeProfile(name, opened, projectId, options);
   });
 }
@@ -670,6 +716,7 @@ export async function runCheck(
 ): Promise<CheckResult> {
   return withOpenVault(options, options.checkout, ({ checkout, state }) => {
     const report = readinessReport({
+      now: options.now(),
       checkout,
       state,
       identity: options.checkout,
