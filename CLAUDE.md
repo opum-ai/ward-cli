@@ -14,7 +14,7 @@ Drive docs work through `lore` (not a plain editor or `grep`) so Story <-> Task 
 blocks, and cross-links stay coherent.
 
 - **Find and read docs:** `lore query "<words>" --limit 5`, then `lore read <id>` for the best hit.
-- **Skill:** installed from the `opum-lore` Claude Code plugin, not this repository — how to drive lore.
+- **Skill:** `.claude/skills/lore/SKILL.md` — how to drive lore.
 - **Just-in-time detail:** run `lore instructions` for the canonical agent loop, then
   `lore instructions <topic>` (`retrieval`, `linking`, `sync`, `check`, `validation`, `types`, `workspace`, `agents`).
 <!-- lore:agents:end -->
@@ -93,9 +93,12 @@ Development and tests use synthetic credentials and a dedicated temporary store 
 key-provider namespace. Never touch the developer's real `~/.ward/` vault or its
 keychain item, and never request a real credential in an agent session.
 
-The lore and quest skills ship as the `opum-lore` and `opum-quest` plugins
-(`agents.skill_source = "plugin"` in `.lore/config.toml` and
-`.quest/workspace.toml`). A copy under `.claude/skills/` is drift;
-`lore agents --check --target claude` and
+The lore skill is generated into this repository at `.claude/skills/lore/SKILL.md`
+by `lore agents`, because `opum-lore` is disabled in this checkout (DEC-238 (a1));
+that file is generated, so hand edits to it are drift. The quest skill ships as the
+`opum-quest` plugin (`agents.skill_source = "plugin"` in `.quest/workspace.toml`),
+which is off at user scope by the operator's decision (DEC-172 (4bf)); quest
+guidance reaches the agent through the managed Quest block above, which points at
+`quest instructions`. `lore agents --check --target claude` and
 `quest agents --check --require-installed --target claude` both exit 0 when clean.
 <!-- opum:repo-profile:end -->
