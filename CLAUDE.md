@@ -1,7 +1,7 @@
 <!-- quest:agent-instructions:begin -->
 # Quest agent instructions
 
-This project uses Quest CLI 0.13.0 for tracker operations. Run `quest manifest --json` to discover the supported command contract.
+This project uses Quest CLI 0.14.1 for tracker operations. Run `quest manifest --json` to discover the supported command contract.
 
 Read the matching guide before tracker work: `quest instructions overview` for the command set and machine contract, `quest instructions task-creation` before creating or splitting tasks, `quest instructions task-execution` before claiming, planning, or recording progress, `quest instructions task-finalization` before checking acceptance criteria or closing a task, and `quest instructions workspace` for initialization, managed instructions, and Backlog.md migration. `quest instructions --list` lists every guide. Search for an existing record with `quest search "<query>" --json` before creating one, and run `quest help <command>` for a command's options and examples.
 

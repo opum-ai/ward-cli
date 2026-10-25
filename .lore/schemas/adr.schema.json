@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "x-lore-generator": {
-    "profileDigest": "sha256:63d799a9c74d84b7219b5d66f0dd3af6660fa96847bdf56b545d9b2528847574"
+    "profileDigest": "sha256:997dc4f90389c2a5f4505d54b3b9262b8d4c2a6adc060450ef99e1776255c72a"
   },
   "type": "object",
   "properties": {
@@ -71,6 +71,19 @@
         "draft",
         "stable",
         "deprecated"
+      ]
+    },
+    "decisions": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "supersedes": {
