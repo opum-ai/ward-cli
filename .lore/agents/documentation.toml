@@ -27,5 +27,4 @@ sources = [
   "runbooks/cutting-a-ward-release",
   "runbooks/restoring-a-ward-vault-from-a-backup",
   "runbooks/install-and-upgrade-ward-from-a-release",
-  "reference/ward-s-spec-of-record-the-cli-contract-and-the-release-gates",
 ]

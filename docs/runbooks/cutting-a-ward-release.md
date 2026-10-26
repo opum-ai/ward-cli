@@ -83,21 +83,32 @@ that named a release-time obligation.
    Release:
 
    ```
+   head="$(git rev-parse origin/dev)"
    gh workflow run release.yml --ref dev
-   gh run list --workflow release.yml --limit 1 --json databaseId,headSha
+   # Select the run by the head SHA it built, not by recency: the newest run at
+   # this moment can still be the previous one.
+   gh run list --workflow release.yml --branch dev --limit 20 \
+     --json databaseId,headSha,event \
+     --jq "[.[] | select(.headSha == \"$head\" and .event == \"workflow_dispatch\")][0].databaseId"
+   gh run watch <databaseId> --exit-status
    gh run download <databaseId> -n ward-darwin-arm64 -D dry-run
    cat dry-run/ward-darwin-arm64.sha256
+   # Build from the commit the run built, so the comparison measures the
+   # toolchain rather than two different sources.
+   git switch --detach "$head"
    bun install --frozen-lockfile --os=darwin --cpu=arm64
    bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward
    shasum -a 256 out/ward
+   git switch -
    ```
 
    The expected result is the same sha256 from both, and that hash is the one
-   the release notes will carry. Two conditions decide the comparison. Keep
+   the release notes will carry. Three conditions decide the comparison. Keep
    the fixed `out/ward` output name the workflow uses, because the compiled
    bytes embed the output name. Build from a real `bun install` in the
    checkout, because a `node_modules` symlinked out of the tree embeds a
-   different module path and changes the hash. Measured 2026-10-26: the dry
+   different module path and changes the hash. Build the same commit the run
+   built, because two sources agreeing proves nothing about either. Measured 2026-10-26: the dry
    run on `dev` and a Mac build of the same source agreed byte for byte. A
    mismatch means the runner's toolchain or the checkout differs, so the
    release is not reproducible; stop and report it rather than tagging.
@@ -117,9 +128,11 @@ as the bump that should have happened, say so in its notes, and never edit a
 stored snapshot to fit.
 
 A publish step that fails after the Release was created as a draft leaves an
-orphan draft on the tag, and GitHub allows one Release per tag, so a rerun
-fails on the draft it cannot create. Delete the orphan before rerunning -
+orphan draft on the tag. Delete it before rerunning -
 `gh release delete <tag> --yes`, without `--cleanup-tag`, which would delete
-the tag the Release belongs to. The draft-then-publish order is deliberate: it
+the tag the Release belongs to. What a rerun does with the orphan still there
+is deliberately not asserted here: GitHub may allow a second draft on the same
+tag, in which case the rerun succeeds and the orphan stays behind for whoever
+finds it later. The draft-then-publish order is deliberate: it
 is what keeps a failed upload from leaving a public Release with missing
 files.

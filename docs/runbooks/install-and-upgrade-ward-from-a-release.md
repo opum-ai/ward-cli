@@ -78,7 +78,10 @@ release's attached files, and treat a mismatch as a defect in this page.
    `ward doctor` name it with its checkout and its snapshot version (the
    `stale_approvals` check). Nothing is migrated or edited. Approve each named
    profile again in a trusted terminal with `ward profile approve <name>`,
-   which replaces the stale record. Projects, secrets and bindings that hold
+   which replaces the stale record. Run it from the checkout the report named:
+   the replacement matches on profile, project and checkout root, so the same
+   command run somewhere else records a second approval and leaves the stale
+   one exactly where it was. Projects, secrets and bindings that hold
    no approval are read as before.
 
 ### Upgrade
@@ -94,9 +97,16 @@ release's attached files, and treat a mismatch as a defect in this page.
 ## Rollback
 
 Keep the previous artifact and install it the same way (`install -m 0755`).
-Rolling back across a snapshot-version bump does not honour the approvals the
-newer build wrote: they become stale records that authorise nothing, and
-`ward status` and `ward doctor` name each one, exactly as step 8 describes in
-the other direction: approve the profiles again. The vault itself is not altered by an install, an upgrade or a
-rollback. If a download fails its checksum, nothing was installed; retry the
-download, and report a repeat failure rather than installing the file.
+The vault itself is not altered by an install, an upgrade or a rollback.
+
+Rolling back is only as safe as the older build's ability to read what the
+newer one wrote. From 0.1.0 the only rollback target is a pre-release build,
+and those refuse the whole vault once it holds an approval written by 0.1.0:
+they predate the versioned approval record, answer
+`vault_format_unsupported`, and stop at the door on `ward status`, `ward
+doctor` and every other read rather than letting the newer approvals go inert.
+There is no migration back. The remedy is to reinstall 0.1.0 — or, under 0.1.0
+before downgrading, to revoke the approvals that would be left behind.
+
+If a download fails its checksum, nothing was installed; retry the download,
+and report a repeat failure rather than installing the file.

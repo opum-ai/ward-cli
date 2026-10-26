@@ -1,7 +1,7 @@
 // `ward status` and `ward doctor` (spec §8): the two read-only reports over
 // the state every other command acts on. Status answers what this checkout
 // and its backend look like right now; doctor runs the same observation as
-// five named checks and exits 6 when one of them is wrong. They share this
+// six named checks and exits 6 when one of them is wrong. They share this
 // module because they must never disagree: a status run and a doctor run
 // read the same facts through the same ports, in the same order.
 //
@@ -35,6 +35,7 @@
 import { type ExitCode, exitCodes } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
 import type { AgentTarget } from "../contract/manifest.ts";
+import { escapeForDisplay } from "../domain/display.ts";
 import { managedBlockStatus } from "../domain/managed-block.ts";
 import { parseProjectManifest } from "../domain/project-manifest.ts";
 import {
@@ -101,11 +102,12 @@ type KeyObservation =
 
 // `unsupported` is not about the document's own version, which now has a
 // single format and answers `malformed` when it is not this build's (DEC-38).
-// It is the *other* raiser of `vault_format_unsupported` reaching this read: a
-// stored profile approval whose `snapshotVersion` this build does not
-// implement. That record sits inside an otherwise-readable document, so the
-// document is not malformed — and because it is reachable, this status is what
-// keeps the two reports answering rather than throwing (WCLI-51 review, F1).
+// It is the sealed envelope reaching this read with a header this build does
+// not implement, which is the only remaining raiser of
+// `vault_format_unsupported`: since DEC-246 a2 a stored approval's snapshot
+// version is an inert record reported as stale, not an error. Because that
+// envelope case is reachable, this status is what keeps the two reports
+// answering rather than throwing.
 type StateObservation =
   | { status: "present"; state: VaultState }
   | { status: "unreadable" }
@@ -226,11 +228,13 @@ function observeState(store: VaultStore, key: Uint8Array): StateObservation {
     switch (wardCode(error)) {
       case "vault_state_malformed":
         return { status: "malformed" };
-      // Still reachable after DEC-38, and this case is the whole reason the
-      // status survives: parseVaultState raises this code for a stored
-      // approval's snapshotVersion even though it no longer raises it for the
-      // document's own version. Dropping this case makes both reports throw
-      // out of their read instead of answering.
+      // Still reachable after DEC-38 and DEC-246 a2, and this case is the
+      // whole reason the status survives: the sealed envelope's header raises
+      // this code for a format this build does not implement. The state
+      // document's own version no longer raises it, and neither does a
+      // stored approval, which is held inert and reported as stale instead.
+      // Dropping this case makes both reports throw out of their read
+      // instead of answering.
       case "vault_format_unsupported":
         return { status: "unsupported" };
       case "vault_authentication_failed":
@@ -277,6 +281,12 @@ export interface StaleApprovalReport {
   readonly projectId: string;
   readonly checkout: string;
   readonly snapshotVersion: number;
+  // The step that clears this record, written out rather than left for the
+  // caller to compose from the fields above. It only works from the checkout
+  // the record names — run elsewhere, `ward profile approve` writes a new
+  // approval and leaves this one in place — and a reader assembling its own
+  // command has no way to know that from the fields alone.
+  readonly remedy: string;
 }
 
 export interface StatusReport {
@@ -318,6 +328,7 @@ function staleApprovalReports(
       projectId,
       checkout: root,
       snapshotVersion,
+      remedy: `from ${root}, run ward profile approve ${profile}`,
     }),
   );
 }
@@ -330,7 +341,7 @@ function staleApprovalLines(
     `  stale approvals: ${approvals.length} (written by another build; they authorise nothing)`,
     ...approvals.map(
       (entry) =>
-        `    - ${entry.profile} at ${entry.checkout}, snapshot version ${entry.snapshotVersion}: re-approve in a trusted terminal with ward profile approve ${entry.profile}`,
+        `    - ${escapeForDisplay(entry.profile)} at ${escapeForDisplay(entry.checkout)}, snapshot version ${entry.snapshotVersion}: re-approve in a trusted terminal with ward profile approve ${escapeForDisplay(entry.profile)}, run from that checkout`,
     ),
   ];
 }
@@ -539,9 +550,9 @@ function schemaCheck(
     switch (state.status) {
       case "malformed":
         return { check, status: "fail", code: "state_malformed" };
-      // A stored approval this build cannot read. Keyed to the record rather
-      // than to the document, which is why it is not `state_malformed`: the
-      // document parsed, and one record in it did not (WCLI-51 review, F1).
+      // The sealed envelope's header names a format this build cannot read.
+      // Keyed to the vault rather than to the state document, which is why it
+      // is not `state_malformed`: there was no document to parse.
       case "unsupported":
         return { check, status: "fail", code: "state_unsupported" };
       case "unauthenticated":
@@ -610,6 +621,12 @@ function bindingCheck(
 // failure rather than a pass because "approved" is exactly what the operator
 // would otherwise assume, and the exit code is how that assumption gets
 // corrected without reading prose.
+//
+// A check that could not be evaluated fails with the blocking reason as its
+// code, exactly as `binding` does. `skipped` is reserved for the subject not
+// existing here, and this report being unable to look is not that: reading it
+// as healthy would tell a developer their approvals are current when Ward
+// never got to count them.
 function staleApprovalsCheck(
   vault: VaultObservation,
   key: KeyObservation | undefined,
@@ -619,15 +636,13 @@ function staleApprovalsCheck(
   if (vault.status === "absent")
     return { check, status: "skipped", code: "vault_absent" };
   if (vault.status !== "present")
-    return { check, status: "skipped", code: `vault_${vault.status}` };
-  if (state === undefined)
-    return {
-      check,
-      status: "skipped",
-      code: key === undefined ? "state_unreadable" : `key_${key.status}`,
-    };
+    return { check, status: "fail", code: `vault_${vault.status}` };
+  if (state === undefined) {
+    const reason = key === undefined ? "state_unreadable" : `key_${key.status}`;
+    return { check, status: "fail", code: reason };
+  }
   if (state.status !== "present")
-    return { check, status: "skipped", code: `state_${state.status}` };
+    return { check, status: "fail", code: `state_${state.status}` };
   const stale = staleApprovalReports(state);
   if (stale.length === 0) return { check, status: "pass", code: "current" };
   return {

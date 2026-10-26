@@ -43,10 +43,11 @@ import {
 // `vault_state_malformed` — the answer every other invalid field in this
 // document already gets. The version is validated the same way: a missing,
 // non-numeric or unrecognized value is malformed, and this module never
-// raises `vault_format_unsupported`. That code survives at the two sites
-// which are not this format — the sealed envelope's header, which is bound as
-// authenticated data, and a stored profile approval's snapshot version, which
-// guards an authority question rather than a compatibility one.
+// raises `vault_format_unsupported`. That code survives at one site, the
+// sealed envelope's header, which is not this format and is bound as
+// authenticated data. A stored profile approval's snapshot version used to
+// raise it here too; since DEC-246 a2 that record is held inert instead, so
+// nothing in this module treats it as a compatibility failure any more.
 export const vaultStateFormatVersion = 1;
 
 export interface ProjectRecord {
@@ -424,9 +425,17 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
   // An approval that expires no later than it began admitted nothing and
   // is not one this build wrote.
   if (Date.parse(value.expiresAt) <= Date.parse(value.approvedAt)) malformed();
-  // A missing or non-numeric version is a damaged record; only a version this
-  // build does not implement takes the stale answer (DEC-246 a2 clause 4).
-  if (typeof value.snapshotVersion !== "number") malformed();
+  // A missing, non-numeric or impossible version is a damaged record; only a
+  // version this build does not implement takes the stale answer (DEC-246 a2
+  // clause 4). The integer check is what keeps leniency from swallowing a
+  // damaged number: 0, -1 or 1.5 is no build's snapshot version, so it stays
+  // malformed rather than becoming a stale record that names it in a report.
+  if (
+    typeof value.snapshotVersion !== "number" ||
+    !Number.isSafeInteger(value.snapshotVersion) ||
+    value.snapshotVersion < 1
+  )
+    malformed();
   if (value.snapshotVersion !== profileSnapshotVersion) {
     // A record carrying no snapshot at all is damaged rather than merely from
     // another build; anything else here is that build's to interpret, not

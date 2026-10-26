@@ -235,6 +235,37 @@ describe("DEC-246 (a2): a version-mismatched approval", () => {
     ).toHaveLength(1);
   });
 
+  // Finding 7 (rv331): leniency is for a version another build could have
+  // written, and no build writes 0, -1 or 1.5. Those are damaged records, so
+  // they refuse the document rather than becoming a stale record that would
+  // print "snapshot version 1.5" at a developer as if it meant something.
+  test("a version that is not a positive integer is malformed, not stale", () => {
+    for (const damaged of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        refusalCode(() =>
+          parseVaultState(
+            document({
+              formatVersion: vaultStateFormatVersion,
+              profileApprovals: [approval({ snapshotVersion: damaged })],
+            }),
+          ),
+        ),
+      ).toBe("vault_state_malformed");
+    }
+    // The positive control on the same axis: one above the build's own
+    // version is another build's, and still takes the stale answer.
+    expect(
+      parseVaultState(
+        document({
+          formatVersion: vaultStateFormatVersion,
+          profileApprovals: [
+            approval({ snapshotVersion: profileSnapshotVersion + 1 }),
+          ],
+        }),
+      ).staleProfileApprovals,
+    ).toHaveLength(1);
+  });
+
   // A stale approval bound to a checkout path that no longer exists is still
   // named, which is what lets an operator sitting see it after a worktree is
   // gone rather than dead-ending at a refusal.

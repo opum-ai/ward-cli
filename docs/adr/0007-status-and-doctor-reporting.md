@@ -56,8 +56,9 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   second binding carrying sentinels and assert neither can appear in either
   output, with the current project's own id asserted present as the positive
   control.
-- **Doctor runs five checks, in a fixed order, and always reports all five:**
-  `permissions`, `key_provider`, `schema`, `binding`, `instructions`. Each
+- **Doctor runs six checks, in a fixed order, and always reports all six:**
+  `permissions`, `key_provider`, `schema`, `binding`, `stale_approvals`,
+  `instructions`. Each
   carries a stable code. Every check is evaluated independently, so one
   failure never suppresses the others' answers.
 - **A check's result is `pass`, `fail` or `skipped`.** `fail` means the

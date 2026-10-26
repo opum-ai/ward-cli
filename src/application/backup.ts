@@ -112,10 +112,12 @@ export async function runBackup(options: {
     // open at all; this parse refuses one whose document decrypts and does
     // not parse, before the KDF, the seal and the file, so `ward backup`
     // never creates a file that `ward restore` would refuse. It answers what
-    // every other read of the state document answers:
-    // `vault_state_malformed`, or `vault_format_unsupported` for a document
-    // carrying a stored approval whose snapshot version this build does not
-    // implement — the second site DEC-38 left standing. What it costs is
+    // every other read of the state document answers: `vault_state_malformed`.
+    // `vault_format_unsupported` cannot come from here — the sealed envelope's
+    // header is that code's only remaining site, and the read above already
+    // refused it — so a stored approval whose snapshot version this build does
+    // not implement is not a parse failure any more; it is held inert
+    // (DEC-246 a2). What it costs is
     // recorded in ADR 0010: preserving the bytes of a damaged vault means
     // copying the vault file, not taking a Ward backup, because this build
     // has no recovery surface for one.
@@ -208,8 +210,11 @@ export async function runRestore(options: {
         // stored approval live again — and T21 requires a restored vault's
         // approvals to be inactive until they are reviewed explicitly.
         profileApprovals: [],
-        // A stale approval is one a backup cannot interpret either, and it is
-        // the restored vault's, not the backup's: nothing carries it.
+        // A stale approval is not carried, though the backup can read one:
+        // it records that some other build approved a profile in the vault
+        // this restore is replacing, and a restored vault carries no
+        // approvals of any kind. The restore output names it, with the
+        // active approvals it clears, as `approvals: "cleared"`.
         staleProfileApprovals: [],
         // A grant gives one project the use of another's secret, and it is
         // cleared with the approvals it served: restoring an older backup must

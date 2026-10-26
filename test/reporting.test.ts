@@ -439,6 +439,15 @@ describe("ward doctor", () => {
       });
       expect(checkFor(doctor.data, "schema").code).toBe("vault_busy");
       expect(checkFor(doctor.data, "binding").code).toBe("vault_busy");
+      // Finding 14 (rv331): a check that could not be evaluated fails with the
+      // blocking reason, exactly as schema and binding do. `skipped` is
+      // reserved for a subject that is not there, and reporting "nothing
+      // stale" for a vault Ward never opened is the answer that reads as a
+      // healthy one without being one.
+      expect(checkFor(doctor.data, "stale_approvals")).toMatchObject({
+        status: "fail",
+        code: "vault_busy",
+      });
       expect(checkFor(doctor.data, "instructions").status).toBe("pass");
 
       const status = await runStatus(options);
@@ -614,15 +623,20 @@ describe("ward doctor", () => {
         profile: "deploy",
         checkout: identity.root,
         snapshotVersion: profileSnapshotVersion + 1,
+        // Finding 8 (rv331): the remedy travels in the JSON as well, and it
+        // names the checkout — the replacement only matches there, so a
+        // caller that composed the command from the other fields would write
+        // a second approval and leave this one in place.
+        remedy: `from ${identity.root}, run ward profile approve deploy`,
       }),
     ]);
     // The reports a person reads name the record, its checkout, its version
-    // and the step that clears it — the JSON above is not enough on its own,
-    // because the re-approve step only exists in the text.
+    // and the step that clears it.
     const doctorText = await runWard(["doctor"], h.options(checkout));
     expect(doctorText.stdout).toContain("deploy");
     expect(doctorText.stdout).toContain(identity.root);
     expect(doctorText.stdout).toContain("ward profile approve deploy");
+    expect(doctorText.stdout).toContain("run from that checkout");
     expect(doctorText.stdout).toContain(
       `snapshot version ${profileSnapshotVersion + 1}`,
     );
@@ -641,6 +655,56 @@ describe("ward doctor", () => {
     const statusText = await runWard(["status"], h.options(checkout));
     expect(statusText.stdout).toContain("ward profile approve deploy");
     expect(statusText.stdout).toContain(identity.root);
+  });
+
+  // Finding 9 (rv331): these lines print a checkout path stored in the vault,
+  // and a path is allowed to carry format characters. A bidi override reorders
+  // what follows it on the line, so an unescaped one can make the checkout
+  // Ward names read as a different directory than the one the record holds.
+  test("a stale record's checkout is escaped before it is printed", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-stale-escape");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+    const bidiOverride = String.fromCodePoint(0x202e);
+    const hostileRoot = `${identity.root}/wo${bidiOverride}rktree`;
+
+    h.store.mutate(h.key(), () =>
+      new TextEncoder().encode(
+        JSON.stringify({
+          formatVersion: vaultStateFormatVersion,
+          profileApprovals: [
+            {
+              profile: "deploy",
+              projectId: randomUUID(),
+              root: hostileRoot,
+              device: identity.device,
+              inode: identity.inode,
+              approvedAt: "2026-09-29T00:00:00.000Z",
+              expiresAt: "2026-09-30T00:00:00.000Z",
+              snapshotVersion: profileSnapshotVersion + 1,
+              snapshot: {
+                adapter: "http",
+                method: "GET",
+                url: "https://api.example.invalid/a",
+                auth: { type: "bearer", secret: "example.token" },
+                headers: [],
+                requestBody: "none",
+                output: "status",
+              },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const status = await runWard(["status"], h.options(checkout));
+    // The record is still named — escaping is display, not suppression — and
+    // the character that could act on the terminal is shown as text.
+    expect(status.stdout).toContain("/wo");
+    expect(status.stdout).not.toContain(bidiOverride);
+    expect(status.stdout).toContain("\\u202e");
   });
 
   test("binding: unregistered, then registered, then a conflict", async () => {

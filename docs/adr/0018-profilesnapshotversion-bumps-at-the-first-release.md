@@ -115,8 +115,12 @@ silently drop:
    its checkout and its snapshot version, with the re-approve step
    (`ward profile approve <name>`).
 3. It is never removed silently. Re-approving the same profile and identity
-   replaces it; every other write carries the record back out unchanged.
-   ward-cli chose that arm — keep the record inert in the document — over
+   replaces it; every other write carries the record back out unchanged. The
+   one exception is a named drop rather than a silent one: `ward restore`
+   clears every approval, active or stale, and says so in its output as
+   `approvals: "cleared"`, so a restored vault never carries a record forward
+   that nothing in it could have approved. ward-cli chose that arm — keep the
+   record inert in the document — over
    dropping it with the drop named in a command's output.
 4. Only a mismatched **version** gets this treatment. An unknown key, a
    malformed record or a wrong document version still refuses the whole

@@ -83,13 +83,14 @@ export const errorCatalog = {
     type: "validation",
     message: "The vault key is not a 32-byte key.",
   },
-  // One code for both sites that raise it, and DEC-38 removed the third: the
-  // sealed envelope's version, and a stored profile approval's snapshot
-  // version. The vault state document's own version used to raise it too and
-  // is now an ordinary field validation answered `vault_state_malformed`,
-  // because Ward has a single document format (DEC-38 A). The sentence is
-  // true at both remaining sites without naming which one, and it states the
-  // non-modification guarantee the way the rest of this catalog does. It
+  // One site raises it now, down from three, and it is the only one that is
+  // not this document format: the sealed envelope's version, which is bound
+  // as authenticated data. The vault state document's own version became an
+  // ordinary field validation answered `vault_state_malformed`, because Ward
+  // has a single document format (DEC-38 A), and a stored profile approval's
+  // snapshot version became an inert record rather than an error (DEC-246
+  // a2), so neither reaches this code. The sentence names no site and states
+  // the non-modification guarantee the way the rest of this catalog does. It
   // carries no hint and no version numbers: a vault from another build has no
   // recovery path, so there is no command to point at, and DEC-30 A fixed
   // this exact wording (WCLI-11, DEC-26 A; the no-hint half survives DEC-38,

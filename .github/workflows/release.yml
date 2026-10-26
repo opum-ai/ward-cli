@@ -42,7 +42,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-      - name: The tag is annotated, names this package's version, and is main's tip
+      - name: The tag names this package's version and is main's tip
         if: github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
@@ -51,10 +51,6 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           if [ "$TAG" != "v${version}" ]; then
             echo "::error::tag ${TAG} does not match package.json version ${version}"
-            exit 1
-          fi
-          if [ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]; then
-            echo "::error::${TAG} is not an annotated tag: cut it with git tag -a"
             exit 1
           fi
           tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
@@ -66,6 +62,17 @@ jobs:
             echo "::error::${TAG} does not point at main's tip: AC1 requires main == dev, so a tag behind the tip is not this release"
             exit 1
           fi
+      # Annotated-ness is read from the stored ref, not from the checkout: what
+      # actions/checkout leaves at refs/tags/<tag> is what the old
+      # `git cat-file -t` was trusting, and for an annotated tag that object
+      # can be the commit. The script says why in full.
+      - name: The tag is an annotated tag
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: node scripts/check-release-tag.mjs
       # The runner has no gh, so the release job uses node and the REST API.
       - run: node --version
       - name: Install with the darwin native module
@@ -97,7 +104,20 @@ jobs:
           else
             baseline="HEAD"
           fi
-          previous_tag="$(git describe --tags --abbrev=0 --match 'v*' "$baseline" 2>/dev/null || true)"
+          # Only "No names found" means there is no previous tag. Every other
+          # failure must stop the run: reading any failure as "no previous
+          # tag" would fall back to the pre-release baseline and print a bump
+          # note for a release that raises nothing, which is a claim the
+          # release notes should not make silently.
+          previous_tag=""
+          if described="$(git describe --tags --abbrev=0 --match 'v*' "$baseline" 2>&1)"; then
+            previous_tag="$described"
+          elif [[ "$described" == *"No names found"* ]]; then
+            previous_tag=""
+          else
+            echo "::error::could not read the previous v* tag from ${baseline}: ${described}"
+            exit 1
+          fi
           snapshot_version_before=1
           if [ -n "$previous_tag" ]; then
             snapshot_version_before="$(git show "${previous_tag}:src/domain/profile.ts" | sed -n 's/^export const profileSnapshotVersion = \([0-9][0-9]*\);$/\1/p')"
