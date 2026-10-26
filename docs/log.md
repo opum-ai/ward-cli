@@ -30,6 +30,8 @@
 - 2026-10-26T13:38:59-05:00 1fc4e334df3bc4b314e32faee1750d1d563455da fix(WCLI-83): restore the ward skill trigger and pass T24-Claude 5/5 (#186)
 - 2026-10-26T15:15:16-05:00 984a145ed889f995949091f729ecede7f95af3c4 fix(WCLI-82): release review fix round F2-F8 (held open for F1) (#188)
 - 2026-10-26T16:16:48-05:00 8782acbbcbbfd7fcaf6d9a5cf8cf8e5e3f5b8e4f docs(WCLI-82): record the 0.1.0 cut's gate results
+- 2026-10-26T16:18:06-05:00 f2bcc682ae32f67a351bdfbbdf00dcd9f67d7a8e docs(WCLI-82): record the 0.1.0 cut's gate results (#196)
+- 2026-10-26T16:19:53-05:00 5a616927579c3daf5d23d3bbcde04fe13d367a2e docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3
 
 ## docs/adr
 
