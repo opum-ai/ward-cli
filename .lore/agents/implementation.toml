@@ -14,6 +14,7 @@ sources = [
   "adr/0007-status-and-doctor-reporting",
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
+  "adr/0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release",
   "adr/0021-a-profile-approval-expires-24-hours-by-default",
   "adr/0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes",
   "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",

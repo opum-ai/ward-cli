@@ -62,6 +62,22 @@ the merge SHA.
 | T26 with a real send | The packaged smoke stops at admission and a refused destination, so it sends nothing. Before the first release it must also send once, to a real endpoint or a loopback TLS server (DEC-217 (a3)) | Not run before the first release; recorded here so the pre-release floor is not read as the whole gate |
 | T25 federated index | The marketplace entry resolves to the release artifact | Step 4 of the same runbook, and spec section 11.3 |
 
+## Release 0.1.0 gate results (WCLI-82)
+
+Recorded 2026-10-26 on the draft release commit. The tag waits for every row
+not Done; DEC-246 D3 sets which gates run for 0.1.0.
+
+| Gate | Result |
+|---|---|
+| `profileSnapshotVersion` bump | Done: the constant is 2; a dev-era approval is refused with `vault_format_unsupported`, a release approval parses (in-process, synthetic data) |
+| Plugin and CLI versions agree | Done: 0.1.0 in `package.json` and `.claude-plugin/plugin.json`, held by `test/plugin-manifest.test.ts` |
+| Format-compatibility decision (runbook step 5) | Done: [ADR 0023](adr/0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md), DEC-246 D1 |
+| T24 Claude half | **FAILED, blocks the tag.** `scripts/run-eval.sh` under Claude Code 2.1.309: 3 of 5 cases. `ward-shell-history-curl` (0.00) and `ward-stdout-debug-print` (0.33) never fired the skill. The last full run, 2026-09-29 under 2.1.284, was 5 of 5; `skills/` and `evals/` are unchanged and plugin version 0.0.0 fails the same way. WCLI-83 |
+| T24 Codex half | Deferred for 0.1.0 by DEC-246 D3: Codex is retired for the fleet and this half is a manual smoke ([ADR 0012](adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke.md)) |
+| T26 packaged-binary run | Pending the operator sitting (DEC-246 D3): run in the same sitting as the keychain and profile re-approval after install, on the released artifact |
+| T26 with a real send | Not run, and DEC-246 does not remove it: it still has to send once to a real endpoint or a loopback TLS server (DEC-217 (a3)) before the tag |
+| T25 federated index | Not yet: it needs the tag and release artifact |
+
 ## How T26 is measured
 
 DEC-217 (a2) rules the isolation. The run builds `dist/ward-qualify`, the shipped
