@@ -39,6 +39,7 @@ import { runUnregister } from "../src/application/unregister.ts";
 import { runWard } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import {
+  findProfileApproval,
   parseVaultState,
   serializeVaultState,
 } from "../src/domain/vault-state.ts";
@@ -420,5 +421,82 @@ describe("ward unregister", () => {
       }),
     ).rejects.toMatchObject({ code: "project_not_registered" });
     expect(w.state().profileApprovals).toHaveLength(2);
+  });
+
+  // DEC-246 (a2) clause 3: a version-mismatched approval is authority the
+  // developer still has to see. Unregistering the checkout it names removes
+  // the binding and the current-version approval, and leaves the stale record
+  // in the document — inert, still named by the reports — rather than
+  // dropping it silently.
+  test("a stale approval is kept inert when its checkout is unregistered", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.profileApprovals.find(
+        (approval) => approval.root === identity.root,
+      );
+      if (mine === undefined) throw new Error("fixture has no approval");
+      const stored = {
+        profile: mine.profile,
+        projectId: mine.projectId,
+        root: mine.root,
+        device: mine.device,
+        inode: mine.inode,
+        approvedAt: mine.approvedAt,
+        expiresAt: mine.expiresAt,
+        snapshotVersion: 1,
+        snapshot: {
+          adapter: "http",
+          method: "GET",
+          url: "https://api.example.invalid/status",
+          auth: { type: "bearer", secret: ALIAS },
+          headers: [],
+          requestBody: "none",
+          output: "status",
+        },
+      };
+      return serializeVaultState({
+        ...current,
+        profileApprovals: current.profileApprovals.filter(
+          (approval) => approval !== mine,
+        ),
+        staleProfileApprovals: [
+          ...current.staleProfileApprovals,
+          {
+            profile: mine.profile,
+            projectId: mine.projectId,
+            root: mine.root,
+            device: mine.device,
+            inode: mine.inode,
+            snapshotVersion: 1,
+            stored,
+          },
+        ],
+      });
+    });
+    expect(w.state().staleProfileApprovals).toHaveLength(1);
+
+    const { approver } = scripted(["approved", "approved"]);
+    const result = await w.ward(w.first, ["unregister"], approver);
+    expect(result.exitCode).toBe(exitCodes.success);
+
+    const after = w.state();
+    // The binding and this checkout's current-version approval are gone...
+    expect(after.localBindings.map((entry) => entry.root)).toEqual([
+      locateCheckout(w.second).root,
+    ]);
+    expect(after.profileApprovals).toHaveLength(1);
+    // ...and the stale record is still there, still inert.
+    expect(after.staleProfileApprovals).toHaveLength(1);
+    expect(after.staleProfileApprovals[0]?.root).toBe(identity.root);
+    expect(
+      findProfileApproval(
+        after,
+        identity,
+        String(after.staleProfileApprovals[0]?.projectId),
+        PROFILE,
+      ),
+    ).toBe(undefined);
   });
 });

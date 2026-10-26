@@ -268,6 +268,17 @@ async function observe(options: ReportingOptions): Promise<Observation> {
 
 // --- ward status -------------------------------------------------------------
 
+// One stored approval this build cannot read: its snapshot version names
+// another build's normalizer (DEC-246 a2). It authorises nothing, and both
+// reports name it so the developer can re-approve it rather than discovering
+// the loss at a refusal.
+export interface StaleApprovalReport {
+  readonly profile: string;
+  readonly projectId: string;
+  readonly checkout: string;
+  readonly snapshotVersion: number;
+}
+
 export interface StatusReport {
   readonly checkout: string;
   readonly manifest: {
@@ -292,6 +303,36 @@ export interface StatusReport {
       | "unsupported"
       | "unchecked";
   };
+  // Empty rather than absent when there are none, so a caller can tell "none"
+  // from "this report does not say".
+  readonly staleApprovals: readonly StaleApprovalReport[];
+}
+
+function staleApprovalReports(
+  state: StateObservation | undefined,
+): readonly StaleApprovalReport[] {
+  if (state === undefined || state.status !== "present") return [];
+  return state.state.staleProfileApprovals.map(
+    ({ profile, projectId, root, snapshotVersion }) => ({
+      profile,
+      projectId,
+      checkout: root,
+      snapshotVersion,
+    }),
+  );
+}
+
+function staleApprovalLines(
+  approvals: readonly StaleApprovalReport[],
+): readonly string[] {
+  if (approvals.length === 0) return [];
+  return [
+    `  stale approvals: ${approvals.length} (written by another build; they authorise nothing)`,
+    ...approvals.map(
+      (entry) =>
+        `    - ${entry.profile} at ${entry.checkout}, snapshot version ${entry.snapshotVersion}: re-approve in a trusted terminal with ward profile approve ${entry.profile}`,
+    ),
+  ];
 }
 
 // The binding for this root, whatever project it names. A miss means this
@@ -327,6 +368,7 @@ function statusText(report: StatusReport): string {
     `  binding:       ${report.binding.status}`,
     `  vault:         ${vault}`,
     `  key provider:  ${report.keyProvider.status}`,
+    ...staleApprovalLines(report.staleApprovals),
     "",
     "Ward read this state; it did not change anything.",
   ].join("\n");
@@ -364,6 +406,7 @@ export async function runStatus(
           }
         : { status: vault.status },
     keyProvider: { status: key === undefined ? "unchecked" : key.status },
+    staleApprovals: staleApprovalReports(observation.state),
   };
   return { data, text: statusText(data) };
 }
@@ -375,6 +418,7 @@ export type DoctorCheckName =
   | "key_provider"
   | "schema"
   | "binding"
+  | "stale_approvals"
   | "instructions";
 
 export type InstructionState =
@@ -390,6 +434,9 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
+  // Named individually rather than counted, because the re-approve step is
+  // per profile and per checkout (DEC-246 a2 clause 2).
+  readonly staleApprovals?: readonly StaleApprovalReport[];
 }
 
 export interface DoctorReport {
@@ -557,6 +604,40 @@ function bindingCheck(
   return { check, status: "pass", code: "registered" };
 }
 
+// A stored approval this build cannot read is a finding rather than a fault
+// in the vault: the document parsed, the record authorises nothing, and the
+// developer clears it by re-approving the profile (DEC-246 a2). It is a
+// failure rather than a pass because "approved" is exactly what the operator
+// would otherwise assume, and the exit code is how that assumption gets
+// corrected without reading prose.
+function staleApprovalsCheck(
+  vault: VaultObservation,
+  key: KeyObservation | undefined,
+  state: StateObservation | undefined,
+): DoctorCheck {
+  const check = "stale_approvals" as const;
+  if (vault.status === "absent")
+    return { check, status: "skipped", code: "vault_absent" };
+  if (vault.status !== "present")
+    return { check, status: "skipped", code: `vault_${vault.status}` };
+  if (state === undefined)
+    return {
+      check,
+      status: "skipped",
+      code: key === undefined ? "state_unreadable" : `key_${key.status}`,
+    };
+  if (state.status !== "present")
+    return { check, status: "skipped", code: `state_${state.status}` };
+  const stale = staleApprovalReports(state);
+  if (stale.length === 0) return { check, status: "pass", code: "current" };
+  return {
+    check,
+    status: "fail",
+    code: "reapprove_required",
+    staleApprovals: stale,
+  };
+}
+
 const instructionTargets: readonly AgentTarget[] = ["claude", "codex"];
 
 function instructionState(
@@ -618,12 +699,15 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
 }
 
 function doctorText(report: DoctorReport): string {
-  const lines = report.checks.map((check) => {
+  const lines = report.checks.flatMap((check) => {
     const documents =
       check.documents === undefined
         ? ""
         : ` (claude: ${check.documents.claude}, codex: ${check.documents.codex})`;
-    return `  ${check.check.padEnd(13)}${check.status.padEnd(8)}${check.code}${documents}`;
+    return [
+      `  ${check.check.padEnd(16)}${check.status.padEnd(8)}${check.code}${documents}`,
+      ...staleApprovalLines(check.staleApprovals ?? []),
+    ];
   });
   const failed = report.checks
     .filter((check) => check.status === "fail")
@@ -669,6 +753,7 @@ export async function runDoctor(
       observation.state,
       options.checkout,
     ),
+    staleApprovalsCheck(observation.vault, observation.key, observation.state),
     instructionsCheck(options.files),
   ];
   const ok = checks.every((check) => check.status !== "fail");

@@ -152,17 +152,19 @@ export interface NormalizedProfile {
 //
 // The operator decided that shape on 2026-09-29 (DEC-50, ADR 0018): the
 // constant stays 1 while Ward is unreleased, and the commit that cuts the
-// first release bumps it and updates this comment, so the released build
-// refuses every dev-era snapshot - it does not migrate one. This comment is
-// no longer the only place the obligation lives: it is a step in
+// first release bumps it and updates this comment, so the released build does
+// not honour a dev-era snapshot as approval - it does not migrate one. This
+// comment is no longer the only place the obligation lives: it is a step in
 // docs/runbooks/cutting-a-ward-release.md and on WCLI-15's record, so the
 // person cutting the release meets it without reading this file.
 //
 // Ward 0.1.0 is that release (WCLI-82): the constant is 2 from it, and a 0.1.0
-// build refuses a stored snapshot whose version is 1, which only a dev-era
-// build wrote. The refusal is the intended behaviour, not a defect, and the
-// developer re-approves the profile; no snapshot is migrated or edited. A later
-// change to what normalizeProfile accepts bumps this again, in its own commit.
+// build treats a stored snapshot whose version is 1 - which only a dev-era
+// build wrote - as an inert record that authorises nothing, named by
+// `ward status` and `ward doctor` until the developer re-approves the profile
+// (DEC-246 (a2); the refusal this comment used to describe was replaced).
+// No snapshot is migrated or edited. A later change to what normalizeProfile
+// accepts bumps this again, in its own commit.
 export const profileSnapshotVersion = 2;
 
 export const profileSnapshotFields = [

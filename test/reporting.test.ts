@@ -108,12 +108,20 @@ function harness() {
   return { directory, keychain, keyProvider, store, options, setUp, init, key };
 }
 
+interface StaleApprovalData {
+  profile: string;
+  projectId: string;
+  checkout: string;
+  snapshotVersion: number;
+}
+
 interface StatusData {
   checkout: string;
   manifest: { status: string; projectId?: string; schemaVersion?: number };
   binding: { status: string };
   vault: { status: string; revision?: number; formatVersion?: number };
   keyProvider: { status: string };
+  staleApprovals: StaleApprovalData[];
 }
 
 interface DoctorData {
@@ -123,6 +131,7 @@ interface DoctorData {
     status: string;
     code: string;
     documents?: Record<string, string>;
+    staleApprovals?: StaleApprovalData[];
   }[];
 }
 
@@ -318,6 +327,7 @@ describe("ward doctor", () => {
       "key_provider",
       "schema",
       "binding",
+      "stale_approvals",
       "instructions",
     ]);
     expect(data.checks.every((entry) => entry.status === "pass")).toBe(true);
@@ -344,7 +354,7 @@ describe("ward doctor", () => {
       });
       // Every check still reports, and the checks the location blocks name
       // the block rather than reading as healthy.
-      expect(data.checks).toHaveLength(5);
+      expect(data.checks).toHaveLength(6);
       for (const check of data.checks) expect(check.code).toBeTruthy();
       expect(checkFor(data, "key_provider").code).toBe("vault_insecure");
       expect(checkFor(data, "instructions").status).toBe("pass");
@@ -544,15 +554,11 @@ describe("ward doctor", () => {
     });
   });
 
-  // WCLI-51 review, F1. A document whose own version is not this build's is
-  // malformed, but a document carrying a *record* this build cannot read is
-  // not malformed: the document parsed and one approval inside it did not.
-  // Both reports must still answer. This case exists because the first draft
-  // of the change deleted the reporting path's answer for that second shape,
-  // on the assumption that a single format made it unreachable. Measured, both
-  // commands instead exited 6 with empty stdout, because the read threw past
-  // the report — and ADR 0007 requires the report to reach stdout either way.
-  test("schema: a stored approval from another build is reported, not thrown", async () => {
+  // WCLI-51 review, F1, reshaped by DEC-246 (a2). A document carrying a
+  // record whose snapshot version names another build is not malformed and is
+  // no longer refused: the approval is absent for authorisation, the rest of
+  // the document parses, and both reports name it with the re-approve step.
+  test("a stored approval from another build is named, not trusted", async () => {
     const h = harness();
     const checkout = worktree("doctor-approval-version");
     await h.setUp(checkout);
@@ -592,19 +598,49 @@ describe("ward doctor", () => {
 
     const doctor = await doctorOf(h, checkout);
     expect(doctor.result.exitCode).toBe(exitCodes.validation);
-    // The positive control for "the report reached stdout": all five checks
-    // are present, so the read answered rather than throwing out of the
-    // command.
-    expect(doctor.data.checks).toHaveLength(5);
+    // The positive control for "the report reached stdout": every check is
+    // present, so the read answered rather than throwing out of the command.
+    expect(doctor.data.checks).toHaveLength(6);
+    // The schema is intact: the version mismatch is a record-level fact, not
+    // a broken document (DEC-246 a2 clause 4's other half).
     expect(checkFor(doctor.data, "schema")).toMatchObject({
-      status: "fail",
-      code: "state_unsupported",
+      status: "pass",
+      code: "current",
     });
+    const stale = checkFor(doctor.data, "stale_approvals");
+    expect(stale).toMatchObject({ status: "fail", code: "reapprove_required" });
+    expect(stale.staleApprovals).toEqual([
+      expect.objectContaining({
+        profile: "deploy",
+        checkout: identity.root,
+        snapshotVersion: profileSnapshotVersion + 1,
+      }),
+    ]);
+    // The reports a person reads name the record, its checkout, its version
+    // and the step that clears it — the JSON above is not enough on its own,
+    // because the re-approve step only exists in the text.
+    const doctorText = await runWard(["doctor"], h.options(checkout));
+    expect(doctorText.stdout).toContain("deploy");
+    expect(doctorText.stdout).toContain(identity.root);
+    expect(doctorText.stdout).toContain("ward profile approve deploy");
+    expect(doctorText.stdout).toContain(
+      `snapshot version ${profileSnapshotVersion + 1}`,
+    );
 
-    // And status still exits 0, the only code its manifest declares for a
-    // report it was able to produce.
+    // And status answers too, names the same record, and exits 0: the report
+    // it was able to produce is its declared success.
     const status = await statusOf(h, checkout);
     expect(status.result.exitCode).toBe(exitCodes.success);
+    expect(status.data.staleApprovals).toEqual([
+      expect.objectContaining({
+        profile: "deploy",
+        checkout: identity.root,
+        snapshotVersion: profileSnapshotVersion + 1,
+      }),
+    ]);
+    const statusText = await runWard(["status"], h.options(checkout));
+    expect(statusText.stdout).toContain("ward profile approve deploy");
+    expect(statusText.stdout).toContain(identity.root);
   });
 
   test("binding: unregistered, then registered, then a conflict", async () => {

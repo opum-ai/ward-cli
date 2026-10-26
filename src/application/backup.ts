@@ -208,6 +208,9 @@ export async function runRestore(options: {
         // stored approval live again — and T21 requires a restored vault's
         // approvals to be inactive until they are reviewed explicitly.
         profileApprovals: [],
+        // A stale approval is one a backup cannot interpret either, and it is
+        // the restored vault's, not the backup's: nothing carries it.
+        staleProfileApprovals: [],
         // A grant gives one project the use of another's secret, and it is
         // cleared with the approvals it served: restoring an older backup must
         // not revive access that was granted or revoked since it was taken
