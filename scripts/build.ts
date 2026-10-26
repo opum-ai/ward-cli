@@ -64,6 +64,10 @@ export function buildCommand(options: {
   entry: string;
   outfile: string;
   service?: string;
+  // A bun cross-compile target such as bun-darwin-arm64 (WCLI-82): the release
+  // workflow builds the macOS artifact on a Linux runner. Unset, the build is
+  // for the host, as before.
+  target?: string;
 }): string[] {
   const service = options.service ?? productionService;
   if (
@@ -75,10 +79,13 @@ export function buildCommand(options: {
     );
   if (/[^A-Za-z0-9._-]/.test(service))
     throw new Error("a credential-store service is letters, digits and . _ -");
+  if (options.target !== undefined && !/^bun-[a-z0-9-]+$/.test(options.target))
+    throw new Error("a build target is bun- followed by letters, digits and -");
   return [
     process.execPath,
     "build",
     "--compile",
+    ...(options.target === undefined ? [] : ["--target", options.target]),
     ...hardeningFlags,
     "--define",
     serviceDefine(service),
@@ -94,6 +101,7 @@ export function buildExecutable(options: {
   entry: string;
   outfile: string;
   service?: string;
+  target?: string;
 }): string {
   const run = Bun.spawnSync(buildCommand(options), { cwd: root });
   if (run.exitCode !== 0)
@@ -111,5 +119,17 @@ if (import.meta.main) {
     const service = newQualifyService();
     buildExecutable({ entry, outfile: qualifyOutfile, service });
     console.log(JSON.stringify({ outfile: qualifyOutfile, service }));
-  } else buildExecutable({ entry, outfile });
+  } else {
+    // The release workflow names both, so the artifact is built under the fixed
+    // name `ward`: the compiled bytes depend on the output file name (WCLI-82).
+    const flag = (name: string) => {
+      const at = process.argv.indexOf(name);
+      return at === -1 ? undefined : process.argv[at + 1];
+    };
+    buildExecutable({
+      entry,
+      outfile: flag("--outfile") ?? outfile,
+      target: flag("--target"),
+    });
+  }
 }
