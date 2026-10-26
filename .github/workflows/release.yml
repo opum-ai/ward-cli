@@ -104,20 +104,21 @@ jobs:
           else
             baseline="HEAD"
           fi
-          # Only "No names found" means there is no previous tag. Every other
-          # failure must stop the run: reading any failure as "no previous
-          # tag" would fall back to the pre-release baseline and print a bump
-          # note for a release that raises nothing, which is a claim the
-          # release notes should not make silently.
-          previous_tag=""
-          if described="$(git describe --tags --abbrev=0 --match 'v*' "$baseline" 2>&1)"; then
-            previous_tag="$described"
-          elif [[ "$described" == *"No names found"* ]]; then
-            previous_tag=""
-          else
-            echo "::error::could not read the previous v* tag from ${baseline}: ${described}"
-            exit 1
-          fi
+          # The previous v* tag reachable from the baseline, highest version
+          # first, or nothing.
+          #
+          # `git describe` cannot answer this question. It dies whenever the
+          # baseline has no matching tag, which is every first release — and on
+          # the tag run the baseline is the tag's own parent, so v0.1.0 itself
+          # can never describe it. Its failure therefore has to be read as a
+          # result, which is exactly the trap finding 11 was about, and the
+          # dry run hides it because a dry run has no v* tags at all.
+          #
+          # `git tag --merged` separates the two cases by exit code instead of
+          # by message: nothing reachable lists nothing and exits 0, and a real
+          # failure exits non-zero, which `set -e` turns into a failed step.
+          tags="$(git tag --list 'v*' --merged "$baseline" --sort=-v:refname)"
+          previous_tag="${tags%%$'\n'*}"
           snapshot_version_before=1
           if [ -n "$previous_tag" ]; then
             snapshot_version_before="$(git show "${previous_tag}:src/domain/profile.ts" | sed -n 's/^export const profileSnapshotVersion = \([0-9][0-9]*\);$/\1/p')"

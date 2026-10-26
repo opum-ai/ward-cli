@@ -144,7 +144,7 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   commands bound it** (WCLI-20): the key check reports `unavailable` and the
   process is told to exit explicitly rather than wait on a pending native
   call.
-- **What is not claimed:** that doctor proves anything outside its five
+- **What is not claimed:** that doctor proves anything outside its six
   checks; that a skipped check says a checkout is ready; and that a report can
   distinguish *why* a credential store refused (locked, access denied,
   timed out) — the adapter maps those to one verdict by design, so the report

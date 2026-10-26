@@ -68,6 +68,19 @@ const approver: RegistrationApprover = {
   ask: () => "approved",
 };
 
+// A declaration this build normalizes. A record of header names to values, not
+// a list: an array is refused as an invalid declaration, which would make a
+// case inert for a reason it is not about.
+const profileDeclaration = (): Record<string, unknown> => ({
+  adapter: "http",
+  method: "GET",
+  url: "https://api.example.invalid/rate_limit",
+  auth: { type: "bearer", secret: "example.token" },
+  headers: { Accept: "application/json" },
+  requestBody: "none",
+  output: "status",
+});
+
 // Adds a profile declaration to the manifest `ward init` wrote, and returns
 // the manifest's own project id — the value that decides whether a stale
 // record is this project's or another's (DEC-246 a3 Q1), and, with the
@@ -80,18 +93,7 @@ function declareProfile(checkout: string, profile: string): string {
   };
   manifest.profiles = {
     ...(manifest.profiles ?? {}),
-    [profile]: {
-      adapter: "http",
-      method: "GET",
-      url: "https://api.example.invalid/rate_limit",
-      auth: { type: "bearer", secret: "example.token" },
-      // A record of header names to values, not a list: an array is refused
-      // as an invalid declaration, which would make every case here inert for
-      // a reason none of them is about.
-      headers: { Accept: "application/json" },
-      requestBody: "none",
-      output: "status",
-    },
+    [profile]: profileDeclaration(),
   };
   writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest.projectId;
@@ -129,25 +131,66 @@ function approvalRecord(options: {
   };
 }
 
-// Appends raw approval records to the vault's state document without
-// disturbing anything already in it. The bindings `ward init` wrote matter
-// here: a record no checkout is registered for can never be cleared, so a
-// seed that replaced the whole document would make every case inert and the
-// clearable half of DEC-246 (a3) Q2 would never be exercised.
-function seedApprovals(
+// Appends raw records to the vault's state document without disturbing
+// anything already in it. The bindings `ward init` wrote matter here: a record
+// no checkout is registered for can never be cleared, so a seed that replaced
+// the whole document would make every case inert and the clearable half of
+// DEC-246 (a3) Q2 would never be exercised.
+function seedState(
   h: ReturnType<typeof harness>,
-  records: unknown[],
+  extra: { approvals?: unknown[]; bindings?: unknown[] },
 ): void {
   h.store.mutate(h.key(), (plaintext) => {
     const document = JSON.parse(new TextDecoder().decode(plaintext)) as {
       profileApprovals?: unknown[];
+      localBindings?: unknown[];
     };
-    document.profileApprovals = [
-      ...(document.profileApprovals ?? []),
-      ...records,
-    ];
+    if (extra.approvals !== undefined)
+      document.profileApprovals = [
+        ...(document.profileApprovals ?? []),
+        ...extra.approvals,
+      ];
+    if (extra.bindings !== undefined)
+      document.localBindings = [
+        ...(document.localBindings ?? []),
+        ...extra.bindings,
+      ];
     return new TextEncoder().encode(JSON.stringify(document));
   });
+}
+
+function seedApprovals(
+  h: ReturnType<typeof harness>,
+  records: unknown[],
+): void {
+  seedState(h, { approvals: records });
+}
+
+function bindingRecord(identity: {
+  projectId: string;
+  root: string;
+  device: string;
+  inode: string;
+}): Record<string, unknown> {
+  return { ...identity, registeredAt: "2026-09-29T00:00:00.000Z" };
+}
+
+// A second directory that is its own checkout root, standing outside the one
+// being reported. Records on such a directory are the case DEC-246 (a3) Q1
+// keeps visible and Q2 sometimes finds clearable.
+function siblingCheckout(withGitEntry = true): string {
+  const directory = join(root, `sibling-${++cases}`);
+  mkdirSync(directory);
+  if (withGitEntry) mkdirSync(join(directory, ".git"));
+  return directory;
+}
+
+function writeManifestAt(directory: string, document: unknown): void {
+  mkdirSync(join(directory, ".ward"), { recursive: true });
+  writeFileSync(
+    join(directory, ".ward", "project.json"),
+    `${JSON.stringify(document, null, 2)}\n`,
+  );
 }
 
 function harness() {
@@ -808,6 +851,23 @@ describe("ward doctor", () => {
       expect(text.stdout).not.toContain(sentinel);
       expect(JSON.stringify(status.data)).not.toContain(sentinel);
     }
+
+    // Finding 4 (rv331b): ADR 0007 says "either output", so doctor is held to
+    // the same rule — its text and its JSON, not only status's.
+    const doctor = await doctorOf(h, checkout);
+    const stale = checkFor(doctor.data, "stale_approvals");
+    // The positive control again: this project's record IS named here, so the
+    // absence below is about scope and not about an empty check.
+    expect(stale.staleApprovals).toEqual([
+      expect.objectContaining({ profile: "deploy", projectId }),
+    ]);
+    expect(stale.otherProjectStaleApprovals).toBe(1);
+    const doctorText = await runWard(["doctor"], h.options(checkout));
+    expect(doctorText.stdout).toContain("stale approvals in other projects: 1");
+    for (const sentinel of [sentinelProfile, sentinelRoot, otherProject]) {
+      expect(doctorText.stdout).not.toContain(sentinel);
+      expect(JSON.stringify(doctor.data)).not.toContain(sentinel);
+    }
   });
 
   // DEC-246 (a3) Q2. The pair with "a stored approval from another build is
@@ -844,6 +904,246 @@ describe("ward doctor", () => {
     const text = await runWard(["doctor"], h.options(checkout));
     expect(text.stdout).toContain("inert and unreachable");
     expect(text.stdout).toContain("no longer exists");
+  });
+
+  // Finding 3 (rv331b): one case per remaining arm of describeStaleApproval,
+  // so mutating any single check turns exactly one case red. The arm above
+  // covers "that directory no longer exists"; these cover everything that can
+  // happen to a record whose checkout is still there.
+  test("every other inert arm is named and none of them fails the doctor", async () => {
+    interface Arm {
+      readonly name: string;
+      readonly reason: string;
+      readonly arrange: (fixture: {
+        sibling: string;
+        record: Record<string, unknown>;
+        bindings: unknown[];
+        projectId: string;
+        otherProject: string;
+        withGitEntry: boolean;
+      }) => void;
+    }
+
+    const arms: readonly Arm[] = [
+      {
+        name: "device mismatch",
+        reason: "a different directory now stands at that path",
+        arrange: ({ record }) => {
+          record.device = String(Number(record.device) + 1);
+        },
+      },
+      {
+        name: "no binding",
+        reason: "that checkout is no longer registered",
+        arrange: ({ bindings }) => {
+          bindings.length = 0;
+        },
+      },
+      {
+        name: "binding to another project",
+        reason: "that checkout is registered to another project",
+        arrange: ({ bindings, sibling, otherProject }) => {
+          const original = bindings[0] as Record<string, unknown>;
+          bindings[0] = { ...original, projectId: otherProject };
+          void sibling;
+        },
+      },
+      {
+        name: "no manifest",
+        reason: "that checkout has no project manifest",
+        arrange: ({ sibling }) => {
+          rmSync(join(sibling, ".ward"), { recursive: true, force: true });
+        },
+      },
+      {
+        name: "manifest names another project",
+        reason: "that checkout now declares another project",
+        arrange: ({ sibling, otherProject }) => {
+          writeManifestAt(sibling, {
+            schemaVersion: 1,
+            projectId: otherProject,
+            profiles: { deploy: profileDeclaration() },
+          });
+        },
+      },
+      {
+        name: "manifest cannot be read",
+        reason: "that checkout's project manifest cannot be read",
+        arrange: ({ sibling }) => {
+          writeFileSync(join(sibling, ".ward", "project.json"), "{ not json");
+        },
+      },
+      {
+        name: "profile no longer declared",
+        reason: "that checkout no longer declares this profile",
+        arrange: ({ sibling, projectId }) => {
+          writeManifestAt(sibling, {
+            schemaVersion: 1,
+            projectId,
+            profiles: {},
+          });
+        },
+      },
+      {
+        name: "declaration cannot be read",
+        reason: "that checkout's declaration of this profile cannot be read",
+        arrange: ({ sibling, projectId }) => {
+          writeManifestAt(sibling, {
+            schemaVersion: 1,
+            projectId,
+            profiles: { deploy: { adapter: "http" } },
+          });
+        },
+      },
+      {
+        name: "path resolves to a different root",
+        reason: "a different directory now stands at that path",
+        // A directory that is not itself a checkout root: locateCheckout walks
+        // up to the enclosing one, so the resolved root is not the record's.
+        arrange: ({ withGitEntry }) => {
+          void withGitEntry;
+        },
+      },
+    ];
+
+    for (const arm of arms) {
+      const h = harness();
+      const checkout = worktree(`doctor-arm-${arm.name.replace(/\s+/g, "-")}`);
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const identity = locateCheckout(checkout);
+      const projectId = declareProfile(checkout, "deploy");
+      const otherProject = randomUUID();
+      // Most arms use a sibling that is its own checkout root; the last uses a
+      // path that is not one, so its recorded root is a directory nested in
+      // this checkout and resolves upward to it.
+      const lastArm = arm.name === "path resolves to a different root";
+      const sibling = lastArm
+        ? join(checkout, "not-a-root")
+        : siblingCheckout();
+      if (lastArm) mkdirSync(sibling);
+      const siblingIdentity = lastArm
+        ? {
+            root: sibling,
+            device: identity.device,
+            inode: identity.inode,
+          }
+        : locateCheckout(sibling);
+      if (!lastArm)
+        writeManifestAt(sibling, {
+          schemaVersion: 1,
+          projectId,
+          profiles: { deploy: profileDeclaration() },
+        });
+
+      const record = approvalRecord({
+        profile: "deploy",
+        projectId,
+        root: siblingIdentity.root,
+        device: siblingIdentity.device,
+        inode: siblingIdentity.inode,
+      });
+      const bindings: unknown[] = [
+        bindingRecord({ projectId, ...siblingIdentity }),
+      ];
+      arm.arrange({
+        sibling,
+        record,
+        bindings,
+        projectId,
+        otherProject,
+        withGitEntry: !lastArm,
+      });
+      seedState(h, { approvals: [record], bindings });
+
+      const doctor = await doctorOf(h, checkout);
+      expect({ arm: arm.name, code: doctor.result.exitCode }).toEqual({
+        arm: arm.name,
+        code: exitCodes.success,
+      });
+      const stale = checkFor(doctor.data, "stale_approvals");
+      expect({ arm: arm.name, check: stale }).toMatchObject({
+        arm: arm.name,
+        check: { status: "pass", code: "inert" },
+      });
+      expect(stale.staleApprovals).toEqual([
+        expect.objectContaining({ profile: "deploy", clearable: false }),
+      ]);
+      const text = await runWard(["doctor"], h.options(checkout));
+      expect({ arm: arm.name, text: text.stdout }).toMatchObject({
+        arm: arm.name,
+        text: expect.stringContaining(arm.reason),
+      });
+    }
+  });
+
+  // Finding 3 (rv331b), the two whole-report shapes: only other projects'
+  // records, and a checkout with no manifest at all.
+  test("other projects alone give a count and the other_projects code", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-other-only");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+    declareProfile(checkout, "deploy");
+    const otherProject = randomUUID();
+
+    seedState(h, {
+      approvals: [
+        approvalRecord({
+          profile: "sentinel-other-profile",
+          projectId: otherProject,
+          root: join(identity.root, "elsewhere"),
+          device: identity.device,
+          inode: identity.inode,
+        }),
+      ],
+    });
+
+    const doctor = await doctorOf(h, checkout);
+    expect(doctor.result.exitCode).toBe(exitCodes.success);
+    const stale = checkFor(doctor.data, "stale_approvals");
+    expect(stale).toMatchObject({
+      status: "pass",
+      code: "other_projects",
+      staleApprovals: [],
+      otherProjectStaleApprovals: 1,
+    });
+    const text = await runWard(["doctor"], h.options(checkout));
+    expect(text.stdout).toContain("stale approvals in other projects: 1");
+    expect(text.stdout).not.toContain("sentinel-other-profile");
+  });
+
+  test("a checkout with no manifest names nothing and counts everything", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-no-manifest");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+    const projectId = declareProfile(checkout, "deploy");
+    // The record is otherwise completely clearable: it names this very
+    // checkout, its binding exists and its profile is declared. Only the
+    // manifest is gone, and with it the claim that says whose records these
+    // are.
+    seedState(h, {
+      approvals: [
+        approvalRecord({
+          profile: "deploy",
+          projectId,
+          root: identity.root,
+          device: identity.device,
+          inode: identity.inode,
+        }),
+      ],
+    });
+    rmSync(join(checkout, ".ward", "project.json"));
+
+    const status = await statusOf(h, checkout);
+    expect(status.data.staleApprovals).toEqual([]);
+    expect(status.data.otherProjectStaleApprovals).toBe(1);
+    const text = await runWard(["status"], h.options(checkout));
+    expect(text.stdout).toContain("stale approvals in other projects: 1");
+    expect(text.stdout).not.toContain("ward profile approve deploy");
   });
 
   test("binding: unregistered, then registered, then a conflict", async () => {

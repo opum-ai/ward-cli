@@ -9,7 +9,7 @@
 // worktree, a submodule) and a `.git` directory (an ordinary checkout) both
 // mark a boundary, and both end the walk, which is what keeps a nested
 // repository from reaching its parent's authority.
-import { type BigIntStats, lstatSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { ProbedCheckout } from "../application/reporting.ts";
 import { createProjectFiles } from "./project-files.ts";
@@ -78,27 +78,34 @@ export function locateCheckout(startDirectory: string): CheckoutIdentity {
 // the same path, cannot be re-approved, and neither can one whose manifest no
 // longer declares the profile.
 //
-// lstat, not stat: the identity recorded for a checkout is its own, and a link
-// standing where the directory was must not answer as the directory. The
-// manifest goes through the same port every other read of it uses, so a link
-// leaving the checkout is refused here exactly as it is elsewhere.
+// It resolves through locateCheckout, the same walk `ward profile approve`
+// uses, rather than lstat-ing the stored path. The two disagree in exactly the
+// cases that matter: a directory that survived without its `.git` resolves to
+// an ancestor, and an ancestor reached through a link resolves to the same
+// place by a different name. Answering "clearable" there would make doctor fail
+// on a step that cannot replace the record, which is the dead end Q2 removed.
+// The caller compares the resolved root against the record's, so a resolution
+// that lands elsewhere reads as inert.
+//
+// The manifest goes through the same port every other read of it uses, so a
+// link leaving the checkout is refused here exactly as it is elsewhere.
 export function probeCheckout(root: string): ProbedCheckout | undefined {
-  let stats: BigIntStats;
+  let identity: CheckoutIdentity;
   try {
-    stats = lstatSync(root, { bigint: true });
+    identity = locateCheckout(root);
   } catch {
     return undefined;
   }
-  if (!stats.isDirectory()) return undefined;
   let manifest: string | undefined;
   try {
-    manifest = createProjectFiles(root).read("manifest");
+    manifest = createProjectFiles(identity.root).read("manifest");
   } catch {
     manifest = undefined;
   }
   return {
-    device: stats.dev.toString(),
-    inode: stats.ino.toString(),
+    root: identity.root,
+    device: identity.device,
+    inode: identity.inode,
     manifest,
   };
 }

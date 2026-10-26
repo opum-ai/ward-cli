@@ -83,15 +83,22 @@ that named a release-time obligation.
    Release:
 
    ```
+   git fetch origin
    head="$(git rev-parse origin/dev)"
    gh workflow run release.yml --ref dev
    # Select the run by the head SHA it built, not by recency: the newest run at
-   # this moment can still be the previous one.
-   gh run list --workflow release.yml --branch dev --limit 20 \
-     --json databaseId,headSha,event \
-     --jq "[.[] | select(.headSha == \"$head\" and .event == \"workflow_dispatch\")][0].databaseId"
-   gh run watch <databaseId> --exit-status
-   gh run download <databaseId> -n ward-darwin-arm64 -D dry-run
+   # this moment can still be the previous one. Poll, because the run is not
+   # listed the instant the dispatch returns and a null id here is a race, not
+   # an answer.
+   run_id=""
+   while [ -z "$run_id" ]; do
+     run_id="$(gh run list --workflow release.yml --branch dev --limit 20 \
+       --json databaseId,headSha,event \
+       --jq "[.[] | select(.headSha == \"$head\" and .event == \"workflow_dispatch\")][0].databaseId")"
+     [ -n "$run_id" ] || sleep 5
+   done
+   gh run watch "$run_id" --exit-status
+   gh run download "$run_id" -n ward-darwin-arm64 -D dry-run
    cat dry-run/ward-darwin-arm64.sha256
    # Build from the commit the run built, so the comparison measures the
    # toolchain rather than two different sources.

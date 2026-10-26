@@ -63,6 +63,11 @@ export interface ReportingOptions {
 // worktree, a re-cloned tree, a sibling — so the port answers about an
 // absolute root rather than about the checkout in hand.
 export interface ProbedCheckout {
+  // The root the record's path resolves to, which is what `ward profile
+  // approve` would itself resolve. It is compared against the record's root,
+  // not assumed equal: a directory that survived without its `.git` resolves
+  // to an ancestor, and re-approving there would write a different root.
+  readonly root: string;
   readonly device: string;
   readonly inode: string;
   // The project manifest's text, or undefined when there is none to read.
@@ -406,7 +411,11 @@ function describeStaleApproval(
 
   const probed = checkouts.probe(record.root);
   if (probed === undefined) return inert("that directory no longer exists");
-  if (probed.device !== record.device || probed.inode !== record.inode)
+  if (
+    probed.root !== record.root ||
+    probed.device !== record.device ||
+    probed.inode !== record.inode
+  )
     return inert("a different directory now stands at that path");
   const identity = {
     root: record.root,

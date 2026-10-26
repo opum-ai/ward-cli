@@ -82,12 +82,22 @@ test("the snapshot-bump note is emitted only for a release that raises it", () =
   );
   expect(workflow).toContain('snapshot_bump="This release raises');
   expect(workflow).toContain('if [ -n "$snapshot_bump" ]; then');
-  // Finding 11 (rv331): only git's "No names found" means there is no
-  // previous tag. A discarded failure would fall back to baseline 1 and print
-  // the bump note for a release that raises nothing.
-  expect(workflow).not.toMatch(/git describe[^\n]*2>\/dev\/null/);
-  expect(workflow).toContain('*"No names found"*');
-  expect(workflow).toContain("could not read the previous v* tag");
+  // Finding 11 (rv331) and new finding 1 (rv331b): the previous tag comes from
+  // `git tag --merged`, never from `git describe`. describe dies whenever the
+  // baseline has no matching tag, so its failure has to be read as a result —
+  // and on the v0.1.0 tag push its baseline is that tag's own parent, which
+  // v0.1.0 can never describe, so the old form would have failed the release
+  // right after the tag was pushed. `git tag` separates the cases by exit code
+  // instead of by message: nothing reachable lists nothing and exits 0, and a
+  // real failure exits non-zero. Measured in a scratch clone in all four
+  // states, recorded on WCLI-82.
+  // The command form is what is banned; the step's own comment names `git
+  // describe` to explain why it went, and that explanation is worth keeping.
+  expect(workflow).not.toMatch(/git describe\s+--/);
+  expect(workflow).toContain(
+    `git tag --list 'v*' --merged "$baseline" --sort=-v:refname`,
+  );
+  expect(workflow).toContain("previous_tag=\"${tags%%$'\\n'*}\"");
 });
 
 test("the notes say why the release is not a GitHub pre-release", () => {
