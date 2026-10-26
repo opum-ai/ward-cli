@@ -1,0 +1,42 @@
+# SCRATCH measurement for WCLI-82. Never merged; the branch and PR are deleted.
+name: scratch-crossbuild
+on:
+  pull_request:
+    branches:
+      - dev
+permissions:
+  contents: read
+jobs:
+  crossbuild:
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - run: uname -a && bun --version
+      - name: Install with the darwin native module
+        run: bun install --frozen-lockfile --os=darwin --cpu=arm64
+      - run: ls node_modules/@napi-rs
+      - name: Cross-compile twice for darwin-arm64
+        run: |
+          set -euo pipefail
+          mkdir out
+          for n in a b; do
+            bun build --compile --target=bun-darwin-arm64 \
+              --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
+              --no-compile-autoload-tsconfig --no-compile-autoload-package-json \
+              --define 'WARD_KEYCHAIN_SERVICE="opum.ward"' \
+              src/cli/ward.ts --outfile out/ward-$n
+          done
+          file out/ward-a || true
+          sha256sum out/ward-a out/ward-b
+          ls -l out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ward-darwin-arm64-scratch
+          path: out/
+          retention-days: 1
