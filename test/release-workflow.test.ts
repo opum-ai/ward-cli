@@ -46,7 +46,48 @@ test("it triggers on a v* tag and a manual dry run, and nothing else", () => {
   expect(on).toContain('- "v*"');
   expect(on).toContain("workflow_dispatch:");
   expect(on).not.toContain("pull_request");
-  expect(workflow).toMatch(/release:[\s\S]*?if: github\.ref_type == 'tag'/);
+  // F3 (rv330): a manual dry run must not publish a Release, so the job needs
+  // both the push event and a tag ref, not the ref alone.
+  expect(workflow).toMatch(
+    /release:[\s\S]*?if: github\.event_name == 'push' && github\.ref_type == 'tag'/,
+  );
+});
+
+test("a tag is checked as annotated and at main's tip, without fetching", () => {
+  // F2 and F7 (rv330): fetch-depth: 0 already carries origin/main, so the tag
+  // step fetches nothing; and AC1's main == dev makes the tag commit main's
+  // tip, which is stricter than the ancestry check it replaces.
+  expect(workflow).not.toMatch(/git\s+fetch/);
+  expect(workflow).toContain('git cat-file -t "refs/tags/${TAG}"');
+  expect(workflow).toContain('git rev-parse "refs/tags/${TAG}^{commit}"');
+  expect(workflow).toContain(
+    'git merge-base --is-ancestor "$tag_commit" origin/main',
+  );
+  expect(workflow).toContain('"$tag_commit" != "$(git rev-parse origin/main)"');
+});
+
+test("the snapshot-bump note is emitted only for a release that raises it", () => {
+  // F5 (rv330): the line is computed against the previous v* tag and the
+  // pre-release baseline of 1, never echoed for every release.
+  const sentence =
+    "This release raises the profile snapshot version: approve your profiles again after installing.";
+  expect(workflow.split(sentence).length - 1).toBe(1);
+  expect(workflow).toContain(
+    'if [ "$snapshot_version_now" -gt "$snapshot_version_before" ]',
+  );
+  expect(workflow).toContain('snapshot_bump="This release raises');
+  expect(workflow).toContain('if [ -n "$snapshot_bump" ]; then');
+});
+
+test("the notes say why the release is not a GitHub pre-release", () => {
+  // INFO 11 (rv330): prerelease: false stays, and the reason travels with the
+  // release rather than living only in a session's memory.
+  expect(workflow).toContain("not a GitHub pre-release");
+  const publish = readFileSync(
+    join(root, "scripts", "publish-release.mjs"),
+    "utf8",
+  );
+  expect(publish).toContain("prerelease: false");
 });
 
 test("no expression is interpolated inside a run: body", () => {

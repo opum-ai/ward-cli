@@ -160,4 +160,44 @@ describe("the refusal that remains, and the one that is gone", () => {
         "The vault's contents are not a state document this Ward can read.",
     });
   });
+
+  // F6 (rv330): a dev-era approval carries the literal version 1, and the
+  // literal is written out rather than derived from profileSnapshotVersion so
+  // that a future bump cannot quietly turn this into a different case. This
+  // pins today's answer — the document is refused as written by another
+  // build. Finding 1's ruling A would treat a version-mismatched approval as
+  // absent instead of refusing the document; when that is ruled, this test
+  // changes with the behaviour.
+  test("an approval whose literal snapshotVersion is 1 is refused", () => {
+    expect(
+      refusalOf(() =>
+        parseVaultState(
+          document({
+            formatVersion: vaultStateFormatVersion,
+            profileApprovals: [
+              {
+                profile: PROFILE,
+                projectId,
+                root: "/Users/dev/code/project",
+                device: "16777232",
+                inode: "8429931",
+                approvedAt: timestamp,
+                expiresAt: "2026-09-30T00:00:00.000Z",
+                snapshotVersion: 1,
+                snapshot: {
+                  adapter: "http",
+                  method: "GET",
+                  url: "https://api.example.invalid/a%20b?x=1&y=2",
+                  auth: { type: "bearer", secret: "example.token" },
+                  headers: [],
+                  requestBody: "none",
+                  output: "status",
+                },
+              },
+            ],
+          }),
+        ),
+      ),
+    ).toEqual(unsupported);
+  });
 });
