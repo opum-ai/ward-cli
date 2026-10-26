@@ -32,6 +32,7 @@
 - 2026-10-26T16:16:48-05:00 8782acbbcbbfd7fcaf6d9a5cf8cf8e5e3f5b8e4f docs(WCLI-82): record the 0.1.0 cut's gate results
 - 2026-10-26T16:18:06-05:00 f2bcc682ae32f67a351bdfbbdf00dcd9f67d7a8e docs(WCLI-82): record the 0.1.0 cut's gate results (#196)
 - 2026-10-26T16:19:53-05:00 5a616927579c3daf5d23d3bbcde04fe13d367a2e docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3
+- 2026-10-26T16:21:03-05:00 50b553b576c80a3495880fed817f3d211666d6da docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3 (#198)
 
 ## docs/adr
 
