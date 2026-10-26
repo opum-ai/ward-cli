@@ -28,6 +28,8 @@
 - 2026-10-20T23:16:27-05:00 5600b0049c83b722c98556720ab68f3e203cbb50 chore(WCLI-15): complete, with the follow-up WCLI-76 and the handoff record WCLI-77 (#158)
 - 2026-10-26T12:44:43-05:00 c680f7dcb9b4304873093c19b51e0988f69cfa35 chore(WCLI-82): Ward 0.1.0 release commit, release workflow, install runbook (#180)
 - 2026-10-26T13:38:59-05:00 1fc4e334df3bc4b314e32faee1750d1d563455da fix(WCLI-83): restore the ward skill trigger and pass T24-Claude 5/5 (#186)
+- 2026-10-26T15:15:16-05:00 984a145ed889f995949091f729ecede7f95af3c4 fix(WCLI-82): release review fix round F2-F8 (held open for F1) (#188)
+- 2026-10-26T16:16:48-05:00 8782acbbcbbfd7fcaf6d9a5cf8cf8e5e3f5b8e4f docs(WCLI-82): record the 0.1.0 cut's gate results
 
 ## docs/adr
 
