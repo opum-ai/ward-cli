@@ -20,13 +20,13 @@ const dir = createTempRoot("ward-release-");
 
 test("every action is pinned to a full commit SHA", () => {
   const uses = [...workflow.matchAll(/^\s*- uses: (\S+)/gm)].map((m) => m[1]);
-  expect(uses.length).toBe(4);
+  expect(uses.length).toBe(5);
   for (const use of uses) expect(use).toMatch(/@[0-9a-f]{40}$/);
 });
 
 test("the checkout does not persist its credential", () => {
-  expect(workflow.match(/actions\/checkout@/g)?.length).toBe(1);
-  expect(workflow).toContain("persist-credentials: false");
+  expect(workflow.match(/actions\/checkout@/g)?.length).toBe(2);
+  expect(workflow.match(/persist-credentials: false/g)?.length).toBe(2);
 });
 
 test("contents: write sits on the release job only, with no id-token", () => {

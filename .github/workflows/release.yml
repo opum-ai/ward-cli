@@ -60,8 +60,8 @@ jobs:
             echo "::error::${TAG} is not on main: promote dev to main before tagging"
             exit 1
           fi
-      # The release job below needs gh on this runner; say so in a dry run.
-      - run: gh --version
+      # The runner has no gh, so the release job uses node and the REST API.
+      - run: node --version
       - name: Install with the darwin native module
         run: bun install --frozen-lockfile --os=darwin --cpu=arm64
       # The build script owns the flags, so what ships is what the tests measure.
@@ -115,6 +115,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The script that publishes comes from the tagged commit, not the artifact.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ward-darwin-arm64
@@ -126,8 +130,6 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          cd out
-          sha256sum --check ward-darwin-arm64.sha256
-          gh release create "$TAG" --repo "$REPO" --verify-tag \
-            --title "Ward ${TAG}" --notes-file release-notes.md \
-            ward-darwin-arm64 ward-darwin-arm64.sha256
+          (cd out && sha256sum --check ward-darwin-arm64.sha256)
+          node scripts/publish-release.mjs out/release-notes.md \
+            out/ward-darwin-arm64 out/ward-darwin-arm64.sha256
