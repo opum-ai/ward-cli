@@ -23,4 +23,5 @@
 - [Cross-project grants are alias-bound, and restore clears them](0020-cross-project-grants-are-alias-bound-and-restore-clears-them.md)
 - [A profile approval expires, 24 hours by default](0021-a-profile-approval-expires-24-hours-by-default.md)
 - [ward unregister withdraws one checkout, and approvals go on a second yes](0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes.md)
+- [Keep the vault state reader's exact key-set comparison at the first release](0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md)
 <!-- lore:index:end -->

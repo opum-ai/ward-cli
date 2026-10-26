@@ -59,7 +59,10 @@ that named a release-time obligation.
    public `opum-marketplace` entry is the later phase: it must validate against
    the index and resolve to the released artifact at an immutable reference
    (spec §11.3, test matrix T25). The private-marketplace half is opum-fleet's.
-5. **Answer the format-compatibility question DEC-38 deferred.** This is the
+5. **Answer the format-compatibility question DEC-38 deferred.** Answered for
+   0.1.0 by [ADR 0023](../adr/0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md)
+   (DEC-246 D1): the exact key-set comparison stays. The question as it stood
+   follows. This is the
    runbook's one item that decides rather than applies:
    [ADR 0010](../adr/0010-refuse-a-vault-state-document-from-another-format.md)
    defers it here deliberately, so that it is settled against a shipped format

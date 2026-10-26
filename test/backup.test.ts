@@ -32,6 +32,7 @@ import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type { PassphraseSource } from "../src/application/backup.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
+import { profileSnapshotVersion } from "../src/domain/profile.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import {
   backupAssociatedData,
@@ -616,7 +617,7 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
         requestBody: "none",
         output: "status",
       },
-      snapshotVersion: 2,
+      snapshotVersion: profileSnapshotVersion + 1,
     };
     const document = encoder.encode(
       JSON.stringify({

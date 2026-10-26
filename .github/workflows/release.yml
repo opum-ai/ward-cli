@@ -1,0 +1,132 @@
+# Builds the macOS artifact and attaches it to a GitHub Release (WCLI-82,
+# DEC-246).
+#
+# The release is a pushed v* tag. The build runs on the self-hosted Linux ARM64
+# runner and cross-compiles for darwin-arm64: measured on 2026-10-26, the
+# runner's bytes equal a Mac's for the same source and output name, and the
+# compiled bytes depend on the output file name, so the executable is always
+# built under the fixed name `ward` and only then renamed for the release.
+#
+# workflow_dispatch is a dry run: it builds, hashes and uploads the artifact to
+# the run, and creates no Release. The Release is created by one job, the only
+# one that holds contents: write.
+#
+# The binary is ad-hoc signed by the compiler. codesign is not available on
+# Linux, so the cdhash the notes carry is read from the Mach-O itself by
+# scripts/macho-cdhash.mjs, which test/release-workflow.test.ts checks against
+# codesign when it runs on a Mac.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build darwin-arm64
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 15
+    steps:
+      # Full history, so a tag push can be checked against main below. Nothing
+      # in this job pushes or fetches later.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+      - name: The tag names this package's version and sits on main
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v${version}" ]; then
+            echo "::error::tag ${TAG} does not match package.json version ${version}"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "::error::${TAG} is not on main: promote dev to main before tagging"
+            exit 1
+          fi
+      # The runner has no gh, so the release job uses node and the REST API.
+      - run: node --version
+      - name: Install with the darwin native module
+        run: bun install --frozen-lockfile --os=darwin --cpu=arm64
+      # The build script owns the flags, so what ships is what the tests measure.
+      - name: Build the executable under the fixed name ward
+        run: |
+          set -euo pipefail
+          mkdir out
+          bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward
+          ls -l out/ward
+      - name: Hash it and write the release notes
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          RUNNER_HOST: ${{ runner.name }}
+        run: |
+          set -euo pipefail
+          cd out
+          mv ward ward-darwin-arm64
+          sha256sum ward-darwin-arm64 > ward-darwin-arm64.sha256
+          sha256="$(cut -d' ' -f1 ward-darwin-arm64.sha256)"
+          cdhash="$(node ../scripts/macho-cdhash.mjs ward-darwin-arm64)"
+          {
+            echo "Ward ${REF_NAME}, local developer preview, macOS on Apple silicon."
+            echo
+            echo "- Source: ${SOURCE_SHA}"
+            echo "- sha256 ward-darwin-arm64: ${sha256}"
+            echo "- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}"
+            echo "- Built on runner ${RUNNER_HOST}, $(uname -srm), bun $(bun --version), cross-compiled for bun-darwin-arm64 under the output name ward"
+            echo
+            echo "Install and upgrade: docs/runbooks/install-and-upgrade-ward-from-a-release.md."
+            echo "This release raises the profile snapshot version: approve your profiles again after installing."
+            echo "Expect one keychain re-approval per upgrade; the binary is ad-hoc signed."
+          } > release-notes.md
+          cat release-notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ward-darwin-arm64
+          path: |
+            out/ward-darwin-arm64
+            out/ward-darwin-arm64.sha256
+            out/release-notes.md
+          if-no-files-found: error
+
+  release:
+    name: Create the GitHub Release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 10
+    # The only write permission in this workflow: it creates the Release.
+    permissions:
+      contents: write
+    steps:
+      # The script that publishes comes from the tagged commit, not the artifact.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ward-darwin-arm64
+          path: out
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          (cd out && sha256sum --check ward-darwin-arm64.sha256)
+          node scripts/publish-release.mjs out/release-notes.md \
+            out/ward-darwin-arm64 out/ward-darwin-arm64.sha256

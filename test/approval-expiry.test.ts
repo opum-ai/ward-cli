@@ -37,6 +37,7 @@ import {
   defaultApprovalTtlMs,
   parseApprovalTtl,
 } from "../src/domain/approval-ttl.ts";
+import { profileSnapshotVersion } from "../src/domain/profile.ts";
 import { parseVaultState } from "../src/domain/vault-state.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
@@ -330,7 +331,7 @@ describe("the stored expiry is exact", () => {
     inode: "2",
     approvedAt: "2026-10-20T00:00:00.000Z",
     expiresAt: "2026-10-21T00:00:00.000Z",
-    snapshotVersion: 1,
+    snapshotVersion: profileSnapshotVersion,
     snapshot: {
       adapter: "http",
       method: "GET",
