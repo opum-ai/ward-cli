@@ -131,7 +131,7 @@ export interface NormalizedProfile {
 // carries one row per class the URL rules decide, and a change to those
 // rules that the table does not catch is exactly what this paragraph is for.
 //
-// This stays 1 while the accepted set is still being settled, and the reason
+// Until the 0.1.0 release this stayed 1 while the accepted set was being settled, and the reason
 // is a fact about the stored data rather than about the rules: no compiled
 // snapshot predates this build, because WCLI-9 is the first build to write
 // one and it is unreleased. The version exists for the records that will
@@ -157,7 +157,13 @@ export interface NormalizedProfile {
 // no longer the only place the obligation lives: it is a step in
 // docs/runbooks/cutting-a-ward-release.md and on WCLI-15's record, so the
 // person cutting the release meets it without reading this file.
-export const profileSnapshotVersion = 1;
+//
+// Ward 0.1.0 is that release (WCLI-82): the constant is 2 from it, and a 0.1.0
+// build refuses a stored snapshot whose version is 1, which only a dev-era
+// build wrote. The refusal is the intended behaviour, not a defect, and the
+// developer re-approves the profile; no snapshot is migrated or edited. A later
+// change to what normalizeProfile accepts bumps this again, in its own commit.
+export const profileSnapshotVersion = 2;
 
 export const profileSnapshotFields = [
   "adapter",

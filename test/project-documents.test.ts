@@ -326,7 +326,7 @@ describe("the vault's state document", () => {
     const bytes = serializeVaultState(state);
     expect(parseVaultState(bytes)).toEqual(state);
     const document = new TextDecoder().decode(bytes);
-    expect(document).toContain('"snapshotVersion":1');
+    expect(document).toContain(`"snapshotVersion":${profileSnapshotVersion}`);
     expect(document).toContain('"snapshot":{"adapter":"http"');
   });
 
@@ -341,7 +341,9 @@ describe("the vault's state document", () => {
         parseVaultState(
           stateBytes({
             formatVersion: vaultStateFormatVersion,
-            profileApprovals: [approvalRecord({ snapshotVersion: 2 })],
+            profileApprovals: [
+              approvalRecord({ snapshotVersion: profileSnapshotVersion + 1 }),
+            ],
           }),
         ),
       ),
