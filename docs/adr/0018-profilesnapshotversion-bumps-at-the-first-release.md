@@ -50,7 +50,8 @@ release, which is what WCLI-38 was filed to fix (WCLI-10 review round 3).
 The refusal a mismatch produces already exists and is unchanged by this
 decision: a stored profile approval whose `snapshotVersion` differs raises
 `vault_format_unsupported` - "written by a different version of Ward, and this
-build cannot read it; Ward did not change it".
+build cannot read it; Ward did not change it". (That sentence is superseded by
+DEC-246 (a2); see the amendment below.)
 
 ## Decision
 
@@ -88,5 +89,42 @@ build cannot read it; Ward did not change it".
   snapshots written by the current build's own test runs for no benefit, since
   nothing released has written one.
 - **The version number still means what it says**: a build reading a snapshot
-  either wrote it under the same rules or refuses it. Nothing in this decision
-  weakens that; it schedules when the first bump happens.
+  either wrote it under the same rules or does not read it as approval.
+  Nothing in this decision weakens that; it schedules when the first bump
+  happens.
+
+## Amendment, 2026-10-26: DEC-246 (a2)
+
+Ruled by the operator's design delegate through opum-doc as **DEC-246 (a2)**
+(opum-ai/opum-doc#1420), relayed by opum-agent. It changes the *refusal* this
+record assumed, not when the constant is bumped: bumping at the first release
+still stands as decided above.
+
+A stored approval whose `snapshotVersion` is not this build's is **absent for
+authorisation, per record**, rather than a refusal of the whole document. The
+document parses, every other approval in it still works, and the mismatched
+record authorises nothing because it is not in the authorising collection. It
+is not deleted either — DEC-246 D1 says an authority record must never
+silently drop:
+
+1. It authorises nothing, ever. No path reads a mismatched record as
+   approved, and the parser does not run this build's normalizer over its
+   snapshot, because that is how such a record comes to mean something the
+   developer never approved.
+2. It stays visible. `ward status` and `ward doctor` name each such record,
+   its checkout and its snapshot version, with the re-approve step
+   (`ward profile approve <name>`).
+3. It is never removed silently. Re-approving the same profile and identity
+   replaces it; every other write carries the record back out unchanged.
+   ward-cli chose that arm — keep the record inert in the document — over
+   dropping it with the drop named in a command's output.
+4. Only a mismatched **version** gets this treatment. An unknown key, a
+   malformed record or a wrong document version still refuses the whole
+   document, which is the exact key-set comparison DEC-246 D1 keeps (see
+   [ADR 0010](0010-refuse-a-vault-state-document-from-another-format.md)).
+
+The consequence in this record's own words changes accordingly: a released
+build does not **refuse** a dev-era snapshot, it declines to treat it as
+approval and asks for re-approval. The developer's re-approval is still the
+only way such a record becomes authority again, which is what this record's
+decision 3 was protecting.

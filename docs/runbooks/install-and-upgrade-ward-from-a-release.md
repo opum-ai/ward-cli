@@ -73,10 +73,13 @@ release's attached files, and treat a mismatch as a defect in this page.
 
 8. Release 0.1.0 raises the profile snapshot version from 1 to 2
    ([ADR 0018](../adr/0018-profilesnapshotversion-bumps-at-the-first-release.md)).
-   A vault whose profile approvals a pre-release build wrote refuses them as
-   written by another build, and nothing is migrated or edited: approve each
-   profile again in a trusted terminal. Projects, secrets and bindings that
-   hold no approval are read as before.
+   A vault whose profile approvals a pre-release build wrote does not treat
+   them as approval: each one authorises nothing, and `ward status` and
+   `ward doctor` name it with its checkout and its snapshot version (the
+   `stale_approvals` check). Nothing is migrated or edited. Approve each named
+   profile again in a trusted terminal with `ward profile approve <name>`,
+   which replaces the stale record. Projects, secrets and bindings that hold
+   no approval are read as before.
 
 ### Upgrade
 
@@ -91,8 +94,9 @@ release's attached files, and treat a mismatch as a defect in this page.
 ## Rollback
 
 Keep the previous artifact and install it the same way (`install -m 0755`).
-Rolling back across a snapshot-version bump refuses the approvals the newer
-build wrote, exactly as step 8 describes in the other direction: approve the
-profiles again. The vault itself is not altered by an install, an upgrade or a
+Rolling back across a snapshot-version bump does not honour the approvals the
+newer build wrote: they become stale records that authorise nothing, and
+`ward status` and `ward doctor` name each one, exactly as step 8 describes in
+the other direction: approve the profiles again. The vault itself is not altered by an install, an upgrade or a
 rollback. If a download fails its checksum, nothing was installed; retry the
 download, and report a repeat failure rather than installing the file.

@@ -57,7 +57,7 @@ the merge SHA.
 
 | Gate | What it requires | Where it is carried |
 |---|---|---|
-| `profileSnapshotVersion` bump | The release commit changes the constant from 1 and updates the comment in `src/domain/profile.ts`, so the released build refuses every dev-era snapshot with no migration (DEC-50, ADR 0018) | Step 1 of `docs/runbooks/cutting-a-ward-release.md`; recorded when the release is cut, not before |
+| `profileSnapshotVersion` bump | The release commit changes the constant from 1 and updates the comment in `src/domain/profile.ts`, so the released build does not honour a dev-era snapshot as approval, with no migration (DEC-50, ADR 0018) | Step 1 of `docs/runbooks/cutting-a-ward-release.md`; recorded when the release is cut, not before |
 | T24 behavioural halves | The Claude eval run and the Codex manual smoke | Step 3 of the same runbook, which names both |
 | T26 with a real send | The packaged smoke stops at admission and a refused destination, so it sends nothing. Before the first release it must also send once, to a real endpoint or a loopback TLS server (DEC-217 (a3)) | Not run before the first release; recorded here so the pre-release floor is not read as the whole gate |
 | T25 federated index | The marketplace entry resolves to the release artifact | Step 4 of the same runbook, and spec section 11.3 |

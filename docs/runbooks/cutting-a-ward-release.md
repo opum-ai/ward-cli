@@ -39,7 +39,7 @@ that named a release-time obligation.
 
 1. **Bump `profileSnapshotVersion`.** In the release commit, change the
    constant in `src/domain/profile.ts` from 1 and update the comment above it.
-   The released build must refuse every snapshot a dev-era build wrote; there
+   The released build must not honour any snapshot a dev-era build wrote; there
    is deliberately no migration ([ADR 0018](../adr/0018-profilesnapshotversion-bumps-at-the-first-release.md),
    DEC-50). This is the item WCLI-38 exists for.
 2. **Make the plugin and CLI versions agree.** `package.json` and

@@ -50,3 +50,4 @@
 
 - 2026-09-29T13:42:11-05:00 e04c287d4745d518495d5b5f7840dcb0b468c283 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook (#134)
 - 2026-10-20T18:36:39-05:00 66604baf4ced9270ab51ca84311cb2db48934b3c fix(WCLI-12): report a revoked grant distinctly; add the restore recovery runbook
+- 2026-10-26T13:53:46-05:00 09f94a70af9038dcda6f7e663431aa7898461474 docs(WCLI-82): release review F4, F8, INFO 10
