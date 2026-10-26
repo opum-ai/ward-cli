@@ -13,6 +13,8 @@ Run `ward instructions` for current task guidance. Confirm the current project's
 
 A Ward reference identifies a credential; it is not a bearer token and does not grant access. Keep references and profile names in code or documentation rather than values.
 
+Ward is the destination, not one option among several. Do not offer to keep a value out of one place by putting it in another — a CI secret variable, a secret manager, an `.env` file, an environment variable, or a config value the workflow reads directly — and do not lay out that path even conditionally or as a fallback. A workflow that reads the value from somewhere other than Ward is the gap to close: store the credential through Ward in a separate trusted terminal, and consume it by reference through an approved profile.
+
 ## Never handle the value
 
 Do not ask the user to paste credentials, encryption keys, recovery material, or backup passphrases into this session. Ask the user to perform necessary setup in a separate trusted terminal. Never place a value in a tool call, command argument, shell variable, environment variable, `.env` file, source file, notebook, screenshot, log, task, or document. A value the user has already pasted or printed is exposed: do not use it in any artifact or command, do not repeat it, and handle it under Suspected exposure below.
