@@ -22,9 +22,8 @@ tree: a rebuild in a checkout changes the executable's code signature, and the
 macOS keychain's trust in the vault-key item follows that signature, so a
 symlinked build asks for approval again after every rebuild.
 
-Status: this describes the 0.1.0 release as it will be cut. The artifact name
-below is the one the release workflow must produce; check it against the
-release's attached files, and treat a mismatch as a defect in this page.
+Status: this describes the cut 0.1.0 release, whose attached files are
+`ward-darwin-arm64` and `ward-darwin-arm64.sha256` — the names below.
 
 ## Prerequisites
 
