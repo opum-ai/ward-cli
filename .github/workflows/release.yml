@@ -70,7 +70,7 @@ jobs:
           set -euo pipefail
           mkdir out
           bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward
-          file out/ward
+          ls -l out/ward
       - name: Hash it and write the release notes
         env:
           SOURCE_SHA: ${{ github.sha }}
