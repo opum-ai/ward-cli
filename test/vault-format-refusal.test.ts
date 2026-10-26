@@ -10,14 +10,15 @@
 // below as the positive control for the removal, rather than in a case of its
 // own.
 //
-// What remains is `vault_format_unsupported`, at the two sites that are not
-// the state document's format. The sealed envelope's header is bound as
-// authenticated data and is genuinely the outer container's format; a stored
-// profile approval's snapshot version guards an authority question, because
-// re-reading an approval under different normalization rules is how it comes
-// to mean something the developer never approved.
+// What remained after DEC-38 was `vault_format_unsupported`, at two sites that
+// are not the state document's format. DEC-246 (a2) removed one of them: a
+// stored profile approval whose version names another build is now absent for
+// authorisation rather than a refusal, and `test/stale-approval.test.ts`
+// measures that instead. What is left here is the sealed envelope's header,
+// which is bound as authenticated data and is genuinely the outer container's
+// format.
 //
-// One code, one sentence, both sites. The wording is deliberately the same at
+// One code, one sentence. The wording is deliberately the same at
 // each and says a different build wrote this without naming which version was
 // found or expected, because with no recovery path there is nothing a reader
 // could do with either number. It is written out here rather than read back
@@ -93,46 +94,10 @@ describe("the refusal that remains, and the one that is gone", () => {
     expect(DEC_30).not.toMatch(/\d/);
   });
 
-  test("both remaining sites raise the code with that sentence", () => {
-    // A stored profile snapshot's version: valid in every other respect, so
-    // the version is the only thing left that can refuse it. The snapshot
-    // below is a complete canonical one, and that is load-bearing rather than
-    // decoration — an unnormalizable value here would give the same record a
-    // second reason to be refused, and the assertion would stop isolating the
-    // version (WCLI-51 review, F3). The state document's own version is this
-    // build's, so nothing above it in the reader can be refusing either.
-    expect(
-      refusalOf(() =>
-        parseVaultState(
-          document({
-            formatVersion: vaultStateFormatVersion,
-            profileApprovals: [
-              {
-                profile: PROFILE,
-                projectId,
-                root: "/Users/dev/code/project",
-                device: "16777232",
-                inode: "8429931",
-                approvedAt: timestamp,
-                expiresAt: "2026-09-30T00:00:00.000Z",
-                snapshotVersion: 99,
-                snapshot: {
-                  adapter: "http",
-                  method: "GET",
-                  url: "https://api.example.invalid/a%20b?x=1&y=2",
-                  auth: { type: "bearer", secret: "example.token" },
-                  headers: [],
-                  requestBody: "none",
-                  output: "status",
-                },
-              },
-            ],
-          }),
-        ),
-      ),
-    ).toEqual(unsupported);
-
-    // The sealed envelope's version, one past the one this build writes.
+  test("the envelope's version raises the code with that sentence", () => {
+    // DEC-246 (a2): the approval site this test used to drive is gone — a
+    // stored approval from another build parses as an inert record now. The
+    // envelope's header is the site that remains, and it still refuses.
     const key = generateVaultKey();
     const record = seal(key, { vaultId, revision: 1 }, document({}));
     expect(
@@ -159,5 +124,42 @@ describe("the refusal that remains, and the one that is gone", () => {
       message:
         "The vault's contents are not a state document this Ward can read.",
     });
+  });
+
+  // F6 (rv330), as DEC-246 (a2) now rules it: a dev-era approval carries the
+  // literal version 1, and it authorises nothing rather than refusing the
+  // document. The exhaustive clause proofs are in test/stale-approval.test.ts;
+  // this case stays here because the file's subject is what does and does not
+  // refuse, and this record no longer does. The snapshot is the v1-era shape
+  // and is never normalized, which is the point of the version.
+  test("an approval whose literal snapshotVersion is 1 is inert, not a refusal", () => {
+    const state = parseVaultState(
+      document({
+        formatVersion: vaultStateFormatVersion,
+        profileApprovals: [
+          {
+            profile: PROFILE,
+            projectId,
+            root: "/Users/dev/code/project",
+            device: "16777232",
+            inode: "8429931",
+            approvedAt: timestamp,
+            expiresAt: "2026-09-30T00:00:00.000Z",
+            snapshotVersion: 1,
+            snapshot: {
+              adapter: "http",
+              method: "GET",
+              url: "https://api.example.invalid/status",
+              auth: { type: "bearer", secret: "example.token" },
+              headers: [],
+              requestBody: "none",
+              output: "status",
+            },
+          },
+        ],
+      }),
+    );
+    expect(state.profileApprovals).toEqual([]);
+    expect(state.staleProfileApprovals).toHaveLength(1);
   });
 });

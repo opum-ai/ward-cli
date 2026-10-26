@@ -43,10 +43,11 @@ import {
 // `vault_state_malformed` — the answer every other invalid field in this
 // document already gets. The version is validated the same way: a missing,
 // non-numeric or unrecognized value is malformed, and this module never
-// raises `vault_format_unsupported`. That code survives at the two sites
-// which are not this format — the sealed envelope's header, which is bound as
-// authenticated data, and a stored profile approval's snapshot version, which
-// guards an authority question rather than a compatibility one.
+// raises `vault_format_unsupported`. That code survives at one site, the
+// sealed envelope's header, which is not this format and is bound as
+// authenticated data. A stored profile approval's snapshot version used to
+// raise it here too; since DEC-246 a2 that record is held inert instead, so
+// nothing in this module treats it as a compatibility failure any more.
 export const vaultStateFormatVersion = 1;
 
 export interface ProjectRecord {
@@ -82,9 +83,8 @@ export interface BindingRecord {
 // re-normalized when a document is parsed, so a stored snapshot that this
 // build's normalizer would not produce is a damaged document rather than an
 // approval with unknown meaning — and `snapshotVersion` names the schema the
-// stored snapshot was written under, so a record from a build whose
-// normalizer differs is refused rather than re-read through these rules
-// (spec §6.2).
+// stored snapshot was written under, so a record from a build whose normalizer
+// differs is never re-read through these rules (spec §6.2).
 export interface ProfileApprovalRecord {
   readonly profile: string;
   readonly projectId: string;
@@ -97,6 +97,30 @@ export interface ProfileApprovalRecord {
   readonly expiresAt: string;
   readonly snapshotVersion: number;
   readonly snapshot: NormalizedProfile;
+}
+
+// A stored approval whose `snapshotVersion` this build does not implement.
+// DEC-246 (a2): it is ABSENT for authorisation rather than a refusal of the
+// whole document, because a version mismatch is one record another build wrote
+// and refusing the document would take every other approval down with it.
+// Absent is not deleted, though: an authority record must never silently drop,
+// so the record is held whole — `stored` is exactly the object the document
+// carried — and written back unchanged by every write that is not a
+// re-approval of the same identity. Only a re-approval replaces it, and
+// `ward status` and `ward doctor` name it so the developer can.
+//
+// A missing or non-numeric version, a malformed record, an unknown key or a
+// document from another format is still a refusal of the whole document
+// (DEC-246 a2 clause 4); this type exists for a well-formed record whose only
+// difference is the version.
+export interface StaleProfileApprovalRecord {
+  readonly profile: string;
+  readonly projectId: string;
+  readonly root: string;
+  readonly device: string;
+  readonly inode: string;
+  readonly snapshotVersion: number;
+  readonly stored: Readonly<Record<string, unknown>>;
 }
 
 // A use-only grant of one owner secret to one alias in one other project
@@ -211,6 +235,7 @@ export interface VaultState {
   readonly localBindings: readonly BindingRecord[];
   readonly secrets: readonly SecretRecord[];
   readonly profileApprovals: readonly ProfileApprovalRecord[];
+  readonly staleProfileApprovals: readonly StaleProfileApprovalRecord[];
   readonly sharingGrants: readonly SharingGrantRecord[];
   readonly auditRecords: readonly AuditRecord[];
 }
@@ -229,6 +254,7 @@ export function emptyVaultState(): VaultState {
     localBindings: [],
     secrets: [],
     profileApprovals: [],
+    staleProfileApprovals: [],
     sharingGrants: [],
     auditRecords: [],
   };
@@ -361,11 +387,19 @@ function ownSecret(value: unknown): SecretRecord {
   };
 }
 
-// A stored approval. The snapshot is validated by running the normalizer
-// over it: a shape this build's normalizer would refuse is a damaged
-// document, and a valid one is rebuilt in canonical form, so a caller
-// comparing snapshots compares the same normalization on both sides.
-function ownProfileApproval(value: unknown): ProfileApprovalRecord {
+// A stored approval, in one of two forms: this build's, normalized and active;
+// or another build's version, kept whole and inert (DEC-246 a2). The record's
+// own key set and scalar fields are checked first and in both cases, so an
+// unknown key, a missing field or a bad timestamp still refuses the document.
+// Only the version decides which form it takes, and a stale record's snapshot
+// is deliberately not normalized: running this build's rules over one written
+// under different ones is how an approval comes to mean something the
+// developer never approved.
+type ParsedProfileApproval =
+  | { readonly active: ProfileApprovalRecord }
+  | { readonly stale: StaleProfileApprovalRecord };
+
+function ownProfileApproval(value: unknown): ParsedProfileApproval {
   if (!isRecord(value)) malformed();
   const expected = [
     "approvedAt",
@@ -391,14 +425,34 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
   // An approval that expires no later than it began admitted nothing and
   // is not one this build wrote.
   if (Date.parse(value.expiresAt) <= Date.parse(value.approvedAt)) malformed();
-  // A version that is missing or is not a number is a damaged record; a
-  // version this build does not implement is a record from another build.
-  // The second is answered rather than re-normalized, because running this
-  // build's rules over a snapshot written under different ones is how an
-  // approval comes to mean something the developer never approved.
-  if (typeof value.snapshotVersion !== "number") malformed();
-  if (value.snapshotVersion !== profileSnapshotVersion)
-    throw new WardError("vault_format_unsupported");
+  // A missing, non-numeric or impossible version is a damaged record; only a
+  // version this build does not implement takes the stale answer (DEC-246 a2
+  // clause 4). The integer check is what keeps leniency from swallowing a
+  // damaged number: 0, -1 or 1.5 is no build's snapshot version, so it stays
+  // malformed rather than becoming a stale record that names it in a report.
+  if (
+    typeof value.snapshotVersion !== "number" ||
+    !Number.isSafeInteger(value.snapshotVersion) ||
+    value.snapshotVersion < 1
+  )
+    malformed();
+  if (value.snapshotVersion !== profileSnapshotVersion) {
+    // A record carrying no snapshot at all is damaged rather than merely from
+    // another build; anything else here is that build's to interpret, not
+    // this one's.
+    if (!isRecord(value.snapshot)) malformed();
+    return {
+      stale: {
+        profile: value.profile,
+        projectId: value.projectId,
+        root: value.root,
+        device: value.device,
+        inode: value.inode,
+        snapshotVersion: value.snapshotVersion,
+        stored: value,
+      },
+    };
+  }
   let snapshot: NormalizedProfile;
   try {
     snapshot = normalizeProfile(value.snapshot);
@@ -406,15 +460,17 @@ function ownProfileApproval(value: unknown): ProfileApprovalRecord {
     malformed();
   }
   return {
-    profile: value.profile,
-    projectId: value.projectId,
-    root: value.root,
-    device: value.device,
-    inode: value.inode,
-    approvedAt: value.approvedAt,
-    expiresAt: value.expiresAt,
-    snapshotVersion: value.snapshotVersion,
-    snapshot,
+    active: {
+      profile: value.profile,
+      projectId: value.projectId,
+      root: value.root,
+      device: value.device,
+      inode: value.inode,
+      approvedAt: value.approvedAt,
+      expiresAt: value.expiresAt,
+      snapshotVersion: value.snapshotVersion,
+      snapshot,
+    },
   };
 }
 
@@ -630,15 +686,27 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
   // for the second to be about — a `typeof` check would only split off a case
   // that reaches the same refusal one line later.
   if (parsed.formatVersion !== vaultStateFormatVersion) malformed();
+  // A version-mismatched approval is absent for authorisation rather than a
+  // reason to refuse the document, and it is kept so a write cannot drop it
+  // silently (DEC-246 a2). Every other defect in the record still refuses,
+  // above — this partition runs only after that validation passes.
+  const approvals = ownCollection(
+    parsed.profileApprovals ?? [],
+    ownProfileApproval,
+  );
+  const profileApprovals: ProfileApprovalRecord[] = [];
+  const staleProfileApprovals: StaleProfileApprovalRecord[] = [];
+  for (const entry of approvals) {
+    if ("active" in entry) profileApprovals.push(entry.active);
+    else staleProfileApprovals.push(entry.stale);
+  }
   const state: VaultState = {
     formatVersion: parsed.formatVersion,
     projects: ownCollection(parsed.projects ?? [], ownProject),
     localBindings: ownCollection(parsed.localBindings ?? [], ownBinding),
     secrets: ownCollection(parsed.secrets ?? [], ownSecret),
-    profileApprovals: ownCollection(
-      parsed.profileApprovals ?? [],
-      ownProfileApproval,
-    ),
+    profileApprovals,
+    staleProfileApprovals,
     sharingGrants: ownCollection(parsed.sharingGrants ?? [], ownSharingGrant),
     auditRecords: ownCollection(parsed.auditRecords ?? [], ownAuditRecord),
   };
@@ -674,43 +742,48 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         revision,
       }),
     ),
-    profileApprovals: state.profileApprovals.map(
-      ({
-        profile,
-        projectId,
-        root,
-        device,
-        inode,
-        approvedAt,
-        expiresAt,
-        snapshotVersion,
-        snapshot,
-      }) => ({
-        profile,
-        projectId,
-        root,
-        device,
-        inode,
-        approvedAt,
-        expiresAt,
-        snapshotVersion,
-        // Written in the same shape a manifest declares it, so one
-        // normalizer reads both and a stored snapshot cannot drift into a
-        // form only the serializer produces. The canonical order is the
-        // normalizer's sorted one, and an object preserves it.
-        snapshot: {
-          adapter: snapshot.adapter,
-          method: snapshot.method,
-          url: snapshot.url,
-          auth: { type: snapshot.auth.type, secret: snapshot.auth.secret },
-          headers: Object.fromEntries(
-            snapshot.headers.map(({ name, value }) => [name, value]),
-          ),
-          requestBody: snapshot.requestBody,
-          output: snapshot.output,
-        },
-      }),
-    ),
+    profileApprovals: [
+      ...state.profileApprovals.map(
+        ({
+          profile,
+          projectId,
+          root,
+          device,
+          inode,
+          approvedAt,
+          expiresAt,
+          snapshotVersion,
+          snapshot,
+        }) => ({
+          profile,
+          projectId,
+          root,
+          device,
+          inode,
+          approvedAt,
+          expiresAt,
+          snapshotVersion,
+          // Written in the same shape a manifest declares it, so one
+          // normalizer reads both and a stored snapshot cannot drift into a
+          // form only the serializer produces. The canonical order is the
+          // normalizer's sorted one, and an object preserves it.
+          snapshot: {
+            adapter: snapshot.adapter,
+            method: snapshot.method,
+            url: snapshot.url,
+            auth: { type: snapshot.auth.type, secret: snapshot.auth.secret },
+            headers: Object.fromEntries(
+              snapshot.headers.map(({ name, value }) => [name, value]),
+            ),
+            requestBody: snapshot.requestBody,
+            output: snapshot.output,
+          },
+        }),
+      ),
+      // Written back exactly as they were read. This build cannot interpret
+      // them and must not rewrite or silently drop them (DEC-246 a2).
+      ...state.staleProfileApprovals.map(({ stored }) => stored),
+    ],
     sharingGrants: state.sharingGrants.map(
       ({
         id,
@@ -818,6 +891,7 @@ export function registerCheckout(options: {
     // records a project already holds.
     secrets: state.secrets,
     profileApprovals: state.profileApprovals,
+    staleProfileApprovals: state.staleProfileApprovals,
     sharingGrants: state.sharingGrants,
   };
 }
@@ -990,7 +1064,13 @@ export function withRevokedGrant(
 // never be reached from another project, another checkout, or a directory
 // that replaced the one it was made in.
 function isApprovalFor(
-  approval: ProfileApprovalRecord,
+  approval: {
+    readonly profile: string;
+    readonly projectId: string;
+    readonly root: string;
+    readonly device: string;
+    readonly inode: string;
+  },
   checkout: CheckoutIdentity,
   projectId: string,
   profile: string,
@@ -1026,29 +1106,31 @@ export function findProfileApproval(
 
 // Replaces the approval for the same (binding, project, profile) or appends
 // it. Reapproving replaces the snapshot rather than adding a second one, so
-// a profile has at most one approval per binding.
+// a profile has at most one approval per binding. It is also the one removal
+// DEC-246 (a2) allows for a stale record: re-approving the same identity
+// replaces the record another build wrote, and no other write touches it.
 export function withProfileApproval(
   state: VaultState,
   record: ProfileApprovalRecord,
 ): VaultState {
+  const checkout = {
+    root: record.root,
+    device: record.device,
+    inode: record.inode,
+  };
   return {
     ...state,
     profileApprovals: [
       ...state.profileApprovals.filter(
         (approval) =>
-          !isApprovalFor(
-            approval,
-            {
-              root: record.root,
-              device: record.device,
-              inode: record.inode,
-            },
-            record.projectId,
-            record.profile,
-          ),
+          !isApprovalFor(approval, checkout, record.projectId, record.profile),
       ),
       record,
     ],
+    staleProfileApprovals: state.staleProfileApprovals.filter(
+      (approval) =>
+        !isApprovalFor(approval, checkout, record.projectId, record.profile),
+    ),
   };
 }
 

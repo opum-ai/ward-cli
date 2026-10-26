@@ -105,6 +105,7 @@ describe("the vault's state document", () => {
       localBindings: [],
       secrets: [],
       profileApprovals: [],
+      staleProfileApprovals: [],
       sharingGrants: [],
       auditRecords: [],
     });
@@ -330,24 +331,29 @@ describe("the vault's state document", () => {
     expect(document).toContain('"snapshot":{"adapter":"http"');
   });
 
-  test("a snapshot version this build does not implement is a document from another build", () => {
+  test("a snapshot version this build does not implement is an inert record, not a refusal", () => {
     // The vault's formatVersion says which build wrote the document; this
     // says which normalizer produced the snapshot inside it. Running this
     // build's rules over a snapshot written under other ones is how an
-    // approval comes to mean something the developer never approved, so it
-    // is refused rather than re-read.
-    expect(
-      codeOf(() =>
-        parseVaultState(
-          stateBytes({
-            formatVersion: vaultStateFormatVersion,
-            profileApprovals: [
-              approvalRecord({ snapshotVersion: profileSnapshotVersion + 1 }),
-            ],
-          }),
-        ),
-      ),
-    ).toBe("vault_format_unsupported");
+    // approval comes to mean something the developer never approved, so the
+    // record is kept out of the authorising collection rather than re-read —
+    // and it is kept at all, so a write cannot drop it silently (DEC-246 a2).
+    // The exhaustive clause proofs are test/stale-approval.test.ts.
+    const state = parseVaultState(
+      stateBytes({
+        formatVersion: vaultStateFormatVersion,
+        profileApprovals: [
+          approvalRecord({ snapshotVersion: profileSnapshotVersion + 1 }),
+        ],
+      }),
+    );
+    expect(state.profileApprovals).toEqual([]);
+    expect(state.staleProfileApprovals).toEqual([
+      expect.objectContaining({
+        profile: "example-profile",
+        snapshotVersion: profileSnapshotVersion + 1,
+      }),
+    ]);
   });
 
   test("registering twice keeps one project record and two bindings", () => {

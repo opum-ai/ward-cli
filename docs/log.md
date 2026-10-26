@@ -27,6 +27,7 @@
 - 2026-10-20T23:14:33-05:00 81caf85563b8e9283e62638bc1420b013cd3f7ff feat(WCLI-15): T26 qualification build and packaged-binary run on macOS (#157)
 - 2026-10-20T23:16:27-05:00 5600b0049c83b722c98556720ab68f3e203cbb50 chore(WCLI-15): complete, with the follow-up WCLI-76 and the handoff record WCLI-77 (#158)
 - 2026-10-26T12:44:43-05:00 c680f7dcb9b4304873093c19b51e0988f69cfa35 chore(WCLI-82): Ward 0.1.0 release commit, release workflow, install runbook (#180)
+- 2026-10-26T13:38:59-05:00 1fc4e334df3bc4b314e32faee1750d1d563455da fix(WCLI-83): restore the ward skill trigger and pass T24-Claude 5/5 (#186)
 
 ## docs/adr
 

@@ -37,10 +37,7 @@ import { exitCodes } from "../src/contract/envelope.ts";
 import {
   backupAssociatedData,
   backupLimits,
-  deriveBackupKey,
-  encodeBackup,
   newBackupKdf,
-  sealBackup,
 } from "../src/domain/backup.ts";
 import { generateVaultKey } from "../src/domain/envelope.ts";
 import { decodeSecretValue } from "../src/domain/secret.ts";
@@ -592,14 +589,13 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
     }
   });
 
-  test("a stored approval this build cannot interpret is refused with its own code, and no file", async () => {
-    // The same call gives one other answer, and `ward restore` gives the
-    // same one for this document: a stored approval whose snapshot version
-    // this build does not implement is `vault_format_unsupported` rather
-    // than a damaged record (vault-state.ts, the second site DEC-38 left
-    // standing beside the envelope). The record below is otherwise one this
-    // build would write — only the version differs, which is the shape the
-    // check exists for.
+  test("a stored approval this build cannot interpret is backed up, and a restore does not revive it", async () => {
+    // WCLI-52 measured this document as `vault_format_unsupported` here and in
+    // `ward restore`. DEC-246 (a2) changed the answer: the document parses,
+    // the record is inert authority, so the backup writes. What still has to
+    // hold is the restore, and T21 is where it holds: a restored vault clears
+    // its approvals, so the stale record cannot come back as visible
+    // authority in a vault that never approved anything.
     const approval = {
       approvedAt: "2026-09-29T00:00:00.000Z",
       expiresAt: "2026-09-30T00:00:00.000Z",
@@ -629,53 +625,25 @@ describe("WCLI-52: a document that does not parse is refused before a backup exi
         profileApprovals: [approval],
       }),
     );
-    const DEC_30 =
-      "This vault was written by a different version of Ward, and this build cannot read it. Ward did not change it.";
     const origin = await machineHolding(document);
     const path = backupPath();
-    const attempted = await runWard(
+    const written = await runWard(
       ["backup", "--output", path],
       origin.options(worktree()),
     );
-    expect(attempted.exitCode).toBe(exitCodes.validation);
-    // The DEC-30 sentence, verbatim for the same reason as above.
-    expect(JSON.parse(attempted.stderr)).toEqual({
-      error_type: "validation",
-      code: "vault_format_unsupported",
-      message: DEC_30,
-      principal: null,
-    });
-    expect(existsSync(path)).toBe(false);
-    expect(attempted.stdout).not.toContain("Backup written");
+    expect(written.exitCode).toBe(exitCodes.success);
+    expect(existsSync(path)).toBe(true);
 
-    // And the symmetry is measured rather than claimed from the shared call:
-    // a container holding this same document and sealed by the domain is
-    // what `ward restore` refuses, with the same code and the same sentence.
-    const kdf = newBackupKdf();
-    const container = join(root, `wcli52-approval-${++cases}.json`);
-    writeFileSync(
-      container,
-      encodeBackup(
-        sealBackup(
-          deriveBackupKey(encoder.encode(PASSPHRASE), kdf),
-          { vaultId: randomUUID(), revision: 1, kdf },
-          document,
-        ),
-      ),
-    );
     const destination = machine();
     const restored = await runWard(
-      ["restore", "--input", container, "--json"],
+      ["restore", "--input", path, "--json"],
       destination.options(worktree()),
     );
-    expect(restored.exitCode).toBe(exitCodes.validation);
-    expect(JSON.parse(restored.stderr)).toEqual({
-      error_type: "validation",
-      code: "vault_format_unsupported",
-      message: DEC_30,
-      principal: null,
-    });
-    expect(destination.header()).toBeUndefined();
+    expect(restored.exitCode).toBe(exitCodes.success);
+    expect(destination.header()).toBeDefined();
+    const state = destination.state(storedKey(destination));
+    expect(state.profileApprovals).toEqual([]);
+    expect(state.staleProfileApprovals).toEqual([]);
   });
 
   test("the same construction over a parseable document still writes, and it restores", async () => {

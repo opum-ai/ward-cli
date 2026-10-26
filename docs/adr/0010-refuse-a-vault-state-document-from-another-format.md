@@ -17,7 +17,8 @@ answered first-party through opum-doc as R-2026-09-29-22. This document
 replaces an earlier version of itself that recorded DEC-19 (option B), DEC-25
 and DEC-26 (option A) and was executed as WCLI-11. DEC-19 B is superseded and
 DEC-25 is vacuous; DEC-26's no-hint rule and DEC-30's sentence survive
-unchanged at the two sites that still raise the code. Executed as WCLI-51. The
+unchanged at the site that still raises the code — the envelope; the approval
+site was retired by DEC-246 (a2), see the amendment at the end. Executed as WCLI-51. The
 file keeps its name because that name is this record's identifier: other
 documents link to it by path, and renaming it would break those links to
 change what is at the top of the file anyway.
@@ -150,3 +151,33 @@ than a format gate.**
   not change that, and it is also why the remedy for a stored approval this
   build cannot read is a report and not a thrown envelope: both reports answer
   whatever the read returned.
+
+## Amendment, 2026-10-26: DEC-246 (a2)
+
+Ruled by the operator's design delegate through opum-doc as **DEC-246 (a2)**
+(opum-ai/opum-doc#1420), relayed by opum-agent. It retires the second
+`vault_format_unsupported` site this record kept, and changes what `ward
+doctor` answers for that record. The exact key-set comparison this record
+decided is untouched: DEC-246 D1 keeps it, and the amendment depends on it.
+
+- **A stored approval whose `snapshotVersion` is not this build's is absent
+  for authorisation, not a refusal.** The document parses, the rest of it
+  works, and the mismatched record is held inert and whole rather than read
+  through rules it was not written under. It is therefore no longer a raiser
+  of `vault_format_unsupported`, and the envelope is the only site left.
+- **It stays visible and is never removed silently.** `ward status` and `ward
+  doctor` name it with its checkout, its snapshot version and the re-approve
+  step; re-approving the same profile and identity replaces it, and every
+  other write carries it back out unchanged.
+- **`ward doctor` reports it as `stale_approvals` / `reapprove_required`,**
+  not as the `schema` check's `state_unsupported` this record described. The
+  schema check answers `current`, because the schema is intact: the
+  version mismatch is a record-level fact. That is the same distinction this
+  record drew, moved one check over.
+- **Every other defect still refuses the whole document** — an unknown key, a
+  malformed record, or a document whose own version is not this build's. The
+  amendment narrows one answer; it does not relax the reader.
+
+This paragraph corrects the "two sites" and "answers two ways" text above
+rather than editing it: that text is the record of what DEC-38 decided, and
+the reason it changed is this ruling, not an error in it.

@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createBackupFiles } from "../adapters/backup-file.ts";
-import { canonicalDirectory, locateCheckout } from "../adapters/checkout.ts";
+import {
+  canonicalDirectory,
+  locateCheckout,
+  probeCheckout,
+} from "../adapters/checkout.ts";
 import {
   createKeychainKeyProvider,
   keychainService,
@@ -376,6 +380,7 @@ function reporting(options: RunOptions): {
       files: createProjectFiles(checkout.root),
       store: createSqliteVaultStore({ directory }),
       keyProvider,
+      checkouts: { probe: probeCheckout },
     },
   };
 }

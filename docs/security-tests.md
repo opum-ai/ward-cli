@@ -57,7 +57,7 @@ the merge SHA.
 
 | Gate | What it requires | Where it is carried |
 |---|---|---|
-| `profileSnapshotVersion` bump | The release commit changes the constant from 1 and updates the comment in `src/domain/profile.ts`, so the released build refuses every dev-era snapshot with no migration (DEC-50, ADR 0018) | Step 1 of `docs/runbooks/cutting-a-ward-release.md`; recorded when the release is cut, not before |
+| `profileSnapshotVersion` bump | The release commit changes the constant from 1 and updates the comment in `src/domain/profile.ts`, so the released build does not honour a dev-era snapshot as approval, with no migration (DEC-50, ADR 0018) | Step 1 of `docs/runbooks/cutting-a-ward-release.md`; recorded when the release is cut, not before |
 | T24 behavioural halves | The Claude eval run and the Codex manual smoke | Step 3 of the same runbook, which names both |
 | T26 with a real send | The packaged smoke stops at admission and a refused destination, so it sends nothing. Before the first release it must also send once, to a real endpoint or a loopback TLS server (DEC-217 (a3)) | Not run before the first release; recorded here so the pre-release floor is not read as the whole gate |
 | T25 federated index | The marketplace entry resolves to the release artifact | Step 4 of the same runbook, and spec section 11.3 |
@@ -69,7 +69,7 @@ not Done; DEC-246 D3 sets which gates run for 0.1.0.
 
 | Gate | Result |
 |---|---|
-| `profileSnapshotVersion` bump | Done: the constant is 2; a dev-era approval is refused with `vault_format_unsupported`, a release approval parses (in-process, synthetic data) |
+| `profileSnapshotVersion` bump | Done: the constant is 2. A dev-era approval (snapshot version 1) is held inert, not refused: it authorises nothing, `ward status` and `ward doctor` name it with its checkout and snapshot version, and the rest of the document still parses and works (DEC-246 a2). Measured both ways in `test/stale-approval.test.ts` and `test/vault-format-refusal.test.ts`; a release approval parses (in-process, synthetic data) |
 | Plugin and CLI versions agree | Done: 0.1.0 in `package.json` and `.claude-plugin/plugin.json`, held by `test/plugin-manifest.test.ts` |
 | Format-compatibility decision (runbook step 5) | Done: [ADR 0023](adr/0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md), DEC-246 D1 |
 | T24 Claude half | Done: `scripts/run-eval.sh` under Claude Code 2.1.309 at 6491b06, 5 of 5, score 1.000 (WCLI-83). DEC-246 a1 replaced the skill's trigger description and the body names both value-surface refusals; cases, graders and thresholds are unchanged. The 2026-09-29 run under 2.1.284 was also 5 of 5 |

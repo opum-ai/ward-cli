@@ -58,8 +58,10 @@ as a damaged record, and no record type gains tolerance for unknown keys.
 - **There is no migration in 0.1.0.** The release does not read a dev-era
   approval either: `profileSnapshotVersion` is 2 from this release
   ([ADR 0018](0018-profilesnapshotversion-bumps-at-the-first-release.md)), so a
-  profile approval a pre-release build wrote is refused and approved again by
-  the developer. The install runbook says so.
+  profile approval a pre-release build wrote is held inert — it authorises
+  nothing, `ward status` and `ward doctor` name it with its checkout and
+  snapshot version, and the developer approves the profile again to replace it
+  (DEC-246 a2). The install runbook says so.
 - **The arm not taken stays available to revisit.** Tolerating unknown keys on
   records that do not decide access is not decided here and would need its own
   record; this ADR does not forbid it, it declines it on authority records.

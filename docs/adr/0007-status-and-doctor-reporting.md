@@ -55,9 +55,21 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   repository already holds. Tests seed the vault with a second project and a
   second binding carrying sentinels and assert neither can appear in either
   output, with the current project's own id asserted present as the positive
-  control.
-- **Doctor runs five checks, in a fixed order, and always reports all five:**
-  `permissions`, `key_provider`, `schema`, `binding`, `instructions`. Each
+  control. A stale approval is the one place a vault-wide fact reaches a
+  report, and it reaches it as a count only: see the bullet below.
+- **A stale approval is named only for the current project.** DEC-246 (a3)
+  Q1 settles the scope: records of the project this checkout declares are
+  named, including records on that project's deleted worktrees, each with its
+  checkout, snapshot version and re-approve step; records of any other project
+  appear as a bare count, with no id, profile name or path. That is visibility
+  where the operator can act, without turning an `admin: false` report that
+  the skill tells agents to read into an inventory of the vault. A test seeds
+  a second project's stale approval carrying sentinels and asserts it is
+  counted and never named, with the current project's record named as the
+  positive control.
+- **Doctor runs six checks, in a fixed order, and always reports all six:**
+  `permissions`, `key_provider`, `schema`, `binding`, `stale_approvals`,
+  `instructions`. Each
   carries a stable code. Every check is evaluated independently, so one
   failure never suppresses the others' answers.
 - **A check's result is `pass`, `fail` or `skipped`.** `fail` means the
@@ -74,6 +86,16 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   skipped check is not evidence of readiness. `ok: true` and exit 0 mean no
   check failed — not that anything is set up; a consumer that needs readiness
   reads the per-check statuses.
+- **A stale approval fails only when it can still be cleared.** DEC-246 (a3)
+  Q2 settles the second half: `stale_approvals` fails, with
+  `reapprove_required`, only for a record whose checkout still resolves to the
+  same root, device and inode, and whose profile its manifest still declares —
+  that is, one where running the re-approve step there would actually replace
+  it. Every other record is reported as inert and unreachable under the
+  project scope above, and the check passes with the code `inert` rather than
+  exiting 6 forever over a step nothing can perform. A record of another
+  project alone gives `other_projects`; no stale records at all gives
+  `current`. Removing an inert record is a later task, not this release.
 - **The instruction check judges the blocks that exist.** A block whose bytes
   are not what this build writes is `stale`; a block whose markers the writer
   would refuse is `malformed`; both fail. A host with no block at all is
@@ -122,7 +144,7 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   commands bound it** (WCLI-20): the key check reports `unavailable` and the
   process is told to exit explicitly rather than wait on a pending native
   call.
-- **What is not claimed:** that doctor proves anything outside its five
+- **What is not claimed:** that doctor proves anything outside its six
   checks; that a skipped check says a checkout is ready; and that a report can
   distinguish *why* a credential store refused (locked, access denied,
   timed out) — the adapter maps those to one verdict by design, so the report

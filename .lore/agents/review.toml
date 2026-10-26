@@ -15,6 +15,4 @@ sources = [
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0020-cross-project-grants-are-alias-bound-and-restore-clears-them",
-  "adr/0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency",
-  "reference/ward-s-spec-of-record-the-cli-contract-and-the-release-gates",
 ]

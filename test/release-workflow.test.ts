@@ -46,7 +46,69 @@ test("it triggers on a v* tag and a manual dry run, and nothing else", () => {
   expect(on).toContain('- "v*"');
   expect(on).toContain("workflow_dispatch:");
   expect(on).not.toContain("pull_request");
-  expect(workflow).toMatch(/release:[\s\S]*?if: github\.ref_type == 'tag'/);
+  // F3 (rv330): a manual dry run must not publish a Release, so the job needs
+  // both the push event and a tag ref, not the ref alone.
+  expect(workflow).toMatch(
+    /release:[\s\S]*?if: github\.event_name == 'push' && github\.ref_type == 'tag'/,
+  );
+});
+
+test("a tag is checked as annotated and at main's tip, without fetching", () => {
+  // F2 and F7 (rv330): fetch-depth: 0 already carries origin/main, so the tag
+  // step fetches nothing; and AC1's main == dev makes the tag commit main's
+  // tip, which is stricter than the ancestry check it replaces.
+  expect(workflow).not.toMatch(/git\s+fetch/);
+  // Finding 3 (rv331): annotated-ness is read from the stored ref over REST,
+  // never from what actions/checkout left at refs/tags/<tag>. The command
+  // form is what is banned — the workflow names it in a comment explaining
+  // why it went.
+  expect(workflow).not.toContain('git cat-file -t "refs/tags/');
+  expect(workflow).toContain("run: node scripts/check-release-tag.mjs");
+  expect(workflow).toContain('git rev-parse "refs/tags/${TAG}^{commit}"');
+  expect(workflow).toContain(
+    'git merge-base --is-ancestor "$tag_commit" origin/main',
+  );
+  expect(workflow).toContain('"$tag_commit" != "$(git rev-parse origin/main)"');
+});
+
+test("the snapshot-bump note is emitted only for a release that raises it", () => {
+  // F5 (rv330): the line is computed against the previous v* tag and the
+  // pre-release baseline of 1, never echoed for every release.
+  const sentence =
+    "This release raises the profile snapshot version: approve your profiles again after installing.";
+  expect(workflow.split(sentence).length - 1).toBe(1);
+  expect(workflow).toContain(
+    'if [ "$snapshot_version_now" -gt "$snapshot_version_before" ]',
+  );
+  expect(workflow).toContain('snapshot_bump="This release raises');
+  expect(workflow).toContain('if [ -n "$snapshot_bump" ]; then');
+  // Finding 11 (rv331) and new finding 1 (rv331b): the previous tag comes from
+  // `git tag --merged`, never from `git describe`. describe dies whenever the
+  // baseline has no matching tag, so its failure has to be read as a result —
+  // and on the v0.1.0 tag push its baseline is that tag's own parent, which
+  // v0.1.0 can never describe, so the old form would have failed the release
+  // right after the tag was pushed. `git tag` separates the cases by exit code
+  // instead of by message: nothing reachable lists nothing and exits 0, and a
+  // real failure exits non-zero. Measured in a scratch clone in all four
+  // states, recorded on WCLI-82.
+  // The command form is what is banned; the step's own comment names `git
+  // describe` to explain why it went, and that explanation is worth keeping.
+  expect(workflow).not.toMatch(/git describe\s+--/);
+  expect(workflow).toContain(
+    `git tag --list 'v*' --merged "$baseline" --sort=-v:refname`,
+  );
+  expect(workflow).toContain("previous_tag=\"${tags%%$'\\n'*}\"");
+});
+
+test("the notes say why the release is not a GitHub pre-release", () => {
+  // INFO 11 (rv330): prerelease: false stays, and the reason travels with the
+  // release rather than living only in a session's memory.
+  expect(workflow).toContain("not a GitHub pre-release");
+  const publish = readFileSync(
+    join(root, "scripts", "publish-release.mjs"),
+    "utf8",
+  );
+  expect(publish).toContain("prerelease: false");
 });
 
 test("no expression is interpolated inside a run: body", () => {
@@ -86,6 +148,71 @@ test("the build command takes a bun- target and refuses anything else", () => {
 });
 
 const cdhash = join(root, "scripts", "macho-cdhash.mjs");
+const tagCheck = join(root, "scripts", "check-release-tag.mjs");
+const tagObjectSha = "a".repeat(40);
+const commitSha = "b".repeat(40);
+
+// The script runs as a child process against a local server, so the server has
+// to be able to answer while the parent waits: spawnSync would block the only
+// listener and deadlock. `repo` selects the fixture the server returns.
+async function runTagCheck(
+  repo: "annotated" | "lightweight" | "missing",
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (request.headers.get("authorization") !== "Bearer test-token")
+        return new Response("bad credentials", { status: 401 });
+      const owner = new URL(request.url).pathname.split("/")[2];
+      if (owner === "missing")
+        return new Response('{"message":"Not Found"}', { status: 404 });
+      const type = owner === "lightweight" ? "commit" : "tag";
+      return Response.json({
+        ref: "refs/tags/v0.1.0",
+        object: { type, sha: type === "tag" ? tagObjectSha : commitSha },
+      });
+    },
+  });
+  const proc = Bun.spawn(["node", tagCheck], {
+    env: {
+      ...process.env,
+      GH_TOKEN: "test-token",
+      REPO: `${repo}/ward-cli`,
+      TAG: "v0.1.0",
+      GITHUB_API_URL: `http://127.0.0.1:${server.port}`,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  server.stop(true);
+  return { code, stdout, stderr };
+}
+
+test("the annotated-tag check accepts a tag object and refuses the rest", async () => {
+  // Finding 3 (rv331), both ways: the check is the whole gate, so a version
+  // that only ever refused, or only ever accepted, would pass a string match
+  // and still block or wave through a release.
+  const annotated = await runTagCheck("annotated");
+  expect(annotated.code).toBe(0);
+  expect(annotated.stdout).toContain(
+    `is an annotated tag object ${tagObjectSha}`,
+  );
+
+  const lightweight = await runTagCheck("lightweight");
+  expect(lightweight.code).toBe(1);
+  expect(lightweight.stderr).toContain("is not an annotated tag");
+  expect(lightweight.stderr).toContain("commit");
+
+  const missing = await runTagCheck("missing");
+  expect(missing.code).toBe(1);
+  expect(missing.stderr).toContain("HTTP 404");
+});
+
 function run(file: string) {
   return spawnSync("node", [cdhash, file], { encoding: "utf8" });
 }

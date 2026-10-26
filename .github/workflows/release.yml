@@ -32,8 +32,9 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 15
     steps:
-      # Full history, so a tag push can be checked against main below. Nothing
-      # in this job pushes or fetches later.
+      # Full history, so a tag push can be checked against main below. The
+      # checkout already carries origin/main and the tags; this job never
+      # fetches or pushes.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
@@ -41,7 +42,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: package.json
-      - name: The tag names this package's version and sits on main
+      - name: The tag names this package's version and is main's tip
         if: github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
@@ -52,11 +53,26 @@ jobs:
             echo "::error::tag ${TAG} does not match package.json version ${version}"
             exit 1
           fi
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
             echo "::error::${TAG} is not on main: promote dev to main before tagging"
             exit 1
           fi
+          if [ "$tag_commit" != "$(git rev-parse origin/main)" ]; then
+            echo "::error::${TAG} does not point at main's tip: AC1 requires main == dev, so a tag behind the tip is not this release"
+            exit 1
+          fi
+      # Annotated-ness is read from the stored ref, not from the checkout: what
+      # actions/checkout leaves at refs/tags/<tag> is what the old
+      # `git cat-file -t` was trusting, and for an annotated tag that object
+      # can be the commit. The script says why in full.
+      - name: The tag is an annotated tag
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: node scripts/check-release-tag.mjs
       # The runner has no gh, so the release job uses node and the REST API.
       - run: node --version
       - name: Install with the darwin native module
@@ -75,6 +91,47 @@ jobs:
           RUNNER_HOST: ${{ runner.name }}
         run: |
           set -euo pipefail
+          # The notes carry the re-approval warning only for a release that
+          # actually raises the version, compared against the previous v* tag
+          # (1 is the pre-release baseline every dev-era build wrote).
+          snapshot_version_now="$(sed -n 's/^export const profileSnapshotVersion = \([0-9][0-9]*\);$/\1/p' src/domain/profile.ts)"
+          if [ -z "$snapshot_version_now" ]; then
+            echo "::error::could not read profileSnapshotVersion from src/domain/profile.ts"
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            baseline="refs/tags/${REF_NAME}^{commit}^"
+          else
+            baseline="HEAD"
+          fi
+          # The previous v* tag reachable from the baseline, highest version
+          # first, or nothing.
+          #
+          # `git describe` cannot answer this question. It dies whenever the
+          # baseline has no matching tag, which is every first release — and on
+          # the tag run the baseline is the tag's own parent, so v0.1.0 itself
+          # can never describe it. Its failure therefore has to be read as a
+          # result, which is exactly the trap finding 11 was about, and the
+          # dry run hides it because a dry run has no v* tags at all.
+          #
+          # `git tag --merged` separates the two cases by exit code instead of
+          # by message: nothing reachable lists nothing and exits 0, and a real
+          # failure exits non-zero, which `set -e` turns into a failed step.
+          tags="$(git tag --list 'v*' --merged "$baseline" --sort=-v:refname)"
+          previous_tag="${tags%%$'\n'*}"
+          snapshot_version_before=1
+          if [ -n "$previous_tag" ]; then
+            snapshot_version_before="$(git show "${previous_tag}:src/domain/profile.ts" | sed -n 's/^export const profileSnapshotVersion = \([0-9][0-9]*\);$/\1/p')"
+            if [ -z "$snapshot_version_before" ]; then
+              echo "::error::could not read profileSnapshotVersion at ${previous_tag}"
+              exit 1
+            fi
+          fi
+          if [ "$snapshot_version_now" -gt "$snapshot_version_before" ]; then
+            snapshot_bump="This release raises the profile snapshot version: approve your profiles again after installing."
+          else
+            snapshot_bump=""
+          fi
           cd out
           mv ward ward-darwin-arm64
           sha256sum ward-darwin-arm64 > ward-darwin-arm64.sha256
@@ -89,7 +146,10 @@ jobs:
             echo "- Built on runner ${RUNNER_HOST}, $(uname -srm), bun $(bun --version), cross-compiled for bun-darwin-arm64 under the output name ward"
             echo
             echo "Install and upgrade: docs/runbooks/install-and-upgrade-ward-from-a-release.md."
-            echo "This release raises the profile snapshot version: approve your profiles again after installing."
+            if [ -n "$snapshot_bump" ]; then
+              echo "$snapshot_bump"
+            fi
+            echo "Published as a full Release, not a GitHub pre-release: it is the only release for this tag, and the install steps download it by tag. It is still a local developer preview with no stability promise."
             echo "Expect one keychain re-approval per upgrade; the binary is ad-hoc signed."
           } > release-notes.md
           cat release-notes.md
@@ -105,7 +165,7 @@ jobs:
   release:
     name: Create the GitHub Release
     needs: build
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 10
     # The only write permission in this workflow: it creates the Release.

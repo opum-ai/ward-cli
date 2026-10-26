@@ -1,7 +1,7 @@
 // `ward status` and `ward doctor` (spec §8): the two read-only reports over
 // the state every other command acts on. Status answers what this checkout
 // and its backend look like right now; doctor runs the same observation as
-// five named checks and exits 6 when one of them is wrong. They share this
+// six named checks and exits 6 when one of them is wrong. They share this
 // module because they must never disagree: a status run and a doctor run
 // read the same facts through the same ports, in the same order.
 //
@@ -35,7 +35,9 @@
 import { type ExitCode, exitCodes } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
 import type { AgentTarget } from "../contract/manifest.ts";
+import { escapeForDisplay } from "../domain/display.ts";
 import { managedBlockStatus } from "../domain/managed-block.ts";
+import { normalizeProfile } from "../domain/profile.ts";
 import { parseProjectManifest } from "../domain/project-manifest.ts";
 import {
   type CheckoutIdentity,
@@ -53,6 +55,27 @@ export interface ReportingOptions {
   readonly files: ProjectFiles;
   readonly store: VaultStore;
   readonly keyProvider: KeyProvider;
+  readonly checkouts: StaleCheckoutProbe;
+}
+
+// A checkout a stored record names, seen from here. Most stale approvals were
+// written by a different directory than the one being reported — a deleted
+// worktree, a re-cloned tree, a sibling — so the port answers about an
+// absolute root rather than about the checkout in hand.
+export interface ProbedCheckout {
+  // The root the record's path resolves to, which is what `ward profile
+  // approve` would itself resolve. It is compared against the record's root,
+  // not assumed equal: a directory that survived without its `.git` resolves
+  // to an ancestor, and re-approving there would write a different root.
+  readonly root: string;
+  readonly device: string;
+  readonly inode: string;
+  // The project manifest's text, or undefined when there is none to read.
+  readonly manifest: string | undefined;
+}
+
+export interface StaleCheckoutProbe {
+  probe(root: string): ProbedCheckout | undefined;
 }
 
 // The error code of a WardError, or undefined for anything else. An
@@ -101,11 +124,12 @@ type KeyObservation =
 
 // `unsupported` is not about the document's own version, which now has a
 // single format and answers `malformed` when it is not this build's (DEC-38).
-// It is the *other* raiser of `vault_format_unsupported` reaching this read: a
-// stored profile approval whose `snapshotVersion` this build does not
-// implement. That record sits inside an otherwise-readable document, so the
-// document is not malformed — and because it is reachable, this status is what
-// keeps the two reports answering rather than throwing (WCLI-51 review, F1).
+// It is the sealed envelope reaching this read with a header this build does
+// not implement, which is the only remaining raiser of
+// `vault_format_unsupported`: since DEC-246 a2 a stored approval's snapshot
+// version is an inert record reported as stale, not an error. Because that
+// envelope case is reachable, this status is what keeps the two reports
+// answering rather than throwing.
 type StateObservation =
   | { status: "present"; state: VaultState }
   | { status: "unreadable" }
@@ -226,11 +250,13 @@ function observeState(store: VaultStore, key: Uint8Array): StateObservation {
     switch (wardCode(error)) {
       case "vault_state_malformed":
         return { status: "malformed" };
-      // Still reachable after DEC-38, and this case is the whole reason the
-      // status survives: parseVaultState raises this code for a stored
-      // approval's snapshotVersion even though it no longer raises it for the
-      // document's own version. Dropping this case makes both reports throw
-      // out of their read instead of answering.
+      // Still reachable after DEC-38 and DEC-246 a2, and this case is the
+      // whole reason the status survives: the sealed envelope's header raises
+      // this code for a format this build does not implement. The state
+      // document's own version no longer raises it, and neither does a
+      // stored approval, which is held inert and reported as stale instead.
+      // Dropping this case makes both reports throw out of their read
+      // instead of answering.
       case "vault_format_unsupported":
         return { status: "unsupported" };
       case "vault_authentication_failed":
@@ -268,6 +294,31 @@ async function observe(options: ReportingOptions): Promise<Observation> {
 
 // --- ward status -------------------------------------------------------------
 
+// One stored approval this build cannot read: its snapshot version names
+// another build's normalizer (DEC-246 a2). It authorises nothing, and both
+// reports name it so the developer can re-approve it rather than discovering
+// the loss at a refusal.
+//
+// Two things decide whether it appears here at all, and both are DEC-246 (a3):
+// it belongs to the project being reported (Q1), and it can still be cleared
+// (Q2). A record of another project is counted, never named; a record of this
+// project that nothing can reach is named as inert without failing the doctor.
+export interface StaleApprovalReport {
+  readonly profile: string;
+  readonly projectId: string;
+  readonly checkout: string;
+  readonly snapshotVersion: number;
+  // Whether re-approving this profile from that checkout would replace this
+  // record. False means inert: it authorises nothing, and nothing this build
+  // offers can reach it (DEC-246 a3 Q2).
+  readonly clearable: boolean;
+  // The step that clears this record, or why there is none. Written out
+  // rather than left for the caller to compose from the fields above: the
+  // clearing step only works from the checkout the record names, and a reader
+  // assembling its own command has no way to know that from the fields alone.
+  readonly remedy: string;
+}
+
 export interface StatusReport {
   readonly checkout: string;
   readonly manifest: {
@@ -292,6 +343,140 @@ export interface StatusReport {
       | "unsupported"
       | "unchecked";
   };
+  // Empty rather than absent when there are none, so a caller can tell "none"
+  // from "this report does not say".
+  readonly staleApprovals: readonly StaleApprovalReport[];
+  // How many stale approvals belong to projects other than this one. A bare
+  // count by design (DEC-246 a3 Q1): their ids, profile names and paths are
+  // never part of a report for a checkout that cannot act on them. Zero
+  // rather than absent when there are none, matching the field above.
+  readonly otherProjectStaleApprovals: number;
+}
+
+// The project a report is about: the one this checkout's tracked manifest
+// claims. Undefined when the manifest is absent or cannot be judged, and then
+// nothing is named — a report that cannot say which project it is for cannot
+// say whose records are whose.
+function currentProject(manifest: ManifestObservation): string | undefined {
+  return manifest.status === "present" ? manifest.projectId : undefined;
+}
+
+// Both halves of DEC-246 (a3), answered in one pass because they are one read.
+//
+// Q1: a record is named only when it belongs to the project being reported.
+// Records of other projects are counted and nothing else — no id, no profile
+// name, no path — which is what keeps status, an admin:false report an agent
+// runs, from becoming a vault-wide inventory (spec §8, ADR 0007).
+//
+// Q2: a named record is clearable only when running `ward profile approve` in
+// its own checkout would actually replace it: that directory still resolves to
+// the same root, device and inode; that checkout is still registered; and its
+// manifest still declares the profile under this project. Everything else is
+// inert, and inert records are named without failing the doctor.
+function staleApprovals(
+  state: StateObservation | undefined,
+  project: string | undefined,
+  checkouts: StaleCheckoutProbe,
+): { named: readonly StaleApprovalReport[]; otherProjects: number } {
+  if (state === undefined || state.status !== "present")
+    return { named: [], otherProjects: 0 };
+  const named: StaleApprovalReport[] = [];
+  let otherProjects = 0;
+  for (const record of state.state.staleProfileApprovals) {
+    if (project === undefined || record.projectId !== project) {
+      otherProjects += 1;
+      continue;
+    }
+    named.push(describeStaleApproval(record, state.state, checkouts));
+  }
+  return { named, otherProjects };
+}
+
+function describeStaleApproval(
+  record: VaultState["staleProfileApprovals"][number],
+  state: VaultState,
+  checkouts: StaleCheckoutProbe,
+): StaleApprovalReport {
+  const fields = {
+    profile: record.profile,
+    projectId: record.projectId,
+    checkout: record.root,
+    snapshotVersion: record.snapshotVersion,
+  };
+  const inert = (why: string): StaleApprovalReport => ({
+    ...fields,
+    clearable: false,
+    remedy: `inert and unreachable: ${why}`,
+  });
+
+  const probed = checkouts.probe(record.root);
+  if (probed === undefined) return inert("that directory no longer exists");
+  if (
+    probed.root !== record.root ||
+    probed.device !== record.device ||
+    probed.inode !== record.inode
+  )
+    return inert("a different directory now stands at that path");
+  const identity = {
+    root: record.root,
+    device: record.device,
+    inode: record.inode,
+  };
+  const binding = findBinding(state, identity);
+  if (binding === undefined)
+    return inert("that checkout is no longer registered");
+  if (binding.projectId !== record.projectId)
+    return inert("that checkout is registered to another project");
+  if (probed.manifest === undefined)
+    return inert("that checkout has no project manifest");
+  let manifest: ReturnType<typeof parseProjectManifest>;
+  try {
+    manifest = parseProjectManifest(probed.manifest);
+  } catch {
+    return inert("that checkout's project manifest cannot be read");
+  }
+  if (manifest.projectId !== record.projectId)
+    return inert("that checkout now declares another project");
+  if (!Object.hasOwn(manifest.profiles, record.profile))
+    return inert("that checkout no longer declares this profile");
+  try {
+    normalizeProfile(manifest.profiles[record.profile]);
+  } catch {
+    return inert("that checkout's declaration of this profile cannot be read");
+  }
+  return {
+    ...fields,
+    clearable: true,
+    remedy: `from ${record.root}, run ward profile approve ${record.profile}`,
+  };
+}
+
+function staleApprovalLines(
+  approvals: readonly StaleApprovalReport[],
+  otherProjects: number,
+): readonly string[] {
+  const lines: string[] = [];
+  if (approvals.length > 0) {
+    lines.push(
+      `  stale approvals: ${approvals.length} (written by another build; they authorise nothing)`,
+    );
+    lines.push(
+      ...approvals.map(
+        (entry) =>
+          `    - ${escapeForDisplay(entry.profile)} at ${escapeForDisplay(entry.checkout)}, snapshot version ${entry.snapshotVersion}: ${
+            entry.clearable
+              ? `re-approve in a trusted terminal with ward profile approve ${escapeForDisplay(entry.profile)}, run from that checkout`
+              : `inert and unreachable — ${escapeForDisplay(entry.remedy.replace(/^inert and unreachable: /, ""))}`
+          }`,
+      ),
+    );
+  }
+  if (otherProjects > 0) {
+    lines.push(
+      `  stale approvals in other projects: ${otherProjects} (counted, never named; run Ward in that project to see them)`,
+    );
+  }
+  return lines;
 }
 
 // The binding for this root, whatever project it names. A miss means this
@@ -327,6 +512,10 @@ function statusText(report: StatusReport): string {
     `  binding:       ${report.binding.status}`,
     `  vault:         ${vault}`,
     `  key provider:  ${report.keyProvider.status}`,
+    ...staleApprovalLines(
+      report.staleApprovals,
+      report.otherProjectStaleApprovals,
+    ),
     "",
     "Ward read this state; it did not change anything.",
   ].join("\n");
@@ -342,6 +531,11 @@ export async function runStatus(
 ): Promise<StatusResult> {
   const observation = await observe(options);
   const { manifest, vault, key } = observation;
+  const stale = staleApprovals(
+    observation.state,
+    currentProject(manifest),
+    options.checkouts,
+  );
   const data: StatusReport = {
     checkout: options.checkout.root,
     manifest:
@@ -364,6 +558,8 @@ export async function runStatus(
           }
         : { status: vault.status },
     keyProvider: { status: key === undefined ? "unchecked" : key.status },
+    staleApprovals: stale.named,
+    otherProjectStaleApprovals: stale.otherProjects,
   };
   return { data, text: statusText(data) };
 }
@@ -375,6 +571,7 @@ export type DoctorCheckName =
   | "key_provider"
   | "schema"
   | "binding"
+  | "stale_approvals"
   | "instructions";
 
 export type InstructionState =
@@ -390,6 +587,11 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
+  // Named individually rather than counted, because the re-approve step is
+  // per profile and per checkout (DEC-246 a2 clause 2), and only for this
+  // project's records: other projects are a bare count (DEC-246 a3 Q1).
+  readonly staleApprovals?: readonly StaleApprovalReport[];
+  readonly otherProjectStaleApprovals?: number;
 }
 
 export interface DoctorReport {
@@ -492,9 +694,9 @@ function schemaCheck(
     switch (state.status) {
       case "malformed":
         return { check, status: "fail", code: "state_malformed" };
-      // A stored approval this build cannot read. Keyed to the record rather
-      // than to the document, which is why it is not `state_malformed`: the
-      // document parsed, and one record in it did not (WCLI-51 review, F1).
+      // The sealed envelope's header names a format this build cannot read.
+      // Keyed to the vault rather than to the state document, which is why it
+      // is not `state_malformed`: there was no document to parse.
       case "unsupported":
         return { check, status: "fail", code: "state_unsupported" };
       case "unauthenticated":
@@ -555,6 +757,58 @@ function bindingCheck(
   if (binding.projectId !== manifest.projectId)
     return { check, status: "fail", code: "conflict" };
   return { check, status: "pass", code: "registered" };
+}
+
+// A stored approval this build cannot read is a finding rather than a fault
+// in the vault: the document parsed, the record authorises nothing, and the
+// developer clears it by re-approving the profile (DEC-246 a2). It fails the
+// doctor only when that is actually possible — a record nothing can reach is
+// named as inert and does not fail (DEC-246 a3 Q2), because a permanent exit 6
+// naming a step that cannot be carried out is not a finding a developer can
+// act on.
+//
+// A check that could not be evaluated fails with the blocking reason as its
+// code, exactly as `binding` does. `skipped` is reserved for the subject not
+// existing here, and this report being unable to look is not that: reading it
+// as healthy would tell a developer their approvals are current when Ward
+// never got to count them.
+function staleApprovalsCheck(
+  vault: VaultObservation,
+  key: KeyObservation | undefined,
+  state: StateObservation | undefined,
+  manifest: ManifestObservation,
+  checkouts: StaleCheckoutProbe,
+): DoctorCheck {
+  const check = "stale_approvals" as const;
+  if (vault.status === "absent")
+    return { check, status: "skipped", code: "vault_absent" };
+  if (vault.status !== "present")
+    return { check, status: "fail", code: `vault_${vault.status}` };
+  if (state === undefined) {
+    const reason = key === undefined ? "state_unreadable" : `key_${key.status}`;
+    return { check, status: "fail", code: reason };
+  }
+  if (state.status !== "present")
+    return { check, status: "fail", code: `state_${state.status}` };
+  const stale = staleApprovals(state, currentProject(manifest), checkouts);
+  const named = stale.named;
+  if (named.length === 0 && stale.otherProjects === 0)
+    return { check, status: "pass", code: "current" };
+  const reported = {
+    check,
+    staleApprovals: named,
+    otherProjectStaleApprovals: stale.otherProjects,
+  };
+  if (named.some((entry) => entry.clearable))
+    return { ...reported, status: "fail", code: "reapprove_required" };
+  // Nothing here can be cleared. A count of other projects' records alone is
+  // not a finding about this one, so it gets its own code rather than reading
+  // as records this checkout is merely declining to act on.
+  return {
+    ...reported,
+    status: "pass",
+    code: named.length === 0 ? "other_projects" : "inert",
+  };
 }
 
 const instructionTargets: readonly AgentTarget[] = ["claude", "codex"];
@@ -618,12 +872,18 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
 }
 
 function doctorText(report: DoctorReport): string {
-  const lines = report.checks.map((check) => {
+  const lines = report.checks.flatMap((check) => {
     const documents =
       check.documents === undefined
         ? ""
         : ` (claude: ${check.documents.claude}, codex: ${check.documents.codex})`;
-    return `  ${check.check.padEnd(13)}${check.status.padEnd(8)}${check.code}${documents}`;
+    return [
+      `  ${check.check.padEnd(16)}${check.status.padEnd(8)}${check.code}${documents}`,
+      ...staleApprovalLines(
+        check.staleApprovals ?? [],
+        check.otherProjectStaleApprovals ?? 0,
+      ),
+    ];
   });
   const failed = report.checks
     .filter((check) => check.status === "fail")
@@ -668,6 +928,13 @@ export async function runDoctor(
       observation.key,
       observation.state,
       options.checkout,
+    ),
+    staleApprovalsCheck(
+      observation.vault,
+      observation.key,
+      observation.state,
+      observation.manifest,
+      options.checkouts,
     ),
     instructionsCheck(options.files),
   ];
