@@ -77,7 +77,31 @@ that named a release-time obligation.
    to tolerate unknown keys - is the one to revisit here, and it was left aside
    deliberately: on authority records such as bindings and approvals, an
    unknown field would be dropped silently from something that decides access.
-6. **Record the gate results** where the release's results live - WCLI-15's
+6. **Confirm the release build is the one you will install.** Dispatch the
+   workflow's dry run and compare its hash with a build on your Mac. The dry
+   run builds, hashes and uploads the artifact to the run and creates no
+   Release:
+
+   ```
+   gh workflow run release.yml --ref dev
+   gh run list --workflow release.yml --limit 1 --json databaseId,headSha
+   gh run download <databaseId> -n ward-darwin-arm64 -D dry-run
+   cat dry-run/ward-darwin-arm64.sha256
+   bun install --frozen-lockfile --os=darwin --cpu=arm64
+   bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward
+   shasum -a 256 out/ward
+   ```
+
+   The expected result is the same sha256 from both, and that hash is the one
+   the release notes will carry. Two conditions decide the comparison. Keep
+   the fixed `out/ward` output name the workflow uses, because the compiled
+   bytes embed the output name. Build from a real `bun install` in the
+   checkout, because a `node_modules` symlinked out of the tree embeds a
+   different module path and changes the hash. Measured 2026-10-26: the dry
+   run on `dev` and a Mac build of the same source agreed byte for byte. A
+   mismatch means the runner's toolchain or the checkout differs, so the
+   release is not reproducible; stop and report it rather than tagging.
+7. **Record the gate results** where the release's results live - WCLI-15's
    `docs/security-tests.md` maps every gate to a test and a recorded result -
    including this runbook's items, so the next release reads one list.
 
@@ -91,3 +115,11 @@ release that shipped with `profileSnapshotVersion` unbumped cannot be repaired
 by a second bump in the next release. Fix it forward - treat the next release
 as the bump that should have happened, say so in its notes, and never edit a
 stored snapshot to fit.
+
+A publish step that fails after the Release was created as a draft leaves an
+orphan draft on the tag, and GitHub allows one Release per tag, so a rerun
+fails on the draft it cannot create. Delete the orphan before rerunning -
+`gh release delete <tag> --yes`, without `--cleanup-tag`, which would delete
+the tag the Release belongs to. The draft-then-publish order is deliberate: it
+is what keeps a failed upload from leaving a public Release with missing
+files.

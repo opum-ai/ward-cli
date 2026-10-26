@@ -44,19 +44,25 @@ release's attached files, and treat a mismatch as a defect in this page.
    `gh release download v0.1.0 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'`
 2. Verify the checksum: `shasum -a 256 -c ward-darwin-arm64.sha256`. Stop on any
    mismatch; do not run the file.
-3. Install it as a regular file, not a link:
+3. Compare the binary's CDHash with the release notes:
+   `codesign -dvvv ward-darwin-arm64 2>&1 | grep '^CDHash='`, whose value must
+   equal the `cdhash` line of the release body (`gh release view v0.1.0 -R
+   opum-ai/ward-cli --json body`). The signature is ad hoc, so this hash is
+   the identity the keychain trust follows; a mismatch means the file is not
+   the one that was built and published, and it is not installed.
+4. Install it as a regular file, not a link:
    `install -m 0755 ward-darwin-arm64 ~/.local/bin/ward`. If `~/.local/bin/ward`
    is a symlink into a checkout, remove the link first (`rm ~/.local/bin/ward`),
    then install. The checkout's `dist/ward` is left as it was.
-4. Check the version: `ward --version` prints `0.1.0`.
-5. Install the agent skill from the private marketplace, which pins `opum-ward`
+5. Check the version: `ward --version` prints `0.1.0`.
+6. Install the agent skill from the private marketplace, which pins `opum-ward`
    to the same tag (opum-fleet owns that entry): `claude plugin install
    opum-ward@opum-fleet` in a fresh session. The plugin and the CLI are cut from
    one tag, so the skill never describes a contract the installed CLI lacks.
 
 ### Approve the keychain item, once
 
-6. The first command that needs the vault key (`ward status` is the cheapest)
+7. The first command that needs the vault key (`ward status` is the cheapest)
    may raise a macOS keychain dialog naming `ward` and the `opum.ward` item.
    Approve it with the choice that remembers the decision. The approval is
    bound to this exact binary, so it holds until the next upgrade. Over SSH the
@@ -65,7 +71,7 @@ release's attached files, and treat a mismatch as a defect in this page.
 
 ### Re-approve profiles
 
-7. Release 0.1.0 raises the profile snapshot version from 1 to 2
+8. Release 0.1.0 raises the profile snapshot version from 1 to 2
    ([ADR 0018](../adr/0018-profilesnapshotversion-bumps-at-the-first-release.md)).
    A vault whose profile approvals a pre-release build wrote refuses them as
    written by another build, and nothing is migrated or edited: approve each
@@ -74,19 +80,19 @@ release's attached files, and treat a mismatch as a defect in this page.
 
 ### Upgrade
 
-8. Repeat steps 1 to 4 with the new tag. `install` replaces the file in place.
-9. Expect the keychain dialog of step 6 again: a new binary is a new code
-   signature, and the release is signed ad hoc, with no stable identity across
-   releases. Approve it at the Mac.
-10. Read the release notes for a snapshot version bump. A bump means every
-    profile must be approved again (step 7); a release that does not bump leaves
+9. Repeat steps 1 to 5 with the new tag. `install` replaces the file in place.
+10. Expect the keychain dialog of step 7 again: a new binary is a new code
+    signature, and the release is signed ad hoc, with no stable identity across
+    releases. Approve it at the Mac.
+11. Read the release notes for a snapshot version bump. A bump means every
+    profile must be approved again (step 8); a release that does not bump leaves
     approvals as they were.
 
 ## Rollback
 
 Keep the previous artifact and install it the same way (`install -m 0755`).
 Rolling back across a snapshot-version bump refuses the approvals the newer
-build wrote, exactly as step 7 describes in the other direction: approve the
+build wrote, exactly as step 8 describes in the other direction: approve the
 profiles again. The vault itself is not altered by an install, an upgrade or a
 rollback. If a download fails its checksum, nothing was installed; retry the
 download, and report a repeat failure rather than installing the file.
