@@ -15,5 +15,4 @@ sources = [
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0020-cross-project-grants-are-alias-bound-and-restore-clears-them",
-  "reference/ward-s-spec-of-record-the-cli-contract-and-the-release-gates",
 ]

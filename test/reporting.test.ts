@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { locateCheckout } from "../src/adapters/checkout.ts";
+import { locateCheckout, probeCheckout } from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
@@ -67,6 +67,88 @@ const approver: RegistrationApprover = {
   available: () => true,
   ask: () => "approved",
 };
+
+// Adds a profile declaration to the manifest `ward init` wrote, and returns
+// the manifest's own project id — the value that decides whether a stale
+// record is this project's or another's (DEC-246 a3 Q1), and, with the
+// declaration, whether re-approving it is still possible (Q2).
+function declareProfile(checkout: string, profile: string): string {
+  const path = join(checkout, ".ward", "project.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as {
+    projectId: string;
+    profiles?: Record<string, unknown>;
+  };
+  manifest.profiles = {
+    ...(manifest.profiles ?? {}),
+    [profile]: {
+      adapter: "http",
+      method: "GET",
+      url: "https://api.example.invalid/rate_limit",
+      auth: { type: "bearer", secret: "example.token" },
+      // A record of header names to values, not a list: an array is refused
+      // as an invalid declaration, which would make every case here inert for
+      // a reason none of them is about.
+      headers: { Accept: "application/json" },
+      requestBody: "none",
+      output: "status",
+    },
+  };
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest.projectId;
+}
+
+// One stored approval record, raw: the shape the parser reads, before this
+// build decides what to make of it. Raw on purpose, because these cases are
+// about records another build wrote.
+function approvalRecord(options: {
+  profile: string;
+  projectId: string;
+  root: string;
+  device: string;
+  inode: string;
+  snapshotVersion?: number;
+}): Record<string, unknown> {
+  return {
+    profile: options.profile,
+    projectId: options.projectId,
+    root: options.root,
+    device: options.device,
+    inode: options.inode,
+    approvedAt: "2026-09-29T00:00:00.000Z",
+    expiresAt: "2026-09-30T00:00:00.000Z",
+    snapshotVersion: options.snapshotVersion ?? profileSnapshotVersion + 1,
+    snapshot: {
+      adapter: "http",
+      method: "GET",
+      url: "https://api.example.invalid/a",
+      auth: { type: "bearer", secret: "example.token" },
+      headers: [],
+      requestBody: "none",
+      output: "status",
+    },
+  };
+}
+
+// Appends raw approval records to the vault's state document without
+// disturbing anything already in it. The bindings `ward init` wrote matter
+// here: a record no checkout is registered for can never be cleared, so a
+// seed that replaced the whole document would make every case inert and the
+// clearable half of DEC-246 (a3) Q2 would never be exercised.
+function seedApprovals(
+  h: ReturnType<typeof harness>,
+  records: unknown[],
+): void {
+  h.store.mutate(h.key(), (plaintext) => {
+    const document = JSON.parse(new TextDecoder().decode(plaintext)) as {
+      profileApprovals?: unknown[];
+    };
+    document.profileApprovals = [
+      ...(document.profileApprovals ?? []),
+      ...records,
+    ];
+    return new TextEncoder().encode(JSON.stringify(document));
+  });
+}
 
 function harness() {
   const directory = join(mkdtempSync(join(root, `case-${++cases}-`)), ".ward");
@@ -113,6 +195,8 @@ interface StaleApprovalData {
   projectId: string;
   checkout: string;
   snapshotVersion: number;
+  clearable: boolean;
+  remedy: string;
 }
 
 interface StatusData {
@@ -122,6 +206,7 @@ interface StatusData {
   vault: { status: string; revision?: number; formatVersion?: number };
   keyProvider: { status: string };
   staleApprovals: StaleApprovalData[];
+  otherProjectStaleApprovals: number;
 }
 
 interface DoctorData {
@@ -132,6 +217,7 @@ interface DoctorData {
     code: string;
     documents?: Record<string, string>;
     staleApprovals?: StaleApprovalData[];
+    otherProjectStaleApprovals?: number;
   }[];
 }
 
@@ -422,6 +508,7 @@ describe("ward doctor", () => {
       files: createProjectFiles(identity.root),
       store: h.store,
       keyProvider: h.keyProvider,
+      checkouts: { probe: probeCheckout },
     };
 
     const locker = new Database(join(h.directory, "ward.db"));
@@ -490,6 +577,7 @@ describe("ward doctor", () => {
       files: createProjectFiles(identity.root),
       store: failing,
       keyProvider: h.keyProvider,
+      checkouts: { probe: probeCheckout },
     };
 
     const doctor = await runDoctor(options);
@@ -573,37 +661,22 @@ describe("ward doctor", () => {
     await h.setUp(checkout);
     await h.init(checkout, ["--claude"]);
     const identity = locateCheckout(checkout);
+    // The profile is declared and the record names this manifest's project, so
+    // the only thing wrong with the record is the version it was written under
+    // — which is what makes it the clearable case DEC-246 (a3) Q2 fails on.
+    const projectId = declareProfile(checkout, "deploy");
 
     // A complete, canonical approval, so the version it was written under is
     // the only thing about the record this build cannot read.
-    h.store.mutate(h.key(), () =>
-      new TextEncoder().encode(
-        JSON.stringify({
-          formatVersion: vaultStateFormatVersion,
-          profileApprovals: [
-            {
-              profile: "deploy",
-              projectId: randomUUID(),
-              root: identity.root,
-              device: identity.device,
-              inode: identity.inode,
-              approvedAt: "2026-09-29T00:00:00.000Z",
-              expiresAt: "2026-09-30T00:00:00.000Z",
-              snapshotVersion: profileSnapshotVersion + 1,
-              snapshot: {
-                adapter: "http",
-                method: "GET",
-                url: "https://api.example.invalid/a%20b?x=1&y=2",
-                auth: { type: "bearer", secret: "example.token" },
-                headers: [],
-                requestBody: "none",
-                output: "status",
-              },
-            },
-          ],
-        }),
-      ),
-    );
+    seedApprovals(h, [
+      approvalRecord({
+        profile: "deploy",
+        projectId,
+        root: identity.root,
+        device: identity.device,
+        inode: identity.inode,
+      }),
+    ]);
 
     const doctor = await doctorOf(h, checkout);
     expect(doctor.result.exitCode).toBe(exitCodes.validation);
@@ -667,37 +740,19 @@ describe("ward doctor", () => {
     await h.setUp(checkout);
     await h.init(checkout, ["--claude"]);
     const identity = locateCheckout(checkout);
+    const projectId = declareProfile(checkout, "deploy");
     const bidiOverride = String.fromCodePoint(0x202e);
     const hostileRoot = `${identity.root}/wo${bidiOverride}rktree`;
 
-    h.store.mutate(h.key(), () =>
-      new TextEncoder().encode(
-        JSON.stringify({
-          formatVersion: vaultStateFormatVersion,
-          profileApprovals: [
-            {
-              profile: "deploy",
-              projectId: randomUUID(),
-              root: hostileRoot,
-              device: identity.device,
-              inode: identity.inode,
-              approvedAt: "2026-09-29T00:00:00.000Z",
-              expiresAt: "2026-09-30T00:00:00.000Z",
-              snapshotVersion: profileSnapshotVersion + 1,
-              snapshot: {
-                adapter: "http",
-                method: "GET",
-                url: "https://api.example.invalid/a",
-                auth: { type: "bearer", secret: "example.token" },
-                headers: [],
-                requestBody: "none",
-                output: "status",
-              },
-            },
-          ],
-        }),
-      ),
-    );
+    seedApprovals(h, [
+      approvalRecord({
+        profile: "deploy",
+        projectId,
+        root: hostileRoot,
+        device: identity.device,
+        inode: identity.inode,
+      }),
+    ]);
 
     const status = await runWard(["status"], h.options(checkout));
     // The record is still named — escaping is display, not suppression — and
@@ -705,6 +760,90 @@ describe("ward doctor", () => {
     expect(status.stdout).toContain("/wo");
     expect(status.stdout).not.toContain(bidiOverride);
     expect(status.stdout).toContain("\\u202e");
+  });
+
+  // DEC-246 (a3) Q1. `status` is admin:false and the skill tells agents to
+  // read its JSON, so an inventory of the whole vault would land in agent
+  // context. Another project's records are counted and never named: no id, no
+  // profile name, no path.
+  test("another project's stale approvals are counted, never named", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-stale-scope");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+    const projectId = declareProfile(checkout, "deploy");
+    const otherProject = randomUUID();
+    const sentinelProfile = "sentinel-profile-name";
+    const sentinelRoot = `${identity.root}/sentinel-checkout-path`;
+
+    seedApprovals(h, [
+      approvalRecord({
+        profile: "deploy",
+        projectId,
+        root: identity.root,
+        device: identity.device,
+        inode: identity.inode,
+      }),
+      approvalRecord({
+        profile: sentinelProfile,
+        projectId: otherProject,
+        root: sentinelRoot,
+        device: identity.device,
+        inode: identity.inode,
+      }),
+    ]);
+
+    const status = await statusOf(h, checkout);
+    // The positive control: this project's own record is named, so the
+    // absence below is about scope rather than about the report being empty.
+    expect(status.data.staleApprovals).toEqual([
+      expect.objectContaining({ profile: "deploy", projectId }),
+    ]);
+    expect(status.data.otherProjectStaleApprovals).toBe(1);
+
+    const text = await runWard(["status"], h.options(checkout));
+    expect(text.stdout).toContain("stale approvals in other projects: 1");
+    for (const sentinel of [sentinelProfile, sentinelRoot, otherProject]) {
+      expect(text.stdout).not.toContain(sentinel);
+      expect(JSON.stringify(status.data)).not.toContain(sentinel);
+    }
+  });
+
+  // DEC-246 (a3) Q2. The pair with "a stored approval from another build is
+  // named, not trusted": the same record, the same project, the same
+  // declaration — only the directory it was written for is gone. Nothing can
+  // clear it, so doctor names it and does not fail, rather than exiting 6 in
+  // every checkout forever over a step nobody can carry out.
+  test("an inert stale record is named without failing the doctor", async () => {
+    const h = harness();
+    const checkout = worktree("doctor-stale-inert");
+    await h.setUp(checkout);
+    await h.init(checkout, ["--claude"]);
+    const identity = locateCheckout(checkout);
+    const projectId = declareProfile(checkout, "deploy");
+    const gone = `${identity.root}/deleted-worktree`;
+
+    seedApprovals(h, [
+      approvalRecord({
+        profile: "deploy",
+        projectId,
+        root: gone,
+        device: identity.device,
+        inode: identity.inode,
+      }),
+    ]);
+
+    const doctor = await doctorOf(h, checkout);
+    expect(doctor.result.exitCode).toBe(exitCodes.success);
+    const stale = checkFor(doctor.data, "stale_approvals");
+    expect(stale).toMatchObject({ status: "pass", code: "inert" });
+    expect(stale.staleApprovals).toEqual([
+      expect.objectContaining({ profile: "deploy", clearable: false }),
+    ]);
+    const text = await runWard(["doctor"], h.options(checkout));
+    expect(text.stdout).toContain("inert and unreachable");
+    expect(text.stdout).toContain("no longer exists");
   });
 
   test("binding: unregistered, then registered, then a conflict", async () => {

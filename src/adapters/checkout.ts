@@ -9,8 +9,10 @@
 // worktree, a submodule) and a `.git` directory (an ordinary checkout) both
 // mark a boundary, and both end the walk, which is what keeps a nested
 // repository from reaching its parent's authority.
-import { lstatSync, realpathSync } from "node:fs";
+import { type BigIntStats, lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import type { ProbedCheckout } from "../application/reporting.ts";
+import { createProjectFiles } from "./project-files.ts";
 import { WardError } from "../contract/errors.ts";
 import type { CheckoutIdentity } from "../domain/vault-state.ts";
 
@@ -67,4 +69,36 @@ export function locateCheckout(startDirectory: string): CheckoutIdentity {
     if (parent === current) throw new WardError("worktree_not_found");
     current = parent;
   }
+}
+
+// A checkout a stored record names, seen from here (DEC-246 a3 Q2). The
+// question is always about an absolute root that is usually not the one being
+// reported, and the answer decides whether a stale approval can still be
+// cleared: a directory that is gone, or that is now a different directory at
+// the same path, cannot be re-approved, and neither can one whose manifest no
+// longer declares the profile.
+//
+// lstat, not stat: the identity recorded for a checkout is its own, and a link
+// standing where the directory was must not answer as the directory. The
+// manifest goes through the same port every other read of it uses, so a link
+// leaving the checkout is refused here exactly as it is elsewhere.
+export function probeCheckout(root: string): ProbedCheckout | undefined {
+  let stats: BigIntStats;
+  try {
+    stats = lstatSync(root, { bigint: true });
+  } catch {
+    return undefined;
+  }
+  if (!stats.isDirectory()) return undefined;
+  let manifest: string | undefined;
+  try {
+    manifest = createProjectFiles(root).read("manifest");
+  } catch {
+    manifest = undefined;
+  }
+  return {
+    device: stats.dev.toString(),
+    inode: stats.ino.toString(),
+    manifest,
+  };
 }

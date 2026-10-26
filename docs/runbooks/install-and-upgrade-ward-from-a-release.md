@@ -84,6 +84,17 @@ release's attached files, and treat a mismatch as a defect in this page.
    one exactly where it was. Projects, secrets and bindings that hold
    no approval are read as before.
 
+   Two kinds of record appear here, and only one of them needs you. A record
+   whose checkout still exists and still declares the profile is the one step
+   8 is about: re-approve it and it is replaced. A record whose checkout is
+   gone, or whose profile is no longer declared, can never be cleared — and
+   Ward names it as inert and unreachable without failing `ward doctor`, so a
+   deleted worktree cannot pin the exit code at 6 forever. 0.1.0 offers no way
+   to remove such a record; it stays in the vault, authorising nothing, and a
+   later release is expected to add the cleanup command. Only this project's
+   records are named: `ward doctor` reports records belonging to other
+   projects as a bare count, and running Ward in that project names them.
+
 ### Upgrade
 
 9. Repeat steps 1 to 5 with the new tag. `install` replaces the file in place.

@@ -21,5 +21,4 @@ sources = [
   "adr/0014-ward-stores-no-skill-source-selection",
   "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable",
   "adr/0016-ward-init-asks-its-file-choice-with-the-peers-multiselect",
-  "adr/0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency",
 ]
