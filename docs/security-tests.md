@@ -64,10 +64,9 @@ the merge SHA.
 
 ## Release 0.1.0 gate results (WCLI-82)
 
-Recorded 2026-10-26, updated after the cut: the release is published at
-`2aff3df` under tag `v0.1.0`. Rows still open are discharged by the operator
-sitting, except the T26 real-send row, whose stated timing the cut did not
-follow — its status is DEC-246's to settle.
+Recorded 2026-10-26. The tag was cut at `2aff3df` on 2026-10-26 and the
+release is published. The rows not yet Done (T25, T26) complete after the
+release under DEC-246 D3 and ODOC-542 AC3.
 
 | Gate | Result |
 |---|---|
@@ -77,9 +76,9 @@ follow — its status is DEC-246's to settle.
 | T24 Claude half | Done: `scripts/run-eval.sh` under Claude Code 2.1.309 at 6491b06, 5 of 5, score 1.000 (WCLI-83). DEC-246 a1 replaced the skill's trigger description and the body names both value-surface refusals; cases, graders and thresholds are unchanged. The 2026-09-29 run under 2.1.284 was also 5 of 5 |
 | T24 Codex half | Deferred for 0.1.0 by DEC-246 D3: Codex is retired for the fleet and this half is a manual smoke ([ADR 0012](adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke.md)) |
 | T26 packaged-binary run | Pending the operator sitting (DEC-246 D3): run in the same sitting as the keychain and profile re-approval after install, on the released artifact |
-| T26 with a real send | Not run: one send to a real endpoint or a loopback TLS server (DEC-217 (a3)) still stands. Its "before the tag" timing was not followed, so whether it precedes a re-cut or is discharged at the sitting is DEC-246's call |
-| T25 federated index | The release artifact now exists (`v0.1.0`, `ward-darwin-arm64`); what remains is the `opum-fleet` entry pinning `opum-ward` to the tag (WCLI-82 AC3) |
-| Cut: tag, Release and artifact | Done 2026-10-26: annotated tag `v0.1.0` (object `04b1381`) peeling to `2aff3df`, then main's tip; tag run 40402166448 green on both jobs; Release published 21:11:40Z. The three paths the review called unmeasured — the tag-run baseline, `check-release-tag.mjs`'s REST read, and the release job's publish — all ran in production |
+| T26 with a real send | Runs in the operator sitting with the keychain re-approval (DEC-246 D3), pending |
+| T25 federated index | The artifact exists; the `opum-fleet` pin is outstanding (ODOC-542 AC3) |
+| Cut: tag, Release and artifact | Done 2026-10-26: annotated tag `v0.1.0` (object `04b1381`) peeling to `2aff3df`, then main's tip. Dry runs 40394341866 (`984a145`) and 40395113978 (`2aff3df`) and tag run 40402166448, all green. Release published 2026-10-26T21:11:40Z: [the v0.1.0 Release](https://github.com/opum-ai/ward-cli/releases/tag/v0.1.0). The three paths the review called unmeasured — the tag-run baseline, `check-release-tag.mjs`'s REST read, and the release job's publish — all ran in production |
 | Cut: artifact verification | Done: the downloaded asset hashes to `458455e58974aae8d6455332d14f5747f04ee9b055f3163c29142b8e44c84904`, verifying against the Release's own `.sha256`; its cdhash is `de7b6de95f7d8a2c5089fd1438deef69971c5468`; a Mac build of `2aff3df` reproduced both |
 
 ## How T26 is measured
