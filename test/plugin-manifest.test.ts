@@ -11,7 +11,7 @@
 // to package.json, which is exactly why it drifted silently". Ward takes the
 // enforced form.
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import pluginJson from "../plugin/.claude-plugin/plugin.json" with {
   type: "json",
@@ -50,18 +50,25 @@ describe("the plugin manifest agrees with what this repository ships", () => {
 });
 
 describe("the plugin ships from a lean directory (DEC-246 a4, a7)", () => {
-  test("plugin/ carries only .claude-plugin/plugin.json and skills/", () => {
-    const pluginRoot = join(repositoryRoot, "plugin");
-    const entries = readdirSync(pluginRoot).sort();
-    expect(entries).toEqual([".claude-plugin", "skills"]);
-    expect(readdirSync(join(pluginRoot, ".claude-plugin"))).toEqual([
-      "plugin.json",
+  // Every file under plugin/, as a sorted relative path. A plugin install
+  // fetches this tree and nothing beside it, so anything else here is a
+  // dependency manifest, lockfile or addon riding along, and a symlink could
+  // point a fetch outside the tree. .DS_Store is a Finder artefact that is
+  // never committed, so it is tolerated locally.
+  const walk = (dir: string, prefix = ""): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      if (name === ".DS_Store") return [];
+      const relative = prefix === "" ? name : `${prefix}/${name}`;
+      const stat = lstatSync(join(dir, name));
+      expect(stat.isSymbolicLink(), `${relative} is a symlink`).toBe(false);
+      return stat.isDirectory() ? walk(join(dir, name), relative) : [relative];
+    });
+
+  test("plugin/ holds exactly the manifest and the skill, with no symlink", () => {
+    expect(walk(join(repositoryRoot, "plugin")).sort()).toEqual([
+      ".claude-plugin/plugin.json",
+      "skills/ward/SKILL.md",
     ]);
-    // A plugin install fetches this directory and nothing beside it, so a
-    // manifest or lockfile here would be the dependency tree coming back.
-    for (const name of ["package.json", "node_modules", "bun.lock"]) {
-      expect(entries).not.toContain(name);
-    }
   });
 
   test("the old root locations no longer carry the plugin", () => {
