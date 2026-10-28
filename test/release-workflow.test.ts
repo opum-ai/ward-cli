@@ -248,3 +248,13 @@ test.skipIf(process.platform !== "darwin")(
     expect(r.stdout.trim()).toBe(reported as string);
   },
 );
+
+test("the notes link the install runbook by full URL at the tag", () => {
+  const line = workflow
+    .split("\n")
+    .find((l) => l.includes("Install and upgrade:"));
+  expect(line).toContain(
+    "https://github.com/${REPO}/blob/${REF_NAME}/docs/runbooks/install-and-upgrade-ward-from-a-release.md",
+  );
+  expect(workflow).toMatch(/^\s+REPO: \$\{\{ github\.repository \}\}$/m);
+});
