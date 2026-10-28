@@ -37,7 +37,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const EVAL_DIR = "evals";
-const SKILLS_DIR = "skills";
+const SKILLS_DIR = "plugin/skills";
 const AGENTS_DIR = "agents";
 const findings = [];
 const fail = (c, m) => findings.push(`${c}: ${m}`);

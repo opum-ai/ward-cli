@@ -43,7 +43,7 @@ that named a release-time obligation.
    is deliberately no migration ([ADR 0018](../adr/0018-profilesnapshotversion-bumps-at-the-first-release.md),
    DEC-50). This is the item WCLI-38 exists for.
 2. **Make the plugin and CLI versions agree.** `package.json` and
-   `.claude-plugin/plugin.json` carry the same version, and
+   `plugin/.claude-plugin/plugin.json` carry the same version, and
    `test/plugin-manifest.test.ts` fails when they disagree; bump both in the
    same commit. `0.0.0` is the pre-release placeholder, and the plugin version
    must track the CLI version per the peer (lore-cli) pattern.

@@ -41,7 +41,7 @@ or not.
 Ward differs from quest in one way that shapes the implementation: quest's CLI
 carries its skill text and writes it, while Ward writes no skill file at all
 (DEC-44). The only content Ward can call its own is the packaged skill,
-`skills/ward/SKILL.md`, which the plugin ships.
+`plugin/skills/ward/SKILL.md`, which the plugin ships.
 
 ## Decision
 
@@ -59,7 +59,7 @@ carries its skill text and writes it, while Ward writes no skill file at all
    A differing file - hand-edited, or simply not the file the plugin ships -
    is reported and left alone; Ward never deletes a file it cannot identify.
    The comparison is against the skill embedded at build time from
-   `skills/ward/SKILL.md` (a text import in `src/adapters/skill-content.ts`),
+   `plugin/skills/ward/SKILL.md` (a text import in `src/adapters/skill-content.ts`),
    so "exact" always means the copy cut from the same commit as the running
    CLI.
 4. **`--force` is refused on `--check`** rather than ignored, the way

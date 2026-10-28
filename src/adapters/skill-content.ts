@@ -4,9 +4,11 @@
 // names, and `--force` removes one only when its bytes are exactly the file
 // the plugin ships. That comparison needs the file's content in the binary,
 // and this import is how it gets there: the bundler inlines
-// skills/ward/SKILL.md, so the copy Ward compares against is always the copy
+// plugin/skills/ward/SKILL.md, so the copy Ward compares against is always the copy
 // cut from the same commit, and it cannot drift from what the plugin
 // distributes. The skill is public guidance; nothing secret reaches it.
-import packagedSkill from "../../skills/ward/SKILL.md" with { type: "text" };
+import packagedSkill from "../../plugin/skills/ward/SKILL.md" with {
+  type: "text",
+};
 
 export const packagedSkillContent: string = packagedSkill;

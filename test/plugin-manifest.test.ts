@@ -11,9 +11,11 @@
 // to package.json, which is exactly why it drifted silently". Ward takes the
 // enforced form.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import pluginJson from "../.claude-plugin/plugin.json" with { type: "json" };
+import pluginJson from "../plugin/.claude-plugin/plugin.json" with {
+  type: "json",
+};
 import packageJson from "../package.json" with { type: "json" };
 
 const repositoryRoot = join(import.meta.dir, "..");
@@ -31,9 +33,9 @@ describe("the plugin manifest agrees with what this repository ships", () => {
     expect(pluginJson.repository).toBe("https://github.com/opum-ai/ward-cli");
   });
 
-  test("the skill it packages is the one under skills/ward and is frontmattered", () => {
+  test("the skill it packages is the one under plugin/skills/ward and is frontmattered", () => {
     const skill = readFileSync(
-      join(repositoryRoot, "skills", "ward", "SKILL.md"),
+      join(repositoryRoot, "plugin", "skills", "ward", "SKILL.md"),
       "utf8",
     );
     expect(skill.startsWith("---\n")).toBe(true);
@@ -44,5 +46,26 @@ describe("the plugin manifest agrees with what this repository ships", () => {
     // knows both, so the agreement is asserted rather than assumed.
     expect(frontmatter).toMatch(/^name: ward$/m);
     expect(frontmatter).toMatch(/^description: \S/m);
+  });
+});
+
+describe("the plugin ships from a lean directory (DEC-246 a4, a7)", () => {
+  test("plugin/ carries only .claude-plugin/plugin.json and skills/", () => {
+    const pluginRoot = join(repositoryRoot, "plugin");
+    const entries = readdirSync(pluginRoot).sort();
+    expect(entries).toEqual([".claude-plugin", "skills"]);
+    expect(readdirSync(join(pluginRoot, ".claude-plugin"))).toEqual([
+      "plugin.json",
+    ]);
+    // A plugin install fetches this directory and nothing beside it, so a
+    // manifest or lockfile here would be the dependency tree coming back.
+    for (const name of ["package.json", "node_modules", "bun.lock"]) {
+      expect(entries).not.toContain(name);
+    }
+  });
+
+  test("the old root locations no longer carry the plugin", () => {
+    expect(existsSync(join(repositoryRoot, ".claude-plugin"))).toBe(false);
+    expect(existsSync(join(repositoryRoot, "skills"))).toBe(false);
   });
 });
