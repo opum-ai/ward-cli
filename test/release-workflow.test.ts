@@ -250,11 +250,23 @@ test.skipIf(process.platform !== "darwin")(
 );
 
 test("the notes link the install runbook by full URL at the tag", () => {
-  const line = workflow
-    .split("\n")
-    .find((l) => l.includes("Install and upgrade:"));
-  expect(line).toContain(
-    "https://github.com/${REPO}/blob/${REF_NAME}/docs/runbooks/install-and-upgrade-ward-from-a-release.md",
+  // Read from the notes step alone: REPO is also set in other steps, so a
+  // whole-file match would stay green with this step's REPO deleted.
+  const start = workflow.indexOf("- name: Hash it and write the release notes");
+  expect(start).toBeGreaterThan(-1);
+  const end = workflow.indexOf("- uses:", start);
+  expect(end).toBeGreaterThan(start);
+  const step = workflow.slice(start, end);
+  expect(step).toMatch(/^\s+REPO: \$\{\{ github\.repository \}\}$/m);
+  const notes = step.slice(
+    step.indexOf("{\n", step.indexOf("run: |")),
+    step.indexOf("} > release-notes.md"),
   );
-  expect(workflow).toMatch(/^\s+REPO: \$\{\{ github\.repository \}\}$/m);
+  const line = notes
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith('echo "Install and upgrade: '));
+  expect(line).toBe(
+    'echo "Install and upgrade: https://github.com/${REPO}/blob/${REF_NAME}/docs/runbooks/install-and-upgrade-ward-from-a-release.md"',
+  );
 });
