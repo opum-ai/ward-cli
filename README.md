@@ -35,5 +35,5 @@ the same install steps.
   (`docs/security-tests.md`).
 - [`WARD_MVP_AGENT_SPEC.md`](WARD_MVP_AGENT_SPEC.md) is the v0.1 implementation
   brief the code answers to.
-- [`skills/ward/SKILL.md`](skills/ward/SKILL.md) is the agent skill, packaged as
+- [`plugin/skills/ward/SKILL.md`](plugin/skills/ward/SKILL.md) is the agent skill, packaged as
   the `opum-ward` plugin for Claude Code.

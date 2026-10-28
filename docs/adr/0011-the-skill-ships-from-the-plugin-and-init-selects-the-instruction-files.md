@@ -60,7 +60,7 @@ checkout.
 1. **The skill ships from the marketplace plugin, and Ward generates no local
    skill file.** Neither `.claude/skills/ward/SKILL.md` nor
    `.agents/skills/ward/SKILL.md` is written, refreshed or required by any
-   Ward command. The packaged skill is `skills/ward/SKILL.md` in this
+   Ward command. The packaged skill is `plugin/skills/ward/SKILL.md` in this
    repository, shipped by the `opum-ward` plugin; that is the one artifact,
    and spec §11.3's warning about a second copy is satisfied by there being
    no second copy to drift.

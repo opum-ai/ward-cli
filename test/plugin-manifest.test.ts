@@ -11,9 +11,11 @@
 // to package.json, which is exactly why it drifted silently". Ward takes the
 // enforced form.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import pluginJson from "../.claude-plugin/plugin.json" with { type: "json" };
+import pluginJson from "../plugin/.claude-plugin/plugin.json" with {
+  type: "json",
+};
 import packageJson from "../package.json" with { type: "json" };
 
 const repositoryRoot = join(import.meta.dir, "..");
@@ -31,9 +33,9 @@ describe("the plugin manifest agrees with what this repository ships", () => {
     expect(pluginJson.repository).toBe("https://github.com/opum-ai/ward-cli");
   });
 
-  test("the skill it packages is the one under skills/ward and is frontmattered", () => {
+  test("the skill it packages is the one under plugin/skills/ward and is frontmattered", () => {
     const skill = readFileSync(
-      join(repositoryRoot, "skills", "ward", "SKILL.md"),
+      join(repositoryRoot, "plugin", "skills", "ward", "SKILL.md"),
       "utf8",
     );
     expect(skill.startsWith("---\n")).toBe(true);
@@ -44,5 +46,33 @@ describe("the plugin manifest agrees with what this repository ships", () => {
     // knows both, so the agreement is asserted rather than assumed.
     expect(frontmatter).toMatch(/^name: ward$/m);
     expect(frontmatter).toMatch(/^description: \S/m);
+  });
+});
+
+describe("the plugin ships from a lean directory (DEC-246 a4, a7)", () => {
+  // Every file under plugin/, as a sorted relative path. A plugin install
+  // fetches this tree and nothing beside it, so anything else here is a
+  // dependency manifest, lockfile or addon riding along, and a symlink could
+  // point a fetch outside the tree. .DS_Store is a Finder artefact that is
+  // never committed, so it is tolerated locally.
+  const walk = (dir: string, prefix = ""): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      if (name === ".DS_Store") return [];
+      const relative = prefix === "" ? name : `${prefix}/${name}`;
+      const stat = lstatSync(join(dir, name));
+      expect(stat.isSymbolicLink(), `${relative} is a symlink`).toBe(false);
+      return stat.isDirectory() ? walk(join(dir, name), relative) : [relative];
+    });
+
+  test("plugin/ holds exactly the manifest and the skill, with no symlink", () => {
+    expect(walk(join(repositoryRoot, "plugin")).sort()).toEqual([
+      ".claude-plugin/plugin.json",
+      "skills/ward/SKILL.md",
+    ]);
+  });
+
+  test("the old root locations no longer carry the plugin", () => {
+    expect(existsSync(join(repositoryRoot, ".claude-plugin"))).toBe(false);
+    expect(existsSync(join(repositoryRoot, "skills"))).toBe(false);
   });
 });

@@ -37,9 +37,16 @@
 #                            score 0 without it
 #   --threshold 1            fail the run if any case scores below 1.0
 #   --no-publish             keep the HTML report local; do not upload it
-#   --trust-plugin           this repository IS the plugin under test and the
-#                            cases are ones we authored; without it a headless
-#                            run stops at the first-run trust prompt
+#   --trust-plugin           the plugin under test is this repository's own
+#                            plugin/ and the cases are ones we authored; without
+#                            it a headless run stops at the first-run trust prompt
+#
+# WHAT IS EVALUATED. The plugin ships from plugin/, which carries only the
+# manifest and skills/ (DEC-246 a4, a7), so evals/ cannot sit beside it there
+# and `--eval-dir` refuses a path outside the plugin root (it rejects `..`).
+# The run therefore assembles a scratch tree - a byte copy of plugin/ plus
+# evals/ - and evaluates that. The plugin bytes are the ones that ship; only
+# the evals ride along for the run. The scratch path is printed at the start.
 #
 # NEVER pipe this command. A shell pipeline reports its last stage's exit
 # status, so `./scripts/run-eval.sh | tee` turns a failing suite into a green
@@ -78,15 +85,25 @@ node scripts/check-evals.mjs
 # --json path below would land in a directory that does not exist.
 mkdir -p evals/results
 
+stage="$(mktemp -d "${TMPDIR:-/tmp}/ward-eval-plugin.XXXXXX")"
+trap 'rm -rf -- "$stage"' EXIT
+cp -R plugin/. "$stage/"
+mkdir "$stage/evals"
+for entry in evals/*; do
+  [ "$entry" = "evals/results" ] && continue
+  cp -R "$entry" "$stage/evals/"
+done
+echo "Evaluating plugin tree assembled at $stage (plugin/ + evals/)"
+
 run_arm() {
   # $1 = --case glob or empty, $2 = result file basename
   local glob="$1" out="evals/results/$2.json" status=0
   if [ -n "$glob" ]; then
-    claude plugin eval . --case "$glob" \
+    claude plugin eval "$stage" --case "$glob" \
       --ablation with-without --judge-model sonnet --scaffold --trust-plugin \
       --no-publish --threshold 1 --json "$out" || status=$?
   else
-    claude plugin eval . \
+    claude plugin eval "$stage" \
       --ablation with-without --judge-model sonnet --scaffold --trust-plugin \
       --no-publish --threshold 1 --json "$out" || status=$?
   fi
