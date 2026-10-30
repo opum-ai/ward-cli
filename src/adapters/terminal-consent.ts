@@ -157,7 +157,9 @@ function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
     `  checkout: ${escapeForDisplay(question.root)}`,
     `  method:   ${snapshot.method}`,
     `  url:      ${escapeForDisplay(snapshot.url)}`,
-    `  auth:     bearer, from the secret alias ${escapeForDisplay(snapshot.auth.secret)}`,
+    snapshot.auth.type === "header"
+      ? `  auth:     header ${escapeForDisplay(snapshot.auth.name)}, from the secret alias ${escapeForDisplay(snapshot.auth.secret)}`
+      : `  auth:     bearer, from the secret alias ${escapeForDisplay(snapshot.auth.secret)}`,
     ...headers,
     `  body:     ${snapshot.requestBody}`,
     `  output:   ${snapshot.output}`,

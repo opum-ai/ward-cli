@@ -23,6 +23,7 @@ sources = [
   "adr/0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency",
   "adr/0018-profilesnapshotversion-bumps-at-the-first-release",
   "adr/0019-the-spec-of-record-is-a-pointer-concept-not-an-extract",
+  "adr/0024-a-secret-in-one-named-header-is-an-auth-scheme-beside-bearer",
   "reference/ward-s-spec-of-record-the-cli-contract-and-the-release-gates",
   "runbooks/release-smoke-t24-s-manual-half",
   "runbooks/restoring-a-ward-vault-from-a-backup",

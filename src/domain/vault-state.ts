@@ -771,7 +771,14 @@ export function serializeVaultState(state: VaultState): Uint8Array {
             adapter: snapshot.adapter,
             method: snapshot.method,
             url: snapshot.url,
-            auth: { type: snapshot.auth.type, secret: snapshot.auth.secret },
+            auth:
+              snapshot.auth.type === "header"
+                ? {
+                    type: snapshot.auth.type,
+                    name: snapshot.auth.name,
+                    secret: snapshot.auth.secret,
+                  }
+                : { type: snapshot.auth.type, secret: snapshot.auth.secret },
             headers: Object.fromEntries(
               snapshot.headers.map(({ name, value }) => [name, value]),
             ),

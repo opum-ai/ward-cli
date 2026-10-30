@@ -24,4 +24,5 @@
 - [A profile approval expires, 24 hours by default](0021-a-profile-approval-expires-24-hours-by-default.md)
 - [ward unregister withdraws one checkout, and approvals go on a second yes](0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes.md)
 - [Keep the vault state reader's exact key-set comparison at the first release](0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md)
+- [A secret in one named header is an auth scheme beside bearer](0024-a-secret-in-one-named-header-is-an-auth-scheme-beside-bearer.md)
 <!-- lore:index:end -->

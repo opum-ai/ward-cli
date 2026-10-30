@@ -394,7 +394,7 @@ export const errorCatalog = {
     type: "validation",
     message:
       "The profile declaration uses an operation this version of Ward does not support, so Ward did not act on it.",
-    hint: "This build implements HTTPS with Bearer authentication, one of DELETE, GET, HEAD, PATCH, POST or PUT, a request body of none or json-stdin, and status-only output. An authentication scheme it does not implement yet is refused rather than approximated.",
+    hint: "This build implements HTTPS with Bearer authentication or a secret in one named header, one of DELETE, GET, HEAD, PATCH, POST or PUT, a request body of none or json-stdin, and status-only output. An authentication scheme it does not implement yet (HTTP Basic) is refused rather than approximated.",
   },
   profile_changed: {
     type: "conflict",
@@ -444,7 +444,7 @@ export const errorCatalog = {
     type: "validation",
     message:
       "The stored credential cannot be written into an HTTP header, so Ward did not send it.",
-    hint: "A credential Ward sends belongs on one line of text: it must be non-empty and carry no control bytes. Store a value the provider issued for a Bearer header with `ward secret set <alias>`.",
+    hint: "A credential Ward sends belongs on one line of text: it must be non-empty and carry no control bytes. Store the value the provider issued, for a Bearer or named-header credential, with `ward secret set <alias>`.",
   },
   run_auth_unsupported: {
     type: "validation",
