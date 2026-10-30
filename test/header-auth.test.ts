@@ -288,3 +288,126 @@ describe("DEC-248: the stored shape carries the name", () => {
     expect(stale.staleProfileApprovals[0]?.snapshotVersion).toBe(2);
   });
 });
+
+// WCLI-98 (opum-doc ruling 2026-10-30): the request-rewriting names are
+// refused beside the DEC-248 set, in both positions, and fold into the same
+// snapshot version.
+const overrideNames = [
+  "X-HTTP-Method-Override",
+  "X-HTTP-Method",
+  "X-Method-Override",
+  "X-Original-URL",
+  "X-Rewrite-URL",
+  "X-Forwarded-Host",
+  "X-Forwarded-Proto",
+  "X-Forwarded-For",
+  "Forwarded",
+];
+
+describe("WCLI-98: the request-rewriting names are refused", () => {
+  for (const written of overrideNames)
+    for (const [label, name] of [
+      ["as written", written],
+      ["lower case", written.toLowerCase()],
+      ["upper case", written.toUpperCase()],
+    ] as const) {
+      test(`${written} ${label} is refused as auth.name`, () => {
+        expect(
+          codeOf(
+            declaration({ auth: { type: "header", name, secret: ALIAS } }),
+          ),
+        ).toBe("profile_invalid");
+      });
+
+      test(`${written} ${label} is refused as an ordinary profile header`, () => {
+        expect(codeOf(declaration({ headers: { [name]: "x" } }))).toBe(
+          "profile_invalid",
+        );
+      });
+    }
+
+  test("a name merely near one is accepted in both positions", () => {
+    for (const name of [
+      "X-Forwarded",
+      "X-HTTP-Methods",
+      "Forwarded-For",
+      "X-Original-URLs",
+      "X-Rewrite",
+    ]) {
+      expect(
+        codeOf(declaration({ auth: { type: "header", name, secret: ALIAS } })),
+      ).toBeUndefined();
+      expect(codeOf(declaration({ headers: { [name]: "x" } }))).toBeUndefined();
+    }
+  });
+
+  test("the snapshot version stays 3: the names fold into DEC-248's change", () => {
+    expect(profileSnapshotVersion).toBe(3);
+  });
+
+  test("a stored version-3 snapshot declaring one is a damaged document, never an approval", () => {
+    const checkout = {
+      root: "/Users/dev/code/project",
+      device: "16777232",
+      inode: "8429931",
+    };
+    const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
+    const state = withProfileApproval(
+      parseVaultState(
+        new TextEncoder().encode(
+          JSON.stringify({
+            formatVersion: vaultStateFormatVersion,
+            localBindings: [
+              {
+                projectId,
+                ...checkout,
+                registeredAt: "2026-10-29T00:00:00.000Z",
+              },
+            ],
+          }),
+        ),
+      ),
+      {
+        profile: "example",
+        projectId,
+        ...checkout,
+        approvedAt: "2026-10-29T00:00:00.000Z",
+        expiresAt: "2026-10-30T00:00:00.000Z",
+        snapshotVersion: profileSnapshotVersion,
+        snapshot: normalizeProfile(declaration()),
+      },
+    );
+    const text = new TextDecoder().decode(serializeVaultState(state));
+    expect(text).toContain(`"snapshotVersion":${profileSnapshotVersion}`);
+    // Positive control: the untouched document is an approval, so the
+    // refusals below come from the names alone.
+    expect(
+      findProfileApproval(
+        parseVaultState(new TextEncoder().encode(text)),
+        checkout,
+        projectId,
+        "example",
+      ),
+    ).toBeDefined();
+    // Each position the set guards: the secret header's name, and an
+    // ordinary header.
+    const asAuthName = text.replace(
+      `"name":"${NAME}"`,
+      '"name":"X-Method-Override"',
+    );
+    const asHeader = text.replace(
+      '"Accept":"application/json"',
+      '"x-forwarded-host":"application/json"',
+    );
+    for (const damaged of [asAuthName, asHeader]) {
+      expect(damaged).not.toBe(text);
+      let caught: { code?: string; message?: string } | undefined;
+      try {
+        parseVaultState(new TextEncoder().encode(damaged));
+      } catch (error) {
+        caught = error as { code?: string; message?: string };
+      }
+      expect(caught?.code).toBe("vault_state_malformed");
+    }
+  });
+});

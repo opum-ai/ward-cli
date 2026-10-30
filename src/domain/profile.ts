@@ -173,6 +173,13 @@ export interface NormalizedProfile {
 // It is 3 from WCLI-84 (DEC-248 (7)): that change added the header scheme to
 // `normalizedAuth` and widened the refused header-name set for ordinary
 // profile headers too, so a version-2 approval is held inert and re-approved.
+//
+// WCLI-98 added the nine request-rewriting names to that same set and did NOT
+// bump it (opum-doc fold ruling, 2026-10-30): version 3 is unreleased and
+// unapproved anywhere, so one version carries both changes and the operator
+// re-approves once. Like the WCLI-10 narrowing above, it can only refuse more:
+// a stored version-3 snapshot declaring one fails closed at parse as
+// `vault_state_malformed`.
 export const profileSnapshotVersion = 3;
 
 export const profileSnapshotFields = [
@@ -214,6 +221,13 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // and widening this set later is cheap where narrowing it breaks approvals.
 // Every `proxy-*` name is refused with them, which covers
 // `proxy-authorization`.
+//
+// A fourth group is the request-rewriting names (WCLI-98, opum-doc ruling
+// 2026-10-30): frameworks and proxies honour them to change the method, the
+// path or the apparent host and scheme of a request after Ward's profile fixed
+// them, so an approved GET could execute as DELETE. Refused, never flagged:
+// the nine names below, and an existing profile declaring one is refused on
+// load rather than silently stripped.
 const refusedHeaderNames = new Set([
   "authorization",
   "cookie",
@@ -227,6 +241,15 @@ const refusedHeaderNames = new Set([
   "upgrade",
   "expect",
   "proxy-connection",
+  "x-http-method-override",
+  "x-http-method",
+  "x-method-override",
+  "x-original-url",
+  "x-rewrite-url",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-for",
+  "forwarded",
 ]);
 
 function isRefusedHeaderName(name: string): boolean {

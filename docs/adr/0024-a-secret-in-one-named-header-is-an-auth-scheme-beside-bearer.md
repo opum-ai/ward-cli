@@ -40,7 +40,8 @@ version ([ADR 0018](0018-profilesnapshotversion-bumps-at-the-first-release.md)).
    `content-length`, `transfer-encoding`, `connection`, `keep-alive`, `te`,
    `trailer`, `upgrade`, `expect`, `proxy-connection` and every `proxy-*`. The
    same set applies to ordinary profile headers. A refused name is
-   `profile_invalid`.
+   `profile_invalid`. WCLI-98 adds the nine request-rewriting names (method, URL,
+   forwarding; see `profile.ts`).
 3. **Collision.** An ordinary header named as `auth.name`, in any case, is
    `profile_invalid`: the secret never silently wins or loses.
 4. **Wire.** The credential line keeps its slot after the profile headers, with
@@ -63,5 +64,6 @@ version ([ADR 0018](0018-profilesnapshotversion-bumps-at-the-first-release.md)).
 - **Ordinary headers tighten.** A declaration using `Cookie`, `Host` or a
   `proxy-*` header as a public header is refused, closing a standing gap.
 - **The refused set is easy to widen and costly to narrow**, which is why
-  `cookie` is refused now. A new refused name needs a version bump.
+  `cookie` is refused now. A new refused name needs a version bump, except
+  WCLI-98's, folded into 3.
 - **WCLI-33 is narrowed to HTTP Basic.**
