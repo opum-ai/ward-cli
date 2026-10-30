@@ -174,7 +174,8 @@ export interface NormalizedProfile {
 // `normalizedAuth` and widened the refused header-name set for ordinary
 // profile headers too, so a version-2 approval is held inert and re-approved.
 //
-// WCLI-98 added the nine request-rewriting names to that same set and did NOT
+// WCLI-98 added the request-rewriting names (thirteen, with the 16:43:35Z
+// widening) to that same set and did NOT
 // bump it (opum-doc fold ruling, 2026-10-30): version 3 is unreleased and
 // unapproved anywhere, so one version carries both changes and the operator
 // re-approves once. Like the WCLI-10 narrowing above, it can only refuse more:
@@ -226,8 +227,9 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // 2026-10-30): frameworks and proxies honour them to change the method, the
 // path or the apparent host and scheme of a request after Ward's profile fixed
 // them, so an approved GET could execute as DELETE. Refused, never flagged:
-// the nine names below, and an existing profile declaring one is refused on
-// load rather than silently stripped.
+// the names below, and an existing profile declaring one is refused on
+// load rather than silently stripped. Every lookup folds `_` to `-` first, so
+// `Content_Length` and `X_Forwarded_Host` are the names they would be read as.
 // Each entry is the folded name and Ward's canonical spelling of it, which is
 // what an error prints: a refusal names the entry it matched, never the bytes
 // the declaration spelled (WCLI-98 ruling, 2026-10-30).
@@ -255,13 +257,21 @@ const refusedHeaderNames: ReadonlyMap<string, RefusedHeaderName> =
       ["x-forwarded-proto", "X-Forwarded-Proto"],
       ["x-forwarded-for", "X-Forwarded-For"],
       ["forwarded", "Forwarded"],
+      ["x-forwarded-port", "X-Forwarded-Port"],
+      ["x-forwarded-prefix", "X-Forwarded-Prefix"],
+      ["x-original-host", "X-Original-Host"],
+      ["x-host", "X-Host"],
     ]),
   );
 
 // The canonical entry a name matches, or undefined when it is not refused. The
 // returned string is always a constant from the table above, never the input.
 function refusedHeaderEntry(name: string): RefusedHeaderName | undefined {
-  const folded = name.toLowerCase();
+  // Underscore folds to hyphen after case-folding (WCLI-98 ruling, 2026-10-30
+  // 16:43:35Z): a server that reads `X_Forwarded_Host` as `X-Forwarded-Host`
+  // would otherwise act on a header the prompt never showed. The fold is for
+  // the lookup only and is never applied to anything printed.
+  const folded = name.toLowerCase().replaceAll("_", "-");
   return folded.startsWith("proxy-")
     ? (refusedHeaderNames.get(folded) ?? "Proxy-*")
     : refusedHeaderNames.get(folded);

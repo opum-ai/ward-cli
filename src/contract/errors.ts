@@ -583,6 +583,10 @@ export const refusedHeaderCanonicalNames = Object.freeze([
   "X-Forwarded-Proto",
   "X-Forwarded-For",
   "Forwarded",
+  "X-Forwarded-Port",
+  "X-Forwarded-Prefix",
+  "X-Original-Host",
+  "X-Host",
 ] as const);
 
 export type RefusedHeaderName = (typeof refusedHeaderCanonicalNames)[number];

@@ -307,6 +307,10 @@ const overrideNames = [
   "X-Forwarded-Proto",
   "X-Forwarded-For",
   "Forwarded",
+  "X-Forwarded-Port",
+  "X-Forwarded-Prefix",
+  "X-Original-Host",
+  "X-Host",
 ];
 
 describe("WCLI-98: the request-rewriting names are refused", () => {
@@ -587,7 +591,7 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
   // type-checks, because both names are on the list. Every canonical spelling
   // therefore has to come back as itself, from itself and from its folds.
   test("every canonical spelling round-trips through a declaration as itself", () => {
-    expect(refusedHeaderCanonicalNames.length).toBe(22);
+    expect(refusedHeaderCanonicalNames.length).toBe(26);
     for (const canonical of refusedHeaderCanonicalNames) {
       if (canonical === "Proxy-*") continue;
       for (const spelled of [
@@ -619,5 +623,122 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
         refusalOf(declaration({ headers: { [spelled]: "x" } }))
           ?.refusedHeader as string | undefined,
       ).toBe("Proxy-*");
+  });
+
+  // opum-doc ruling 2026-10-30T16:43:35Z: `_` folds to `-` (after case-folding)
+  // before every refused-name lookup, so a server that reads X_Forwarded_Host
+  // as X-Forwarded-Host cannot be handed a header the prompt did not show. The
+  // printed detail is still Ward's canonical constant.
+  for (const canonical of refusedHeaderCanonicalNames) {
+    if (canonical === "Proxy-*" || !canonical.includes("-")) continue;
+    for (const spelled of [
+      canonical.replaceAll("-", "_"),
+      canonical.replaceAll("-", "_").toLowerCase(),
+      canonical.replaceAll("-", "_").toUpperCase(),
+    ])
+      test(`underscore spelling ${spelled} is refused in both positions and prints ${canonical}`, () => {
+        const asAuth = refusalOf(
+          declaration({
+            auth: { type: "header", name: spelled, secret: ALIAS },
+          }),
+        );
+        const asHeader = refusalOf(
+          declaration({ headers: { [spelled]: VALUE_SENTINEL } }),
+        );
+        for (const error of [asAuth, asHeader]) {
+          expect(error?.code).toBe("profile_invalid");
+          expect(error?.refusedHeader as string | undefined).toBe(canonical);
+          const printed = JSON.stringify(errorEnvelope(error as WardError));
+          expect(printed).toContain(`(refused header: ${canonical})`);
+          expect(printed).not.toContain(spelled);
+          expect(printed).not.toContain(VALUE_SENTINEL);
+        }
+      });
+  }
+
+  test("a mixed hyphen and underscore spelling, and Proxy_Authorization, are caught", () => {
+    expect(
+      refusalOf(declaration({ headers: { "x_FORWARDED-host": "x" } }))
+        ?.refusedHeader as string | undefined,
+    ).toBe("X-Forwarded-Host");
+    expect(
+      refusalOf(declaration({ headers: { Content_Length: "1" } }))
+        ?.refusedHeader as string | undefined,
+    ).toBe("Content-Length");
+    expect(
+      refusalOf(declaration({ headers: { Proxy_Authorization: "x" } }))
+        ?.refusedHeader as string | undefined,
+    ).toBe("Proxy-*");
+  });
+
+  test("near names stay accepted in both positions, hyphen or underscore", () => {
+    for (const name of [
+      "X-Forwarded-Hostname",
+      "X_Forwarded_Hostname",
+      "X-Host-Name",
+      "X_Host_Name",
+      "X-Hosts",
+      "X-Forwarded-Ports",
+      "Content_Lengths",
+    ]) {
+      expect(
+        codeOf(declaration({ auth: { type: "header", name, secret: ALIAS } })),
+      ).toBeUndefined();
+      expect(codeOf(declaration({ headers: { [name]: "x" } }))).toBeUndefined();
+    }
+  });
+
+  test("a stored snapshot spelling a refused name with underscores is refused at load, naming the constant", () => {
+    const checkout = {
+      root: "/Users/dev/code/project",
+      device: "16777232",
+      inode: "8429931",
+    };
+    const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
+    const state = withProfileApproval(
+      parseVaultState(
+        new TextEncoder().encode(
+          JSON.stringify({
+            formatVersion: vaultStateFormatVersion,
+            localBindings: [
+              {
+                projectId,
+                ...checkout,
+                registeredAt: "2026-10-29T00:00:00.000Z",
+              },
+            ],
+          }),
+        ),
+      ),
+      {
+        profile: "example",
+        projectId,
+        ...checkout,
+        approvedAt: "2026-10-29T00:00:00.000Z",
+        expiresAt: "2026-10-30T00:00:00.000Z",
+        snapshotVersion: profileSnapshotVersion,
+        snapshot: normalizeProfile(declaration()),
+      },
+    );
+    const text = new TextDecoder().decode(serializeVaultState(state));
+    for (const bytes of [
+      text.replace(`"name":"${NAME}"`, '"name":"X_Forwarded_Host"'),
+      text.replace('"Accept":', '"X_Forwarded_Host":'),
+    ]) {
+      expect(bytes).not.toBe(text);
+      let caught: WardError | undefined;
+      try {
+        parseVaultState(new TextEncoder().encode(bytes));
+      } catch (error) {
+        caught = error as WardError;
+      }
+      expect(caught?.code).toBe("vault_state_malformed");
+      expect(caught?.refusedHeader as string | undefined).toBe(
+        "X-Forwarded-Host",
+      );
+      expect(JSON.stringify(errorEnvelope(caught as WardError))).not.toContain(
+        "X_Forwarded_Host",
+      );
+    }
   });
 });
