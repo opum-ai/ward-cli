@@ -264,14 +264,20 @@ const refusedHeaderNames: ReadonlyMap<string, RefusedHeaderName> =
     ]),
   );
 
+// The one comparison form for header names: case-folded, then `_` to `-`
+// (WCLI-98 rulings, 2026-10-30 16:43:35Z and 17:15:29Z). A CGI-style server
+// reads `X_Api_Key` and `X-Api-Key` as one variable, so a refused name, a
+// duplicate and a collision with the secret header's name are all compared in
+// this form; the request must not differ from what the prompt showed. It is
+// for comparison only and is never applied to anything stored or printed.
+function foldHeaderName(name: string): string {
+  return name.toLowerCase().replaceAll("_", "-");
+}
+
 // The canonical entry a name matches, or undefined when it is not refused. The
 // returned string is always a constant from the table above, never the input.
 function refusedHeaderEntry(name: string): RefusedHeaderName | undefined {
-  // Underscore folds to hyphen after case-folding (WCLI-98 ruling, 2026-10-30
-  // 16:43:35Z): a server that reads `X_Forwarded_Host` as `X-Forwarded-Host`
-  // would otherwise act on a header the prompt never showed. The fold is for
-  // the lookup only and is never applied to anything printed.
-  const folded = name.toLowerCase().replaceAll("_", "-");
+  const folded = foldHeaderName(name);
   return folded.startsWith("proxy-")
     ? (refusedHeaderNames.get(folded) ?? "Proxy-*")
     : refusedHeaderNames.get(folded);
@@ -442,7 +448,7 @@ function normalizedAuth(value: unknown): ProfileAuth {
 }
 
 // Non-secret headers, as declared, in a canonical order. Two names that
-// differ only in case are refused rather than sorted into an order: they are
+// differ only in case, or only by `_` against `-`, are refused rather than sorted into an order: they are
 // one header by the protocol's own rule, and a declaration that spells it
 // twice is ambiguous about which value Ward would send.
 //
@@ -460,11 +466,12 @@ function normalizedHeaders(
   const headers: ProfileHeader[] = [];
   for (const name of names) {
     if (!isHeaderName(name)) invalid();
-    const folded = name.toLowerCase();
+    const folded = foldHeaderName(name);
     if (seen.has(folded)) invalid();
     seen.add(folded);
     refuseListedHeader(name);
-    if (auth.type === "header" && auth.name.toLowerCase() === folded) invalid();
+    if (auth.type === "header" && foldHeaderName(auth.name) === folded)
+      invalid();
     const headerValue = value[name];
     if (typeof headerValue !== "string") invalid();
     if (headerValue.length > profileLimits.maxHeaderValueChars) invalid();

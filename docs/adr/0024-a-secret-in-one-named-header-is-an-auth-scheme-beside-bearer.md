@@ -35,14 +35,18 @@ version ([ADR 0018](0018-profilesnapshotversion-bumps-at-the-first-release.md)).
 1. **`auth.type: "header"`** is `{type, name, secret}`. The key set is exact per
    type: bearer is `{type, secret}`. A key a type does not own is
    `profile_unsupported`; a missing or malformed `name` is `profile_invalid`.
-2. **Names.** An RFC 9110 token of at most 128 characters, not in the refused
-   set, compared case-insensitively: `authorization`, `cookie`, `host`,
-   `content-length`, `transfer-encoding`, `connection`, `keep-alive`, `te`,
-   `trailer`, `upgrade`, `expect`, `proxy-connection` and every `proxy-*`. The
-   same set applies to ordinary profile headers. A refused name is
-   `profile_invalid`. WCLI-98 adds the nine request-rewriting names (method, URL,
-   forwarding; see `profile.ts`).
-3. **Collision.** An ordinary header named as `auth.name`, in any case, is
+2. **Names.** An RFC 9110 token of at most 128 characters, not refused. The
+   invariant: a declared header may not make the request differ from what the
+   prompt showed (method, path, authority, framing). Refused in an ordinary
+   header and as `auth.name`: credentials (`authorization`), routing and
+   authority (`host`), framing (`content-length`), hop-by-hop (`te`, `proxy-*`)
+   and method, path or authority overrides (`x-original-url`). A name is
+   case-folded, then `_` to `-`, in every header-name comparison. A refusal is
+   `profile_invalid`, or `vault_state_malformed` for a stored snapshot, and its
+   detail names Ward's canonical constant only, never profile bytes. The list
+   is `refusedHeaderNames` in `src/domain/profile.ts`; the rulings are DEC-248
+   and WCLI-98.
+3. **Collision.** An ordinary header named as `auth.name`, in the same fold, is
    `profile_invalid`: the secret never silently wins or loses.
 4. **Wire.** The credential line keeps its slot after the profile headers, with
    the stored bytes unchanged and no scheme prefix, under the same

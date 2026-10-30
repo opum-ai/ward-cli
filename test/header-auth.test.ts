@@ -741,4 +741,46 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       );
     }
   });
+
+  // opum-doc ruling 2026-10-30T17:15:29Z: the same fold applies to the
+  // duplicate and collision checks, since a CGI-style server reads X_Api_Key
+  // and X-Api-Key as one variable and one value could clobber the other.
+  test("an ordinary header folding onto auth.name is refused, hyphen or underscore", () => {
+    for (const [authName, header] of [
+      ["X-Api-Key", "X_Api_Key"],
+      ["X_Api_Key", "X-Api-Key"],
+      ["X-Api-Key", "x_API_key"],
+      ["X-Api-Key", "X-API-KEY"],
+    ])
+      expect(
+        codeOf(
+          declaration({
+            auth: { type: "header", name: authName, secret: ALIAS },
+            headers: { [header as string]: "x" },
+          }),
+        ),
+      ).toBe("profile_invalid");
+  });
+
+  test("two ordinary headers folding onto one name are refused", () => {
+    expect(
+      codeOf(declaration({ headers: { "X-Api-Key": "a", X_Api_Key: "b" } })),
+    ).toBe("profile_invalid");
+  });
+
+  test("unrelated names do not collide", () => {
+    expect(
+      codeOf(
+        declaration({
+          auth: { type: "header", name: "X-Api-Key", secret: ALIAS },
+          headers: { X_Api_Token: "x", "X-Api-Keys": "y", Accept: "z" },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      codeOf(
+        declaration({ headers: { "X-Api-Key": "a", "X-Api-Token": "b" } }),
+      ),
+    ).toBeUndefined();
+  });
 });
