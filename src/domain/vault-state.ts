@@ -456,7 +456,15 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
   let snapshot: NormalizedProfile;
   try {
     snapshot = normalizeProfile(value.snapshot);
-  } catch {
+  } catch (error) {
+    // A snapshot refused for a listed header name says which one, by Ward's
+    // canonical spelling (WCLI-98); the constructor keeps only list members.
+    if (error instanceof WardError && error.refusedHeader !== undefined)
+      throw new WardError(
+        "vault_state_malformed",
+        undefined,
+        error.refusedHeader,
+      );
     malformed();
   }
   return {

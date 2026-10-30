@@ -411,3 +411,156 @@ describe("WCLI-98: the request-rewriting names are refused", () => {
     }
   });
 });
+
+// WCLI-98, opum-doc ruling 2026-10-30 (A): a refusal names the refused header
+// by Ward's own canonical spelling, never by the profile's bytes.
+import { WardError, errorEnvelope } from "../src/contract/errors.ts";
+
+function refusalOf(value: unknown): WardError | undefined {
+  try {
+    normalizeProfile(value);
+  } catch (error) {
+    return error instanceof WardError ? error : undefined;
+  }
+  return undefined;
+}
+
+const VALUE_SENTINEL = "value-sentinel-4f2a";
+
+describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
+  test("a mixed-case spelling prints the byte-identical canonical name, in both positions", () => {
+    const asAuth = refusalOf(
+      declaration({
+        auth: { type: "header", name: "x-FORWARDED-host", secret: ALIAS },
+      }),
+    );
+    const asHeader = refusalOf(
+      declaration({ headers: { "x-FORWARDED-host": VALUE_SENTINEL } }),
+    );
+    for (const error of [asAuth, asHeader]) {
+      expect(error?.code).toBe("profile_invalid");
+      expect(error?.refusedHeader).toBe("X-Forwarded-Host");
+      const printed = JSON.stringify(errorEnvelope(error as WardError));
+      expect(printed).toContain("(refused header: X-Forwarded-Host)");
+      expect(printed).not.toContain("x-FORWARDED-host");
+      expect(printed).not.toContain(VALUE_SENTINEL);
+    }
+  });
+
+  for (const written of overrideNames)
+    for (const spelled of [
+      written.toLowerCase(),
+      written.toUpperCase(),
+      written,
+    ])
+      test(`${spelled} prints ${written}`, () => {
+        expect(
+          refusalOf(
+            declaration({
+              auth: { type: "header", name: spelled, secret: ALIAS },
+            }),
+          )?.refusedHeader as string | undefined,
+        ).toBe(written);
+        expect(
+          refusalOf(declaration({ headers: { [spelled]: "x" } }))
+            ?.refusedHeader as string | undefined,
+        ).toBe(written);
+      });
+
+  test("a proxy-* name prints the family constant, never the declared spelling", () => {
+    const error = refusalOf(
+      declaration({ headers: { "Proxy-Tail-Sentinel-77": "x" } }),
+    );
+    expect(error?.refusedHeader).toBe("Proxy-*");
+    expect(JSON.stringify(errorEnvelope(error as WardError))).not.toContain(
+      "Sentinel-77",
+    );
+  });
+
+  test("a header that is not listed never appears in any error output, nor does a value", () => {
+    const unlisted = "X-Unlisted-Sentinel-91";
+    // Three defects that are not a listed name: a bad value, a bad type, and a
+    // name colliding with the secret header's. None may print the name.
+    const cases = [
+      declaration({ headers: { [unlisted]: `${VALUE_SENTINEL}\r\nBad` } }),
+      declaration({ headers: { [unlisted]: 7 } }),
+      declaration({
+        auth: { type: "header", name: unlisted, secret: ALIAS },
+        headers: { [unlisted.toLowerCase()]: VALUE_SENTINEL },
+      }),
+    ];
+    for (const value of cases) {
+      const error = refusalOf(value);
+      expect(error).toBeDefined();
+      expect(error?.refusedHeader).toBeUndefined();
+      const printed = JSON.stringify(errorEnvelope(error as WardError));
+      expect(printed).not.toContain("Sentinel");
+      expect(printed).not.toContain("refused header");
+    }
+  });
+
+  test("the constructor drops a name that is not on the list", () => {
+    const error = new WardError(
+      "profile_invalid",
+      undefined,
+      "x-FORWARDED-host" as never,
+    );
+    expect(error.refusedHeader).toBeUndefined();
+  });
+
+  test("a stored snapshot carries the same canonical detail at load, in both positions", () => {
+    const checkout = {
+      root: "/Users/dev/code/project",
+      device: "16777232",
+      inode: "8429931",
+    };
+    const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
+    const state = withProfileApproval(
+      parseVaultState(
+        new TextEncoder().encode(
+          JSON.stringify({
+            formatVersion: vaultStateFormatVersion,
+            localBindings: [
+              {
+                projectId,
+                ...checkout,
+                registeredAt: "2026-10-29T00:00:00.000Z",
+              },
+            ],
+          }),
+        ),
+      ),
+      {
+        profile: "example",
+        projectId,
+        ...checkout,
+        approvedAt: "2026-10-29T00:00:00.000Z",
+        expiresAt: "2026-10-30T00:00:00.000Z",
+        snapshotVersion: profileSnapshotVersion,
+        snapshot: normalizeProfile(declaration()),
+      },
+    );
+    const text = new TextDecoder().decode(serializeVaultState(state));
+    const damaged = [
+      text.replace(`"name":"${NAME}"`, '"name":"x-FORWARDED-host"'),
+      text.replace('"Accept":', '"x-FORWARDED-host":'),
+    ];
+    // An unlisted but ordinary header swapped in must not name itself.
+    const unlisted = text.replace('"Accept":"application/json"', '"X-Bad":7');
+    for (const bytes of [...damaged, unlisted]) {
+      expect(bytes).not.toBe(text);
+      let caught: WardError | undefined;
+      try {
+        parseVaultState(new TextEncoder().encode(bytes));
+      } catch (error) {
+        caught = error as WardError;
+      }
+      expect(caught?.code).toBe("vault_state_malformed");
+      const printed = JSON.stringify(errorEnvelope(caught as WardError));
+      expect(printed).not.toContain("x-FORWARDED-host");
+      expect(printed).not.toContain("X-Bad");
+      if (bytes === unlisted) expect(caught?.refusedHeader).toBeUndefined();
+      else expect(caught?.refusedHeader).toBe("X-Forwarded-Host");
+    }
+  });
+});

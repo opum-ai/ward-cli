@@ -555,27 +555,74 @@ export const errorCatalog = {
 
 export type ErrorCode = keyof typeof errorCatalog;
 
+// The only header names an error may print (WCLI-98, opum-doc ruling
+// 2026-10-30): Ward's own canonical spelling of a refused name, never the
+// profile's bytes. `Proxy-*` stands for the whole family. The profile
+// normalizer maps a refused declaration onto an entry of this list by lookup,
+// so what is printed is always a member of it, whatever was declared.
+export const refusedHeaderCanonicalNames = [
+  "Authorization",
+  "Cookie",
+  "Host",
+  "Content-Length",
+  "Transfer-Encoding",
+  "Connection",
+  "Keep-Alive",
+  "TE",
+  "Trailer",
+  "Upgrade",
+  "Expect",
+  "Proxy-Connection",
+  "Proxy-*",
+  "X-HTTP-Method-Override",
+  "X-HTTP-Method",
+  "X-Method-Override",
+  "X-Original-URL",
+  "X-Rewrite-URL",
+  "X-Forwarded-Host",
+  "X-Forwarded-Proto",
+  "X-Forwarded-For",
+  "Forwarded",
+] as const;
+
+export type RefusedHeaderName = (typeof refusedHeaderCanonicalNames)[number];
+
 export class WardError extends Error {
   readonly code: ErrorCode;
   // Where in argv the fault was found. A position is safe to report; the value
   // at that position is not.
   readonly argumentPosition: number | undefined;
+  // Which refused header a declaration used, as Ward's canonical spelling. The
+  // constructor keeps it only when it is a member of the list above, so the
+  // field cannot carry anything the declaration supplied.
+  readonly refusedHeader: RefusedHeaderName | undefined;
 
-  constructor(code: ErrorCode, argumentPosition?: number) {
+  constructor(
+    code: ErrorCode,
+    argumentPosition?: number,
+    refusedHeader?: RefusedHeaderName,
+  ) {
     super(errorCatalog[code].message);
     this.name = "WardError";
     this.code = code;
     this.argumentPosition = argumentPosition;
+    this.refusedHeader = refusedHeaderCanonicalNames.find(
+      (known) => known === refusedHeader,
+    );
   }
 }
 
 export function errorEnvelope(error: WardError): ErrorEnvelope {
   const entry: { type: ErrorType; message: string; hint?: string } =
     errorCatalog[error.code];
-  const message =
+  const positioned =
     error.argumentPosition === undefined
       ? entry.message
       : `${entry.message} (argument ${error.argumentPosition})`;
+  const message =
+    error.refusedHeader === undefined
+      ? positioned
+      : `${positioned} (refused header: ${error.refusedHeader})`;
   return {
     error_type: entry.type,
     code: error.code,

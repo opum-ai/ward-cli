@@ -36,7 +36,7 @@
 // (URL, whose host and scheme case, default port and empty path vary without
 // changing where a request goes) — so none of those can invalidate an
 // approval on its own.
-import { WardError } from "../contract/errors.ts";
+import { type RefusedHeaderName, WardError } from "../contract/errors.ts";
 import { isSecretAlias } from "./secret.ts";
 
 export const profileLimits = {
@@ -228,33 +228,47 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // them, so an approved GET could execute as DELETE. Refused, never flagged:
 // the nine names below, and an existing profile declaring one is refused on
 // load rather than silently stripped.
-const refusedHeaderNames = new Set([
-  "authorization",
-  "cookie",
-  "host",
-  "content-length",
-  "transfer-encoding",
-  "connection",
-  "keep-alive",
-  "te",
-  "trailer",
-  "upgrade",
-  "expect",
-  "proxy-connection",
-  "x-http-method-override",
-  "x-http-method",
-  "x-method-override",
-  "x-original-url",
-  "x-rewrite-url",
-  "x-forwarded-host",
-  "x-forwarded-proto",
-  "x-forwarded-for",
-  "forwarded",
+// Each entry is the folded name and Ward's canonical spelling of it, which is
+// what an error prints: a refusal names the entry it matched, never the bytes
+// the declaration spelled (WCLI-98 ruling, 2026-10-30).
+const refusedHeaderNames = new Map<string, RefusedHeaderName>([
+  ["authorization", "Authorization"],
+  ["cookie", "Cookie"],
+  ["host", "Host"],
+  ["content-length", "Content-Length"],
+  ["transfer-encoding", "Transfer-Encoding"],
+  ["connection", "Connection"],
+  ["keep-alive", "Keep-Alive"],
+  ["te", "TE"],
+  ["trailer", "Trailer"],
+  ["upgrade", "Upgrade"],
+  ["expect", "Expect"],
+  ["proxy-connection", "Proxy-Connection"],
+  ["x-http-method-override", "X-HTTP-Method-Override"],
+  ["x-http-method", "X-HTTP-Method"],
+  ["x-method-override", "X-Method-Override"],
+  ["x-original-url", "X-Original-URL"],
+  ["x-rewrite-url", "X-Rewrite-URL"],
+  ["x-forwarded-host", "X-Forwarded-Host"],
+  ["x-forwarded-proto", "X-Forwarded-Proto"],
+  ["x-forwarded-for", "X-Forwarded-For"],
+  ["forwarded", "Forwarded"],
 ]);
 
-function isRefusedHeaderName(name: string): boolean {
+// The canonical entry a name matches, or undefined when it is not refused. The
+// returned string is always a constant from the table above, never the input.
+function refusedHeaderEntry(name: string): RefusedHeaderName | undefined {
   const folded = name.toLowerCase();
-  return refusedHeaderNames.has(folded) || folded.startsWith("proxy-");
+  return folded.startsWith("proxy-")
+    ? (refusedHeaderNames.get(folded) ?? "Proxy-*")
+    : refusedHeaderNames.get(folded);
+}
+
+// Refuses a declared header name that is on the list, naming the list's entry.
+function refuseListedHeader(name: string): void {
+  const entry = refusedHeaderEntry(name);
+  if (entry !== undefined)
+    throw new WardError("profile_invalid", undefined, entry);
 }
 
 // Whether a string can be a header name this build writes: a non-empty RFC
@@ -409,7 +423,7 @@ function normalizedAuth(value: unknown): ProfileAuth {
   }
   if (value.type !== "header") unsupported();
   if (typeof value.name !== "string" || !isHeaderName(value.name)) invalid();
-  if (isRefusedHeaderName(value.name)) invalid();
+  refuseListedHeader(value.name);
   if (!isSecretAlias(value.secret)) invalid();
   return { type: "header", name: value.name, secret: value.secret };
 }
@@ -436,7 +450,7 @@ function normalizedHeaders(
     const folded = name.toLowerCase();
     if (seen.has(folded)) invalid();
     seen.add(folded);
-    if (isRefusedHeaderName(name)) invalid();
+    refuseListedHeader(name);
     if (auth.type === "header" && auth.name.toLowerCase() === folded) invalid();
     const headerValue = value[name];
     if (typeof headerValue !== "string") invalid();
