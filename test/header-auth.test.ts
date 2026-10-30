@@ -8,6 +8,11 @@
 // aliases only; no case here holds a credential value.
 import { describe, expect, test } from "bun:test";
 import {
+  WardError,
+  errorEnvelope,
+  refusedHeaderCanonicalNames,
+} from "../src/contract/errors.ts";
+import {
   differingProfileFields,
   normalizeProfile,
   profileSnapshotVersion,
@@ -414,7 +419,6 @@ describe("WCLI-98: the request-rewriting names are refused", () => {
 
 // WCLI-98, opum-doc ruling 2026-10-30 (A): a refusal names the refused header
 // by Ward's own canonical spelling, never by the profile's bytes.
-import { WardError, errorEnvelope } from "../src/contract/errors.ts";
 
 function refusalOf(value: unknown): WardError | undefined {
   try {
@@ -494,7 +498,9 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       expect(error).toBeDefined();
       expect(error?.refusedHeader).toBeUndefined();
       const printed = JSON.stringify(errorEnvelope(error as WardError));
-      expect(printed).not.toContain("Sentinel");
+      expect(printed).not.toContain(VALUE_SENTINEL);
+      expect(printed).not.toContain(unlisted);
+      expect(printed).not.toContain(unlisted.toLowerCase());
       expect(printed).not.toContain("refused header");
     }
   });
@@ -541,13 +547,20 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       },
     );
     const text = new TextDecoder().decode(serializeVaultState(state));
+    const asValue = (header: string) =>
+      text.replace(
+        '"Accept":"application/json"',
+        `"${header}":"${VALUE_SENTINEL}"`,
+      );
     const damaged = [
       text.replace(`"name":"${NAME}"`, '"name":"x-FORWARDED-host"'),
-      text.replace('"Accept":', '"x-FORWARDED-host":'),
+      asValue("x-FORWARDED-host"),
     ];
-    // An unlisted but ordinary header swapped in must not name itself.
+    // An unlisted but ordinary header swapped in must not name itself, and a
+    // value it carries must not be printed either.
     const unlisted = text.replace('"Accept":"application/json"', '"X-Bad":7');
-    for (const bytes of [...damaged, unlisted]) {
+    const unlistedWithValue = asValue("X-Bad-Value\r\nX");
+    for (const bytes of [...damaged, unlisted, unlistedWithValue]) {
       expect(bytes).not.toBe(text);
       let caught: WardError | undefined;
       try {
@@ -559,8 +572,52 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       const printed = JSON.stringify(errorEnvelope(caught as WardError));
       expect(printed).not.toContain("x-FORWARDED-host");
       expect(printed).not.toContain("X-Bad");
-      if (bytes === unlisted) expect(caught?.refusedHeader).toBeUndefined();
-      else expect(caught?.refusedHeader).toBe("X-Forwarded-Host");
+      expect(printed).not.toContain(VALUE_SENTINEL);
+      if (bytes === unlisted || bytes === unlistedWithValue) {
+        expect(caught?.refusedHeader).toBeUndefined();
+        expect(printed).not.toContain("refused header");
+      } else {
+        expect(caught?.refusedHeader).toBe("X-Forwarded-Host");
+        expect(printed).toContain("(refused header: X-Forwarded-Host)");
+      }
     }
+  });
+
+  // A mapping that names the wrong member (a swapped pair, say) still
+  // type-checks, because both names are on the list. Every canonical spelling
+  // therefore has to come back as itself, from itself and from its folds.
+  test("every canonical spelling round-trips through a declaration as itself", () => {
+    expect(refusedHeaderCanonicalNames.length).toBe(22);
+    for (const canonical of refusedHeaderCanonicalNames) {
+      if (canonical === "Proxy-*") continue;
+      for (const spelled of [
+        canonical,
+        canonical.toLowerCase(),
+        canonical.toUpperCase(),
+      ]) {
+        const asAuth = refusalOf(
+          declaration({
+            auth: { type: "header", name: spelled, secret: ALIAS },
+          }),
+        );
+        const asHeader = refusalOf(
+          declaration({ headers: { [spelled]: "x" } }),
+        );
+        expect(asAuth?.refusedHeader as string | undefined).toBe(canonical);
+        expect(asHeader?.refusedHeader as string | undefined).toBe(canonical);
+      }
+    }
+  });
+
+  test("a proxy-* name other than proxy-connection prints Proxy-*, proxy-authorization included", () => {
+    for (const spelled of [
+      "proxy-authorization",
+      "Proxy-Authenticate",
+      "PROXY-X",
+    ])
+      expect(
+        refusalOf(declaration({ headers: { [spelled]: "x" } }))
+          ?.refusedHeader as string | undefined,
+      ).toBe("Proxy-*");
   });
 });

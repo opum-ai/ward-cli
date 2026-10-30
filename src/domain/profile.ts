@@ -231,29 +231,32 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // Each entry is the folded name and Ward's canonical spelling of it, which is
 // what an error prints: a refusal names the entry it matched, never the bytes
 // the declaration spelled (WCLI-98 ruling, 2026-10-30).
-const refusedHeaderNames = new Map<string, RefusedHeaderName>([
-  ["authorization", "Authorization"],
-  ["cookie", "Cookie"],
-  ["host", "Host"],
-  ["content-length", "Content-Length"],
-  ["transfer-encoding", "Transfer-Encoding"],
-  ["connection", "Connection"],
-  ["keep-alive", "Keep-Alive"],
-  ["te", "TE"],
-  ["trailer", "Trailer"],
-  ["upgrade", "Upgrade"],
-  ["expect", "Expect"],
-  ["proxy-connection", "Proxy-Connection"],
-  ["x-http-method-override", "X-HTTP-Method-Override"],
-  ["x-http-method", "X-HTTP-Method"],
-  ["x-method-override", "X-Method-Override"],
-  ["x-original-url", "X-Original-URL"],
-  ["x-rewrite-url", "X-Rewrite-URL"],
-  ["x-forwarded-host", "X-Forwarded-Host"],
-  ["x-forwarded-proto", "X-Forwarded-Proto"],
-  ["x-forwarded-for", "X-Forwarded-For"],
-  ["forwarded", "Forwarded"],
-]);
+const refusedHeaderNames: ReadonlyMap<string, RefusedHeaderName> =
+  Object.freeze(
+    new Map<string, RefusedHeaderName>([
+      ["authorization", "Authorization"],
+      ["cookie", "Cookie"],
+      ["host", "Host"],
+      ["content-length", "Content-Length"],
+      ["transfer-encoding", "Transfer-Encoding"],
+      ["connection", "Connection"],
+      ["keep-alive", "Keep-Alive"],
+      ["te", "TE"],
+      ["trailer", "Trailer"],
+      ["upgrade", "Upgrade"],
+      ["expect", "Expect"],
+      ["proxy-connection", "Proxy-Connection"],
+      ["x-http-method-override", "X-HTTP-Method-Override"],
+      ["x-http-method", "X-HTTP-Method"],
+      ["x-method-override", "X-Method-Override"],
+      ["x-original-url", "X-Original-URL"],
+      ["x-rewrite-url", "X-Rewrite-URL"],
+      ["x-forwarded-host", "X-Forwarded-Host"],
+      ["x-forwarded-proto", "X-Forwarded-Proto"],
+      ["x-forwarded-for", "X-Forwarded-For"],
+      ["forwarded", "Forwarded"],
+    ]),
+  );
 
 // The canonical entry a name matches, or undefined when it is not refused. The
 // returned string is always a constant from the table above, never the input.

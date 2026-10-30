@@ -560,7 +560,7 @@ export type ErrorCode = keyof typeof errorCatalog;
 // profile's bytes. `Proxy-*` stands for the whole family. The profile
 // normalizer maps a refused declaration onto an entry of this list by lookup,
 // so what is printed is always a member of it, whatever was declared.
-export const refusedHeaderCanonicalNames = [
+export const refusedHeaderCanonicalNames = Object.freeze([
   "Authorization",
   "Cookie",
   "Host",
@@ -583,7 +583,7 @@ export const refusedHeaderCanonicalNames = [
   "X-Forwarded-Proto",
   "X-Forwarded-For",
   "Forwarded",
-] as const;
+] as const);
 
 export type RefusedHeaderName = (typeof refusedHeaderCanonicalNames)[number];
 
