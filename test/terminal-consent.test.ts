@@ -211,6 +211,22 @@ describe("the approval prompt", () => {
     expect(prompt).toContain("records exactly this operation");
   });
 
+  test("a header-type credential names its header and the alias, never a value (DEC-248 (5))", () => {
+    const header: NormalizedProfile = {
+      ...snapshot,
+      auth: {
+        type: "header",
+        name: "X-Example-Bypass",
+        secret: "example.bypass",
+      },
+    };
+    const { prompt } = asked({ ...approval, snapshot: header });
+    expect(prompt).toContain(
+      "auth:     header X-Example-Bypass, from the secret alias example.bypass",
+    );
+    expect(prompt).not.toContain("bearer");
+  });
+
   test("a value carrying control or format bytes cannot redraw the prompt", () => {
     // A declaration this hostile is refused before an approval is stored, so
     // what this pins is the renderer standing on its own: whatever a caller

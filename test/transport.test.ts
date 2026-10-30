@@ -61,6 +61,8 @@ const encoder = new TextEncoder();
 interface Harness {
   readonly port: number;
   readonly connections: string[];
+  // The whole request head as written, latin1, one entry per connection.
+  readonly raw: string[];
   // What the client put in its ClientHello, or null when it sent none.
   readonly sni: (string | null)[];
   close: () => Promise<void>;
@@ -70,6 +72,7 @@ interface Harness {
 function tlsHarness(who: string): Promise<Harness> {
   return new Promise((resolve) => {
     const connections: string[] = [];
+    const raw: string[] = [];
     const sni: (string | null)[] = [];
     let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
     const server: TlsServer = createTlsServer(
@@ -81,6 +84,7 @@ function tlsHarness(who: string): Promise<Harness> {
         const name = socket.servername;
         sni.push(typeof name === "string" ? name : null);
         socket.on("data", (chunk: Buffer) => {
+          raw.push(chunk.toString("latin1"));
           connections.push(chunk.toString("latin1").split("\r\n")[0] ?? "");
           socket.end(response);
         });
@@ -90,6 +94,7 @@ function tlsHarness(who: string): Promise<Harness> {
       resolve({
         port: (server.address() as { port: number }).port,
         connections,
+        raw,
         sni,
         close: () => new Promise<void>((done) => server.close(() => done())),
         setResponse: (value) => {
@@ -613,6 +618,51 @@ describe("what is written to the socket is what was checked", () => {
       outcome: { kind: "not-sent", reason: "request-invalid" },
       requests: [],
     });
+    await harness.close();
+  });
+
+  test("a header-type credential is written as its own named line, unprefixed, after the profile headers (DEC-248 (3))", async () => {
+    const harness = await tlsHarness(APPROVED);
+    const transport = transportTo([{ address: "127.0.0.1", family: 4 }], {
+      harness: { addressPolicy: () => true },
+    });
+    const outcome = await transport.send({
+      url: `https://${APPROVED}:${harness.port}/rate_limit`,
+      method: "GET",
+      headers: [{ name: "Accept", value: "application/json" }],
+      authorization: {
+        name: "X-Example-Bypass",
+        value: encoder.encode(SYNTHETIC),
+      },
+      body: undefined,
+    });
+    expect(outcome.kind).toBe("response");
+    const lines = (harness.raw[0] ?? "").split("\r\n");
+    const accept = lines.indexOf("Accept: application/json");
+    const credential = lines.indexOf(`X-Example-Bypass: ${SYNTHETIC}`);
+    expect(accept).toBeGreaterThan(0);
+    expect(credential).toBe(accept + 1);
+    expect(lines.some((line) => line.startsWith("Authorization"))).toBe(false);
+    expect((harness.raw[0] ?? "").split(SYNTHETIC).length - 1).toBe(1);
+    await harness.close();
+  });
+
+  test("a credential line whose name is not a header token is refused, and nothing is sent", async () => {
+    const harness = await tlsHarness(APPROVED);
+    const transport = transportTo([{ address: "127.0.0.1", family: 4 }], {
+      harness: { addressPolicy: () => true },
+    });
+    for (const name of ["", "X Bad", "X\r\nInjected", "X-é"]) {
+      const outcome = await transport.send({
+        url: `https://${APPROVED}:${harness.port}/rate_limit`,
+        method: "GET",
+        headers: [],
+        authorization: { name, value: encoder.encode(SYNTHETIC) },
+        body: undefined,
+      });
+      expect(outcome).toEqual({ kind: "not-sent", reason: "request-invalid" });
+    }
+    expect(harness.connections).toEqual([]);
     await harness.close();
   });
 });

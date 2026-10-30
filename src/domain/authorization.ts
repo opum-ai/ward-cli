@@ -35,10 +35,10 @@ export interface AuthorizationHeader {
   readonly value: Uint8Array;
 }
 
-// The scheme's wire name. Bearer is the only scheme this build implements;
-// WCLI-33 adds the others, and an auth type it does not know is refused
-// when the declaration is normalized rather than here, so this function is
-// never asked about one.
+// The scheme's wire name. Bearer and a secret in one named header are the
+// schemes this build implements (DEC-248); WCLI-33 adds Basic, and an auth
+// type it does not know is refused when the declaration is normalized rather
+// than here, so this function is never asked about one.
 const bearerScheme = "Bearer ";
 
 // Whether bytes can be written as one HTTP field value. Exported so the
@@ -58,8 +58,15 @@ export function authorizationHeader(
   auth: ProfileAuth,
   value: Uint8Array,
 ): AuthorizationHeader {
-  if (auth.type !== "bearer") throw new WardError("run_auth_unsupported");
+  if (auth.type !== "bearer" && auth.type !== "header")
+    throw new WardError("run_auth_unsupported");
   if (!isFieldValue(value)) throw new WardError("run_credential_invalid");
+  if (auth.type === "header") {
+    // The stored bytes unchanged, with no scheme prefix, in the header the
+    // developer approved by name. A copy, so the caller zeroing `value` and
+    // the transport's owner zeroing this one stay independent.
+    return { name: auth.name, value: Uint8Array.from(value) };
+  }
   const scheme = new TextEncoder().encode(bearerScheme);
   const header = new Uint8Array(scheme.length + value.length);
   header.set(scheme, 0);

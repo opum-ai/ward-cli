@@ -42,6 +42,7 @@ import type {
   TransportRequest,
 } from "../application/transport.ts";
 import { isFieldValue } from "../domain/authorization.ts";
+import { isHeaderName } from "../domain/profile.ts";
 import {
   isPublicAddress,
   literalAddress,
@@ -161,10 +162,12 @@ function requestBytes(request: TransportRequest): Buffer | undefined {
   if (!isFieldValue(request.authorization.value)) return undefined;
   // The credential's line is the one place a value is written as bytes rather
   // than through `push`, so its name is checked separately, and encoded and
-  // checked the same way. Nothing in the product sets this field to anything
-  // but `Authorization` — domain/authorization.ts is its only constructor —
-  // but an unchecked name is a header line a CRLF could end early, and the
-  // check costs a comparison (WCLI-10 review, F6).
+  // checked the same way. The name is `Authorization` for bearer and the
+  // approved header's name for the header scheme — domain/authorization.ts is
+  // its only constructor — and either way it must be a header token: an
+  // unchecked name is a header line a CRLF could end early (WCLI-10 review,
+  // F6; DEC-248 (3)).
+  if (!isHeaderName(request.authorization.name)) return undefined;
   const authorizationName = Buffer.from(
     `${request.authorization.name}: `,
     "latin1",

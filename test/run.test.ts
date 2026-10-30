@@ -451,6 +451,58 @@ describe("T14: the credential reaches only the approved header", () => {
     expect(JSON.stringify(records)).not.toContain(HOST);
   });
 
+  test("a header-type credential is the stored bytes, unprefixed, in the approved header and nowhere else (DEC-248 (3), (5))", async () => {
+    const h = harness();
+    const checkout = await h.ready({
+      ...DECLARATION,
+      auth: { type: "header", name: "X-Example-Bypass", secret: ALIAS },
+    });
+    const result = await h.ward(checkout, ["run", PROFILE, "--json"]);
+    expect(result.exitCode).toBe(exitCodes.success);
+
+    const sent = h.transport.captured[0];
+    expect(sent?.request.authorization.name).toBe("X-Example-Bypass");
+    expect(sent?.valueAtSend).toBe(SENTINEL);
+    expect(sent?.request.headers).toEqual([
+      { name: "Accept", value: "application/json" },
+    ]);
+    expect(JSON.stringify(sent?.request.headers)).not.toContain(SENTINEL);
+    expect(sent?.request.url).not.toContain(SENTINEL);
+    expect(result.stdout).not.toContain(SENTINEL);
+    expect(result.stderr).not.toContain(SENTINEL);
+
+    // The approved snapshot holds the alias and the name, and the audit
+    // records hold neither the value nor the name.
+    const state = h.state();
+    expect(JSON.stringify(state.profileApprovals)).toContain(
+      "X-Example-Bypass",
+    );
+    expect(JSON.stringify(state.profileApprovals)).not.toContain(SENTINEL);
+    const records = forRun(state, runIdOf(result));
+    expect(records).toHaveLength(2);
+    expect(JSON.stringify(records)).not.toContain(SENTINEL);
+    expect(JSON.stringify(records)).not.toContain("X-Example-Bypass");
+
+    // The buffer handed over is zeroed afterwards, as bearer's is.
+    expect(sent?.request.authorization.value.every((byte) => byte === 0)).toBe(
+      true,
+    );
+  });
+
+  test("a changed header name after approval refuses the run before the transport (DEC-248 (4))", async () => {
+    const h = harness();
+    const checkout = await h.ready({
+      ...DECLARATION,
+      auth: { type: "header", name: "X-Example-Bypass", secret: ALIAS },
+    });
+    h.editDeclaration(checkout, PROFILE, (value) => {
+      value.auth = { type: "header", name: "X-Other-Bypass", secret: ALIAS };
+    });
+    const result = await h.ward(checkout, ["run", PROFILE, "--json"]);
+    expect(result.exitCode).not.toBe(exitCodes.success);
+    expect(h.transport.count).toBe(0);
+  });
+
   test("the buffer the run handed the transport is zeroed once it has answered", async () => {
     const h = harness();
     const checkout = await h.ready();

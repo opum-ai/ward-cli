@@ -10,11 +10,11 @@
 // a snapshot or is refused — and nothing here reads a value, resolves an
 // alias, or reaches the network.
 //
-// Bearer is the only authentication scheme this build implements. Spec §9.2
-// puts it first and calls a custom API-key header and HTTP Basic bounded
-// extensions that are "not reasons to delay the first valid consumption
-// flow"; they are deferred (WCLI-33), so a declaration naming one is refused
-// as unsupported rather than ignored or quietly treated as bearer.
+// Bearer and a secret in one named header are the authentication schemes this
+// build implements (DEC-248; the header scheme is spec §9.2's custom API-key
+// header). HTTP Basic is deferred (WCLI-33), so a declaration naming it, or
+// any other scheme, is refused as unsupported rather than ignored or quietly
+// treated as bearer.
 //
 // What an approval pins is the normalized operation — spec §9.2: "the
 // developer approves the normalized operation: adapter, exact method and
@@ -82,13 +82,17 @@ export interface ProfileHeader {
   readonly value: string;
 }
 
-// Bearer only, in this build. The alias names a secret in the project; the
-// snapshot never holds a value, and there is no field one could be written
-// into.
-export interface ProfileAuth {
-  readonly type: "bearer";
-  readonly secret: string;
-}
+// Two schemes: bearer, and a secret in one named header (DEC-248). The alias
+// names a secret in the project; the snapshot never holds a value, and there
+// is no field one could be written into. The header's name is part of the
+// approved operation and is kept as written.
+export type ProfileAuth =
+  | { readonly type: "bearer"; readonly secret: string }
+  | {
+      readonly type: "header";
+      readonly name: string;
+      readonly secret: string;
+    };
 
 // The normalized operation, exactly as the developer approved it. Every
 // field is present, headers are sorted by name, and nothing here is derived
@@ -165,7 +169,11 @@ export interface NormalizedProfile {
 // (DEC-246 (a2); the refusal this comment used to describe was replaced).
 // No snapshot is migrated or edited. A later change to what normalizeProfile
 // accepts bumps this again, in its own commit.
-export const profileSnapshotVersion = 2;
+//
+// It is 3 from WCLI-84 (DEC-248 (7)): that change added the header scheme to
+// `normalizedAuth` and widened the refused header-name set for ordinary
+// profile headers too, so a version-2 approval is held inert and re-approved.
+export const profileSnapshotVersion = 3;
 
 export const profileSnapshotFields = [
   "adapter",
@@ -198,11 +206,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // no colon, no control byte.
 const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
-// The auth channel belongs to `auth`. A declaration cannot carry a second
-// Authorization header beside it, and Ward will not send a public header
-// whose name it has been told to treat as public while the value beside it
-// is a credential.
-const reservedHeaderNames = new Set(["authorization", "proxy-authorization"]);
+// Names no declaration may use, in an ordinary profile header or as the secret
+// header's name (DEC-248 (1)), compared case-insensitively. Three groups:
+// the names bearer and a later Basic own (`authorization`); every name Ward
+// writes itself or that changes the framing, connection or routing of Ward's
+// own request; and `cookie`, because a cookie credential is a different scheme
+// and widening this set later is cheap where narrowing it breaks approvals.
+// Every `proxy-*` name is refused with them, which covers
+// `proxy-authorization`.
+const refusedHeaderNames = new Set([
+  "authorization",
+  "cookie",
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "upgrade",
+  "expect",
+  "proxy-connection",
+]);
+
+function isRefusedHeaderName(name: string): boolean {
+  const folded = name.toLowerCase();
+  return refusedHeaderNames.has(folded) || folded.startsWith("proxy-");
+}
+
+// Whether a string can be a header name this build writes: a non-empty RFC
+// 9110 token of at most 128 characters. Exported so the transport applies the
+// same rule to the credential line's name that the declaration was held to.
+export function isHeaderName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= profileLimits.maxHeaderNameChars &&
+    headerNamePattern.test(name)
+  );
+}
 
 // Whether a declared header value cannot be written as the single line of
 // text it was approved as.
@@ -328,21 +369,39 @@ function normalizedUrl(value: unknown): string {
   return url.href;
 }
 
+// The key set is exact per type (ADR 0023's rule, applied to the snapshot):
+// bearer is {type, secret} and header is {type, name, secret}. A key the type
+// does not own is unsupported, so `bearer` with a `name`, or `header` with a
+// stray `scheme`, is refused rather than ignored; a key the type needs and the
+// declaration omits is invalid.
 function normalizedAuth(value: unknown): ProfileAuth {
   if (!isRecord(value)) invalid();
   for (const key of Object.keys(value))
-    if (key !== "type" && key !== "secret") unsupported();
+    if (key !== "type" && key !== "name" && key !== "secret") unsupported();
   if (typeof value.type !== "string") invalid();
-  if (value.type !== "bearer") unsupported();
+  if (value.type === "bearer") {
+    if ("name" in value) unsupported();
+    if (!isSecretAlias(value.secret)) invalid();
+    return { type: "bearer", secret: value.secret };
+  }
+  if (value.type !== "header") unsupported();
+  if (typeof value.name !== "string" || !isHeaderName(value.name)) invalid();
+  if (isRefusedHeaderName(value.name)) invalid();
   if (!isSecretAlias(value.secret)) invalid();
-  return { type: "bearer", secret: value.secret };
+  return { type: "header", name: value.name, secret: value.secret };
 }
 
 // Non-secret headers, as declared, in a canonical order. Two names that
 // differ only in case are refused rather than sorted into an order: they are
 // one header by the protocol's own rule, and a declaration that spells it
 // twice is ambiguous about which value Ward would send.
-function normalizedHeaders(value: unknown): readonly ProfileHeader[] {
+//
+// A header named as `auth` does is refused too, in any case (DEC-248 (2)): the
+// secret never silently wins or loses against a public value.
+function normalizedHeaders(
+  value: unknown,
+  auth: ProfileAuth,
+): readonly ProfileHeader[] {
   if (value === undefined) return [];
   if (!isRecord(value)) invalid();
   const names = Object.keys(value);
@@ -350,16 +409,12 @@ function normalizedHeaders(value: unknown): readonly ProfileHeader[] {
   const seen = new Set<string>();
   const headers: ProfileHeader[] = [];
   for (const name of names) {
-    if (
-      name.length === 0 ||
-      name.length > profileLimits.maxHeaderNameChars ||
-      !headerNamePattern.test(name)
-    )
-      invalid();
+    if (!isHeaderName(name)) invalid();
     const folded = name.toLowerCase();
     if (seen.has(folded)) invalid();
     seen.add(folded);
-    if (reservedHeaderNames.has(folded)) invalid();
+    if (isRefusedHeaderName(name)) invalid();
+    if (auth.type === "header" && auth.name.toLowerCase() === folded) invalid();
     const headerValue = value[name];
     if (typeof headerValue !== "string") invalid();
     if (headerValue.length > profileLimits.maxHeaderValueChars) invalid();
@@ -400,15 +455,25 @@ export function normalizeProfile(value: unknown): NormalizedProfile {
     if (typeof value.adapter !== "string") invalid();
     unsupported();
   }
+  const auth = normalizedAuth(value.auth);
   return {
     adapter: "http",
     method: normalizedMethod(value.method),
     url: normalizedUrl(value.url),
-    auth: normalizedAuth(value.auth),
-    headers: normalizedHeaders(value.headers),
+    auth,
+    headers: normalizedHeaders(value.headers, auth),
     requestBody: normalizedRequestBody(value.requestBody),
     output: normalizedOutput(value.output),
   };
+}
+
+// The header scheme's name is part of the approved operation and is compared
+// literally, like a profile header's (DEC-248 (4)).
+function sameAuth(left: ProfileAuth, right: ProfileAuth): boolean {
+  if (left.type !== right.type || left.secret !== right.secret) return false;
+  if (left.type === "header" && right.type === "header")
+    return left.name === right.name;
+  return true;
 }
 
 function sameHeaders(
@@ -437,11 +502,7 @@ export function differingProfileFields(
   if (declared.adapter !== approved.adapter) differing.push("adapter");
   if (declared.method !== approved.method) differing.push("method");
   if (declared.url !== approved.url) differing.push("url");
-  if (
-    declared.auth.type !== approved.auth.type ||
-    declared.auth.secret !== approved.auth.secret
-  )
-    differing.push("auth");
+  if (!sameAuth(declared.auth, approved.auth)) differing.push("auth");
   if (!sameHeaders(declared.headers, approved.headers))
     differing.push("headers");
   if (declared.requestBody !== approved.requestBody)
