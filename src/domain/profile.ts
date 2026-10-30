@@ -174,11 +174,10 @@ export interface NormalizedProfile {
 // `normalizedAuth` and widened the refused header-name set for ordinary
 // profile headers too, so a version-2 approval is held inert and re-approved.
 //
-// WCLI-98 added the request-rewriting names (thirteen, with the 16:43:35Z
-// widening) to that same set and did NOT
-// bump it (opum-doc fold ruling, 2026-10-30): version 3 is unreleased and
-// unapproved anywhere, so one version carries both changes and the operator
-// re-approves once. Like the WCLI-10 narrowing above, it can only refuse more:
+// WCLI-98 added the request-rewriting names (thirteen, with the later
+// widening) to that same set and did NOT bump it (opum-doc fold ruling):
+// version 3 is unreleased and unapproved anywhere, so one version carries both
+// changes and the operator re-approves once. Like the WCLI-10 narrowing above, it can only refuse more:
 // a stored version-3 snapshot declaring one fails closed at parse as
 // `vault_state_malformed`.
 export const profileSnapshotVersion = 3;
@@ -215,7 +214,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 // Names no declaration may use, in an ordinary profile header or as the secret
-// header's name (DEC-248 (1)), compared case-insensitively. Three groups:
+// header's name (DEC-248 (1)), compared in the folded form (case, then `_` to `-`; see
+// `foldHeaderName`). Three groups:
 // the names bearer and a later Basic own (`authorization`); every name Ward
 // writes itself or that changes the framing, connection or routing of Ward's
 // own request; and `cookie`, because a cookie credential is a different scheme
@@ -233,43 +233,47 @@ const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // Each entry is the folded name and Ward's canonical spelling of it, which is
 // what an error prints: a refusal names the entry it matched, never the bytes
 // the declaration spelled (WCLI-98 ruling, 2026-10-30).
-const refusedHeaderNames: ReadonlyMap<string, RefusedHeaderName> =
-  Object.freeze(
-    new Map<string, RefusedHeaderName>([
-      ["authorization", "Authorization"],
-      ["cookie", "Cookie"],
-      ["host", "Host"],
-      ["content-length", "Content-Length"],
-      ["transfer-encoding", "Transfer-Encoding"],
-      ["connection", "Connection"],
-      ["keep-alive", "Keep-Alive"],
-      ["te", "TE"],
-      ["trailer", "Trailer"],
-      ["upgrade", "Upgrade"],
-      ["expect", "Expect"],
-      ["proxy-connection", "Proxy-Connection"],
-      ["x-http-method-override", "X-HTTP-Method-Override"],
-      ["x-http-method", "X-HTTP-Method"],
-      ["x-method-override", "X-Method-Override"],
-      ["x-original-url", "X-Original-URL"],
-      ["x-rewrite-url", "X-Rewrite-URL"],
-      ["x-forwarded-host", "X-Forwarded-Host"],
-      ["x-forwarded-proto", "X-Forwarded-Proto"],
-      ["x-forwarded-for", "X-Forwarded-For"],
-      ["forwarded", "Forwarded"],
-      ["x-forwarded-port", "X-Forwarded-Port"],
-      ["x-forwarded-prefix", "X-Forwarded-Prefix"],
-      ["x-original-host", "X-Original-Host"],
-      ["x-host", "X-Host"],
-    ]),
-  );
+//
+// The table is module-private and typed read-only; that, not a freeze (which
+// does not stop `.set` on a Map), is what keeps it from being edited.
+const refusedHeaderNames: ReadonlyMap<string, RefusedHeaderName> = new Map<
+  string,
+  RefusedHeaderName
+>([
+  ["authorization", "Authorization"],
+  ["cookie", "Cookie"],
+  ["host", "Host"],
+  ["content-length", "Content-Length"],
+  ["transfer-encoding", "Transfer-Encoding"],
+  ["connection", "Connection"],
+  ["keep-alive", "Keep-Alive"],
+  ["te", "TE"],
+  ["trailer", "Trailer"],
+  ["upgrade", "Upgrade"],
+  ["expect", "Expect"],
+  ["proxy-connection", "Proxy-Connection"],
+  ["x-http-method-override", "X-HTTP-Method-Override"],
+  ["x-http-method", "X-HTTP-Method"],
+  ["x-method-override", "X-Method-Override"],
+  ["x-original-url", "X-Original-URL"],
+  ["x-rewrite-url", "X-Rewrite-URL"],
+  ["x-forwarded-host", "X-Forwarded-Host"],
+  ["x-forwarded-proto", "X-Forwarded-Proto"],
+  ["x-forwarded-for", "X-Forwarded-For"],
+  ["forwarded", "Forwarded"],
+  ["x-forwarded-port", "X-Forwarded-Port"],
+  ["x-forwarded-prefix", "X-Forwarded-Prefix"],
+  ["x-original-host", "X-Original-Host"],
+  ["x-host", "X-Host"],
+]);
 
-// The one comparison form for header names: case-folded, then `_` to `-`
-// (WCLI-98 rulings, 2026-10-30 16:43:35Z and 17:15:29Z). A CGI-style server
-// reads `X_Api_Key` and `X-Api-Key` as one variable, so a refused name, a
-// duplicate and a collision with the secret header's name are all compared in
-// this form; the request must not differ from what the prompt showed. It is
-// for comparison only and is never applied to anything stored or printed.
+// The comparison form for every refused-name, reserved-name, duplicate and
+// collision check: case-folded, then `_` to `-` (WCLI-98 rulings). A
+// CGI-style server reads `X_Api_Key` and `X-Api-Key` as one variable, so the
+// request must not differ from what the prompt showed. It is never applied to
+// anything stored or printed, and the approval comparison (`sameAuth`,
+// `sameHeaders`) stays literal: a renamed header must re-prompt (ADR 0024,
+// Decision 5).
 function foldHeaderName(name: string): string {
   return name.toLowerCase().replaceAll("_", "-");
 }
@@ -448,11 +452,11 @@ function normalizedAuth(value: unknown): ProfileAuth {
 }
 
 // Non-secret headers, as declared, in a canonical order. Two names that
-// differ only in case, or only by `_` against `-`, are refused rather than sorted into an order: they are
-// one header by the protocol's own rule, and a declaration that spells it
+// differ only in case, or only by `_` against `-`, are refused rather than
+// sorted into an order: they are one header by the protocol's own rule, and a declaration that spells it
 // twice is ambiguous about which value Ward would send.
 //
-// A header named as `auth` does is refused too, in any case (DEC-248 (2)): the
+// A header named as `auth` does is refused too, in the same fold (DEC-248 (2)): the
 // secret never silently wins or loses against a public value.
 function normalizedHeaders(
   value: unknown,

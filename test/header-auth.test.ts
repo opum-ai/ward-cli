@@ -194,6 +194,33 @@ describe("DEC-248: the name is part of the approved operation", () => {
       ).toEqual(["auth"]);
   });
 
+  // opum-doc ruling (received by the leader 2026-10-30T17:25:40Z): the fold
+  // applies to refusal, duplicate and collision checks, never to the approval
+  // comparison, so a rename that only the fold would equate still re-prompts.
+  test("renaming auth.name from X-Api-Key to X_Api_Key requires a new approval", () => {
+    const approved = normalizeProfile(
+      declaration({
+        auth: { type: "header", name: "X-Api-Key", secret: ALIAS },
+      }),
+    );
+    const renamed = normalizeProfile(
+      declaration({
+        auth: { type: "header", name: "X_Api_Key", secret: ALIAS },
+      }),
+    );
+    expect(differingProfileFields(renamed, approved)).toEqual(["auth"]);
+  });
+
+  test("renaming an ordinary header only by underscore requires a new approval", () => {
+    const approved = normalizeProfile(
+      declaration({ headers: { "X-Trace": "1" } }),
+    );
+    const renamed = normalizeProfile(
+      declaration({ headers: { X_Trace: "1" } }),
+    );
+    expect(differingProfileFields(renamed, approved)).toEqual(["headers"]);
+  });
+
   test("a changed type, with the same alias, is a different auth", () => {
     expect(
       differingProfileFields(
@@ -563,9 +590,16 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
     // An unlisted but ordinary header swapped in must not name itself, and a
     // value it carries must not be printed either.
     const unlisted = text.replace('"Accept":"application/json"', '"X-Bad":7');
-    const unlistedWithValue = asValue("X-Bad-Value\r\nX");
+    // The control byte is a JSON escape, so the document still parses and the
+    // refusal comes from the profile's own header-value check, not from the
+    // JSON reader.
+    const unlistedWithValue = text.replace(
+      '"Accept":"application/json"',
+      `"X-Bad":"${VALUE_SENTINEL}\\u0001"`,
+    );
     for (const bytes of [...damaged, unlisted, unlistedWithValue]) {
       expect(bytes).not.toBe(text);
+      expect(() => JSON.parse(bytes)).not.toThrow();
       let caught: WardError | undefined;
       try {
         parseVaultState(new TextEncoder().encode(bytes));
@@ -745,22 +779,22 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
   // opum-doc ruling 2026-10-30T17:15:29Z: the same fold applies to the
   // duplicate and collision checks, since a CGI-style server reads X_Api_Key
   // and X-Api-Key as one variable and one value could clobber the other.
-  test("an ordinary header folding onto auth.name is refused, hyphen or underscore", () => {
-    for (const [authName, header] of [
-      ["X-Api-Key", "X_Api_Key"],
-      ["X_Api_Key", "X-Api-Key"],
-      ["X-Api-Key", "x_API_key"],
-      ["X-Api-Key", "X-API-KEY"],
-    ])
+  for (const [authName, header] of [
+    ["X-Api-Key", "X_Api_Key"],
+    ["X_Api_Key", "X-Api-Key"],
+    ["X-Api-Key", "x_API_key"],
+    ["X-Api-Key", "X-API-KEY"],
+  ] as const)
+    test(`an ordinary ${header} folding onto auth.name ${authName} is refused`, () => {
       expect(
         codeOf(
           declaration({
             auth: { type: "header", name: authName, secret: ALIAS },
-            headers: { [header as string]: "x" },
+            headers: { [header]: "x" },
           }),
         ),
       ).toBe("profile_invalid");
-  });
+    });
 
   test("two ordinary headers folding onto one name are refused", () => {
     expect(

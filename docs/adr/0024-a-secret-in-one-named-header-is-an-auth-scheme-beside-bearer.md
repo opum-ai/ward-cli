@@ -5,7 +5,7 @@ title: A secret in one named header is an auth scheme beside bearer
 tags:
   - auth
   - profile
-summary: "DEC-248: auth.type header carries a secret in one named header, with a refused-name set shared with profile headers, no collision, literal case, and snapshot version 3."
+summary: "DEC-248: auth.type header carries a secret in one named header, with a refused-name set shared with profile headers, a folded collision check, a literal approval comparison, and snapshot version 3."
 generated:
   by: lore/0.14.1
   at: 2026-10-29T17:39:46.542Z
@@ -39,9 +39,11 @@ version ([ADR 0018](0018-profilesnapshotversion-bumps-at-the-first-release.md)).
    invariant: a declared header may not make the request differ from what the
    prompt showed (method, path, authority, framing). Refused in an ordinary
    header and as `auth.name`: credentials (`authorization`), routing and
-   authority (`host`), framing (`content-length`), hop-by-hop (`te`, `proxy-*`)
+   authority (`host`), framing (`content-length`), hop-by-hop (`te`)
    and method, path or authority overrides (`x-original-url`). A name is
-   case-folded, then `_` to `-`, in every header-name comparison. A refusal is
+   case-folded, then `_` to `-`, in every refused-name, reserved-name,
+   duplicate and collision check; the approval comparison stays literal
+   (Decision 5). A refusal is
    `profile_invalid`, or `vault_state_malformed` for a stored snapshot, and its
    detail names Ward's canonical constant only, never profile bytes. The list
    is `refusedHeaderNames` in `src/domain/profile.ts`; the rulings are DEC-248
