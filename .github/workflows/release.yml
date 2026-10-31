@@ -163,9 +163,30 @@ jobs:
             out/release-notes.md
           if-no-files-found: error
 
+  # WCLI-96 (W-1, DEC-253): the release is gated on macOS's own verdict on the
+  # signature. The Linux build cannot run codesign, and a published v0.1.0 whose
+  # sha256 matched its manifest still failed `codesign --verify --strict`. This
+  # job downloads the exact artifact the release would publish, on a GitHub-hosted
+  # runner (a self-hosted one is not used for a repository that may go public),
+  # and the release job needs it, so a signature that does not verify cannot be
+  # published. It runs on a release tag only, as the release job does.
+  verify:
+    name: Verify the code signature on macOS
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ward-darwin-arm64
+          path: out
+      - name: codesign verifies the signature strictly
+        run: codesign --verify --strict --verbose=2 out/ward-darwin-arm64
+
   release:
     name: Create the GitHub Release
-    needs: build
+    needs: [build, verify]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 10

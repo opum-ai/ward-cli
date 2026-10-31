@@ -20,7 +20,7 @@ const dir = createTempRoot("ward-release-");
 
 test("every action is pinned to a full commit SHA", () => {
   const uses = [...workflow.matchAll(/^\s*- uses: (\S+)/gm)].map((m) => m[1]);
-  expect(uses.length).toBe(5);
+  expect(uses.length).toBe(6);
   for (const use of uses) expect(use).toMatch(/@[0-9a-f]{40}$/);
 });
 
@@ -268,5 +268,59 @@ test("the notes link the install runbook by full URL at the tag", () => {
     .find((l) => l.startsWith('echo "Install and upgrade: '));
   expect(line).toBe(
     'echo "Install and upgrade: https://github.com/${REPO}/blob/${REF_NAME}/docs/runbooks/install-and-upgrade-ward-from-a-release.md"',
+  );
+});
+
+// WCLI-96 (W-1, DEC-253): the release is gated on codesign's verdict, not on a
+// displayed cdhash. Each assertion reads one job's own text, so deleting the
+// step, the dependency or the runner from that job turns exactly one red.
+function jobText(name: string): string {
+  const start = workflow.indexOf(`\n  ${name}:\n`);
+  expect(start).toBeGreaterThan(-1);
+  const rest = workflow.slice(start + 1);
+  const next = rest.slice(1).search(/^ {2}[a-z][a-z-]*:\n/m);
+  return next === -1 ? rest : rest.slice(0, next + 1);
+}
+
+test("a verify job runs codesign --verify --strict on the artifact the release would publish", () => {
+  const verify = jobText("verify");
+  expect(verify).toMatch(/^\s+needs: build$/m);
+  expect(verify).toMatch(
+    /^\s+if: github\.event_name == 'push' && github\.ref_type == 'tag'$/m,
+  );
+  expect(verify).toContain("actions/download-artifact@");
+  expect(verify).toMatch(/^\s+name: ward-darwin-arm64$/m);
+  expect(verify).toMatch(
+    /^\s+run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64$/m,
+  );
+});
+
+test("the verify job runs on a GitHub-hosted macOS runner, never a self-hosted one", () => {
+  const verify = jobText("verify");
+  expect(verify).toMatch(/^\s+runs-on: macos-14$/m);
+  expect(verify).not.toContain("self-hosted");
+  expect(verify).not.toContain("contents: write");
+});
+
+test("the release job needs the verify job, so an unverified artifact cannot publish", () => {
+  expect(jobText("release")).toMatch(/^\s+needs: \[build, verify\]$/m);
+});
+
+test("the install runbook verifies the signature and stops on a failure, not only compares a cdhash", () => {
+  const runbook = readFileSync(
+    join(
+      root,
+      "docs",
+      "runbooks",
+      "install-and-upgrade-ward-from-a-release.md",
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  expect(runbook).toContain(
+    "codesign --verify --strict --verbose=2 ward-darwin-arm64",
+  );
+  expect(runbook).toContain("It must exit 0. Stop on any other exit");
+  expect(runbook.indexOf("codesign --verify --strict")).toBeLessThan(
+    runbook.indexOf("codesign -dvvv"),
   );
 });
