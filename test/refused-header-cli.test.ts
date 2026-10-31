@@ -160,9 +160,10 @@ async function world(overrides: Record<string, unknown>) {
 
 type Result = { exitCode: number; stdout: string; stderr: string };
 
-// Everything a command printed, with the two sentinels measured absent. Every
-// case below goes through this, so no case can pass without having read the
-// output: `printed` must be non-empty.
+// Everything a command printed, with the sentinels measured absent. The cases
+// below go through this except the positive controls that read a count, and it
+// fails on empty output, so a case that goes through it cannot pass without
+// having read something.
 function printedOf(result: Result, ...absent: string[]): string {
   const printed = `${result.stdout}${result.stderr}`;
   expect(printed.length).toBeGreaterThan(0);
@@ -234,8 +235,9 @@ describe("WCLI-116: a refusal prints Ward's canonical name where an error is pri
     expect(data.events.length).toBeGreaterThan(0);
   });
 
-  // The profile is approved while valid, so the run would reach admission were
-  // it not refused; the manifest is then rewritten to a refused name.
+  // The profile is approved while valid, then the manifest is rewritten to a
+  // refused name. The case's teeth are the refusal suffix; the empty history is
+  // a consequence check, not what fails first.
   test("a refused run of an approved profile persists nothing: the audit history is empty", async () => {
     const w = await world({});
     expect((await w.ward(["profile", "approve", PROFILE])).exitCode).toBe(
