@@ -46,8 +46,8 @@ version ([ADR 0018](0018-profilesnapshotversion-bumps-at-the-first-release.md)).
    (Decision 5). A refusal is
    `profile_invalid`, or `vault_state_malformed` for a stored snapshot, and its
    detail names Ward's canonical constant only, never profile bytes. The list
-   is `refusedHeaderNames` in `src/domain/profile.ts`; the rulings are DEC-248
-   and WCLI-98.
+   is `refusedHeaderNames` and the `proxy-*` prefix rule in
+   `src/domain/profile.ts`; rulings: DEC-248, WCLI-98.
 3. **Collision.** An ordinary header named as `auth.name`, in the same fold, is
    `profile_invalid`: the secret never silently wins or loses.
 4. **Wire.** The credential line keeps its slot after the profile headers, with

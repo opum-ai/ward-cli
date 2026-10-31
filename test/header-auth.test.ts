@@ -194,7 +194,7 @@ describe("DEC-248: the name is part of the approved operation", () => {
       ).toEqual(["auth"]);
   });
 
-  // opum-doc ruling (received by the leader 2026-10-30T17:25:40Z): the fold
+  // WCLI-98 fold rule: the fold
   // applies to refusal, duplicate and collision checks, never to the approval
   // comparison, so a rename that only the fold would equate still re-prompts.
   test("renaming auth.name from X-Api-Key to X_Api_Key requires a new approval", () => {
@@ -209,6 +209,16 @@ describe("DEC-248: the name is part of the approved operation", () => {
       }),
     );
     expect(differingProfileFields(renamed, approved)).toEqual(["auth"]);
+  });
+
+  test("renaming an ordinary header by case alone requires a new approval", () => {
+    const approved = normalizeProfile(
+      declaration({ headers: { "X-Trace": "1" } }),
+    );
+    const renamed = normalizeProfile(
+      declaration({ headers: { "x-trace": "1" } }),
+    );
+    expect(differingProfileFields(renamed, approved)).toEqual(["headers"]);
   });
 
   test("renaming an ordinary header only by underscore requires a new approval", () => {
@@ -659,7 +669,7 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       ).toBe("Proxy-*");
   });
 
-  // opum-doc ruling 2026-10-30T16:43:35Z: `_` folds to `-` (after case-folding)
+  // WCLI-98 fold rule: `_` folds to `-` (after case-folding)
   // before every refused-name lookup, so a server that reads X_Forwarded_Host
   // as X-Forwarded-Host cannot be handed a header the prompt did not show. The
   // printed detail is still Ward's canonical constant.
@@ -776,7 +786,7 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
     }
   });
 
-  // opum-doc ruling 2026-10-30T17:15:29Z: the same fold applies to the
+  // WCLI-98 fold rule: the same fold applies to the
   // duplicate and collision checks, since a CGI-style server reads X_Api_Key
   // and X-Api-Key as one variable and one value could clobber the other.
   for (const [authName, header] of [
