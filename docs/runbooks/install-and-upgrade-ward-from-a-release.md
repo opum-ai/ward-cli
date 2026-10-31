@@ -43,12 +43,12 @@ Status: this describes the cut 0.1.0 release, whose attached files are
    `gh release download v0.1.0 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'`
 2. Verify the checksum: `shasum -a 256 -c ward-darwin-arm64.sha256`. Stop on any
    mismatch; do not run the file.
-3. Compare the binary's CDHash with the release notes:
-   `codesign -dvvv ward-darwin-arm64 2>&1 | grep '^CDHash='`, whose value must
-   equal the `cdhash` line of the release body (`gh release view v0.1.0 -R
-   opum-ai/ward-cli --json body`). The signature is ad hoc, so this hash is
-   the identity the keychain trust follows; a mismatch means the file is not
-   the one that was built and published, and it is not installed.
+3. Verify the signature: `codesign --verify --strict --verbose=2
+   ward-darwin-arm64`. It must exit 0. Stop on any other exit; do not run the
+   file. Then compare its CDHash, the identity the keychain trust follows, with
+   the release notes: `codesign -dvvv ward-darwin-arm64 2>&1 | grep '^CDHash='`
+   must equal the `cdhash` line of `gh release view v0.1.0 -R opum-ai/ward-cli
+   --json body`. On a mismatch, do not install it.
 4. Install it as a regular file, not a link:
    `install -m 0755 ward-darwin-arm64 ~/.local/bin/ward`. If `~/.local/bin/ward`
    is a symlink into a checkout, remove the link first (`rm ~/.local/bin/ward`),
