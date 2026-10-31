@@ -43,6 +43,10 @@ const ALIAS = "example-token";
 // are synthetic sentinels, and no output of any command may hold either.
 const VALUE = "value-sentinel-9c1e";
 const SECRET = "synthetic-secret-sentinel-3d7b";
+// The vault holds the credential base64-encoded and only `run` decodes it,
+// after approval; every refusal path stops earlier, so the form that could
+// reach an output is the encoded one. Both forms are measured absent.
+const SECRET_STORED = Buffer.from(SECRET).toString("base64");
 const encoder = new TextEncoder();
 const root = mkdtempSync(join(tmpdir(), "ward-refused-header-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -162,7 +166,7 @@ type Result = { exitCode: number; stdout: string; stderr: string };
 function printedOf(result: Result, ...absent: string[]): string {
   const printed = `${result.stdout}${result.stderr}`;
   expect(printed.length).toBeGreaterThan(0);
-  for (const text of [VALUE, SECRET, ...absent])
+  for (const text of [VALUE, SECRET, SECRET_STORED, ...absent])
     expect(printed).not.toContain(text);
   return printed;
 }
@@ -213,13 +217,35 @@ describe("WCLI-116: a refusal prints Ward's canonical name where an error is pri
         printedOf(result, declared);
         expect(result.stderr).toContain(`(refused header: ${canonical})`);
         expect(w.transport.sent).toBe(0);
+        expect(w.approvals()).toBe(0);
       });
     }
 
-  test("a refused run persists nothing: the audit history is empty", async () => {
-    const w = await world(refused[0]?.overrides ?? {});
+  // Positive control: in this harness a run that is admitted writes an audit
+  // event, so an empty history below means the refusal wrote nothing.
+  test("an admitted run writes an audit event in this harness", async () => {
+    const w = await world({});
+    expect((await w.ward(["profile", "approve", PROFILE])).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await w.ward(["run", PROFILE])).exitCode).toBe(exitCodes.success);
+    const audit = await w.ward(["audit"]);
+    const data = JSON.parse(audit.stdout).data as { events: unknown[] };
+    expect(data.events.length).toBeGreaterThan(0);
+  });
+
+  // The profile is approved while valid, so the run would reach admission were
+  // it not refused; the manifest is then rewritten to a refused name.
+  test("a refused run of an approved profile persists nothing: the audit history is empty", async () => {
+    const w = await world({});
+    expect((await w.ward(["profile", "approve", PROFILE])).exitCode).toBe(
+      exitCodes.success,
+    );
+    w.writeProfile({ ...w.valid, headers: { "x-FORWARDED-host": VALUE } });
     const run = await w.ward(["run", PROFILE]);
     expect(run.exitCode).not.toBe(exitCodes.success);
+    expect(run.stderr).toContain("(refused header: X-Forwarded-Host)");
+    expect(w.transport.sent).toBe(0);
     const audit = await w.ward(["audit"]);
     expect(audit.exitCode).toBe(exitCodes.success);
     printedOf(audit, "x-FORWARDED-host", "X-Forwarded-Host");
@@ -245,15 +271,15 @@ describe("WCLI-116: the reporting paths report a state, never a header name", ()
     }
 
   // The same two commands in human text, which `--json` never prints.
-  for (const command of [
-    ["profile", "list"],
-    ["check", PROFILE],
-  ])
+  for (const [command, marker] of [
+    [["profile", "list"], "invalid declaration"],
+    [["check", PROFILE], "the declaration is not one Ward can use"],
+  ] as const)
     test(`${command.join(" ")} in text mode prints no refused name`, async () => {
       const w = await world(refused[0]?.overrides ?? {});
       const result = await w.ward([...command], { json: false });
       const printed = printedOf(result, "x-FORWARDED-host", "X-Forwarded-Host");
-      expect(printed).toMatch(/declaration|invalid/i);
+      expect(printed).toContain(marker);
     });
 
   // A stored approval whose snapshot declares the refused name. `status` and
@@ -304,11 +330,15 @@ describe("WCLI-116: the reporting paths report a state, never a header name", ()
         expect(printed).toContain(marker);
       });
 
-    for (const command of [["status"], ["doctor"]])
+    for (const [command, marker] of [
+      [["status"], "binding:       unknown"],
+      [["doctor"], "schema          fail    state_malformed"],
+    ] as const)
       test(`${command[0]} in text mode prints no name`, async () => {
         const w = await damaged();
         const result = await w.ward([...command], { json: false });
-        printedOf(result, declared, "X-Forwarded-Host");
+        const printed = printedOf(result, declared, "X-Forwarded-Host");
+        expect(printed).toContain(marker);
       });
   });
 
@@ -325,6 +355,7 @@ describe("WCLI-116: the reporting paths report a state, never a header name", ()
     );
     const result = await w.ward(["profile", "approve", PROFILE]);
     expect(result.exitCode).not.toBe(exitCodes.success);
+    expect(JSON.parse(result.stderr).code).toBe("profile_changed");
     printedOf(result, "x-FORWARDED-host", "X-Forwarded-Host");
     expect(w.approvals()).toBe(0);
   });
@@ -344,7 +375,7 @@ describe("WCLI-116: the reporting paths report a state, never a header name", ()
     w.writeProfile({ ...w.valid, headers: { "x-FORWARDED-host": VALUE } });
     const result = await w.ward(["status"]);
     const printed = printedOf(result, "x-FORWARDED-host", "X-Forwarded-Host");
-    expect(printed).toContain("cannot be read");
+    expect(printed).toContain("declaration of this profile cannot be read");
   });
 
   test("a header that is not refused is never printed on any path", async () => {
