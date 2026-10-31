@@ -286,13 +286,25 @@ test("a verify job runs codesign --verify --strict on the artifact the release w
   const verify = jobText("verify");
   expect(verify).toMatch(/^\s+needs: build$/m);
   expect(verify).toMatch(
-    /^\s+if: github\.event_name == 'push' && github\.ref_type == 'tag'$/m,
+    /^\s+if: github\.event_name == 'workflow_dispatch' \|\| \(github\.event_name == 'push' && github\.ref_type == 'tag'\)$/m,
   );
   expect(verify).toContain("actions/download-artifact@");
   expect(verify).toMatch(/^\s+name: ward-darwin-arm64$/m);
   expect(verify).toMatch(
     /^\s+run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64$/m,
   );
+});
+
+test("a manual dry run exercises the gate but release still cannot run on it", () => {
+  const release = jobText("release");
+  expect(release).not.toContain("workflow_dispatch");
+  expect(release).toMatch(
+    /^\s+if: github\.event_name == 'push' && github\.ref_type == 'tag'$/m,
+  );
+  expect(jobText("verify")).toContain(
+    "github.event_name == 'workflow_dispatch'",
+  );
+  expect(jobText("build")).not.toMatch(/^\s+if: github\.event_name/m);
 });
 
 test("the verify job runs on a GitHub-hosted macOS runner, never a self-hosted one", () => {
@@ -304,6 +316,23 @@ test("the verify job runs on a GitHub-hosted macOS runner, never a self-hosted o
 
 test("the release job needs the verify job, so an unverified artifact cannot publish", () => {
   expect(jobText("release")).toMatch(/^\s+needs: \[build, verify\]$/m);
+});
+
+test("a failed verify cannot be waved through: no continue-on-error, and release's condition has no status function", () => {
+  expect(jobText("verify")).not.toContain("continue-on-error");
+  expect(jobText("release")).not.toContain("continue-on-error");
+  // An anchored whole-line match: `always()`, `!cancelled()` or `failure()`
+  // appended to the condition would let release run after a failed verify.
+  expect(jobText("release")).toMatch(
+    /^\s+if: github\.event_name == 'push' && github\.ref_type == 'tag'$/m,
+  );
+});
+
+test("the verify job takes no token permissions and the header describes the gate", () => {
+  expect(jobText("verify")).toMatch(/^\s+permissions: \{\}$/m);
+  expect(workflow.slice(0, workflow.indexOf("\nname: Release"))).toContain(
+    "macOS verify job that runs codesign --verify --strict",
+  );
 });
 
 test("the install runbook verifies the signature and stops on a failure, not only compares a cdhash", () => {

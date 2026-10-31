@@ -11,6 +11,10 @@
 # the run, and creates no Release. The Release is created by one job, the only
 # one that holds contents: write.
 #
+# The release job needs a macOS verify job that runs codesign --verify --strict
+# on this artifact (WCLI-96, DEC-253), so a signature that does not verify
+# cannot publish.
+#
 # The binary is ad-hoc signed by the compiler. codesign is not available on
 # Linux, so the cdhash the notes carry is read from the Mach-O itself by
 # scripts/macho-cdhash.mjs, which test/release-workflow.test.ts checks against
@@ -169,13 +173,16 @@ jobs:
   # job downloads the exact artifact the release would publish, on a GitHub-hosted
   # runner (a self-hosted one is not used for a repository that may go public),
   # and the release job needs it, so a signature that does not verify cannot be
-  # published. It runs on a release tag only, as the release job does.
+  # published. It runs on a release tag and on a manual dry run (DEC-253 (a1)),
+  # so a dry run exercises the gate; only the release job is tag-only, so a dry
+  # run can never publish.
   verify:
     name: Verify the code signature on macOS
     needs: build
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: macos-14
     timeout-minutes: 10
+    permissions: {}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
