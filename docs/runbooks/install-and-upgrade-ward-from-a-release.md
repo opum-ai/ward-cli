@@ -23,7 +23,8 @@ macOS keychain's trust in the vault-key item follows that signature, so a
 symlinked build asks for approval again after every rebuild.
 
 Status: this describes the cut 0.1.0 release, whose attached files are
-`ward-darwin-arm64` and `ward-darwin-arm64.sha256` — the names below.
+`ward-darwin-arm64` and `ward-darwin-arm64.sha256` — the names below. That
+v0.1.0 asset fails step 3 until republished.
 
 ## Prerequisites
 
@@ -44,10 +45,9 @@ Status: this describes the cut 0.1.0 release, whose attached files are
 2. Verify the checksum: `shasum -a 256 -c ward-darwin-arm64.sha256`. Stop on any
    mismatch; do not run the file.
 3. Verify the signature: `codesign --verify --strict --verbose=2
-   ward-darwin-arm64`. It must exit 0. Stop on any other exit; do not run the
-   file. Then compare its CDHash, the identity the keychain trust follows, with
-   the release notes: `codesign -dvvv ward-darwin-arm64 2>&1 | grep '^CDHash='`
-   must equal the `cdhash` line of `gh release view v0.1.0 -R opum-ai/ward-cli
+   ward-darwin-arm64`. It must exit 0. Stop on any other exit. Then compare
+   its CDHash with the release notes: `codesign -dvvv ward-darwin-arm64 2>&1 |
+   grep '^CDHash='` must equal the `cdhash` line of `gh release view v0.1.0 -R opum-ai/ward-cli
    --json body`. On a mismatch, do not install it.
 4. Install it as a regular file, not a link:
    `install -m 0755 ward-darwin-arm64 ~/.local/bin/ward`. If `~/.local/bin/ward`
@@ -106,7 +106,8 @@ Status: this describes the cut 0.1.0 release, whose attached files are
 
 ## Rollback
 
-Keep the previous artifact and install it the same way (`install -m 0755`).
+Keep the previous artifact and install it the same way (`install -m 0755`),
+after steps 2 and 3 pass on it.
 The vault itself is not altered by an install, an upgrade or a rollback.
 
 Rolling back is only as safe as the older build's ability to read what the
