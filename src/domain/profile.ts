@@ -177,9 +177,9 @@ export interface NormalizedProfile {
 // WCLI-98 added the request-rewriting names (thirteen, with the later
 // widening) to that same set and did NOT bump it (opum-doc fold ruling):
 // version 3 is unreleased and unapproved anywhere, so one version carries both
-// changes and the operator re-approves once. Like the WCLI-10 narrowing above, it can only refuse more:
-// a stored version-3 snapshot declaring one fails closed at parse as
-// `vault_state_malformed`.
+// changes and the operator re-approves once. Like the WCLI-10 narrowing above,
+// it can only refuse more: a stored version-3 snapshot declaring one fails
+// closed at parse as `vault_state_malformed`.
 export const profileSnapshotVersion = 3;
 
 export const profileSnapshotFields = [
@@ -214,12 +214,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 // Names no declaration may use, in an ordinary profile header or as the secret
-// header's name (DEC-248 (1)), compared in the folded form (case, then `_` to `-`; see
-// `foldHeaderName`). Three groups:
-// the names bearer and a later Basic own (`authorization`); every name Ward
-// writes itself or that changes the framing, connection or routing of Ward's
-// own request; and `cookie`, because a cookie credential is a different scheme
-// and widening this set later is cheap where narrowing it breaks approvals.
+// header's name (DEC-248 (1)), compared in the folded form (case, then `_` to
+// `-`; see `foldHeaderName`). Three groups: the names bearer and a later Basic
+// own (`authorization`); every name Ward writes itself or that changes the
+// framing, connection or routing of Ward's own request; and `cookie`, because
+// a cookie credential is a different scheme and widening this set later is
+// cheap where narrowing it breaks approvals.
 // Every `proxy-*` name is refused with them, which covers
 // `proxy-authorization`.
 //
@@ -453,11 +453,12 @@ function normalizedAuth(value: unknown): ProfileAuth {
 
 // Non-secret headers, as declared, in a canonical order. Two names that
 // differ only in case, or only by `_` against `-`, are refused rather than
-// sorted into an order: they are one header by the protocol's own rule, and a declaration that spells it
-// twice is ambiguous about which value Ward would send.
+// sorted into an order: they are one header by the protocol's own rule, and a
+// declaration that spells it twice is ambiguous about which value Ward would
+// send.
 //
-// A header named as `auth` does is refused too, in the same fold (DEC-248 (2)): the
-// secret never silently wins or loses against a public value.
+// A header named as `auth` does is refused too, in the same fold (DEC-248
+// (2)): the secret never silently wins or loses against a public value.
 function normalizedHeaders(
   value: unknown,
   auth: ProfileAuth,
