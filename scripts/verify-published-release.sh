@@ -15,18 +15,24 @@
 #   4. codesign -dvvv CDHash= on the download == the published body's line
 set -euo pipefail
 
+dir=""
 die() {
   echo "verify-published-release: FAIL: $*" >&2
+  [ -z "$dir" ] || echo "verify-published-release: downloaded files are in $dir" >&2
   exit 1
 }
 
 [ "$#" -eq 2 ] || die "usage: verify-published-release.sh <tag> <local-signed-file>"
 tag="$1"
 local_file="$2"
+# A leading dash would be read by gh as a flag (--repo=x/y reads another repo).
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "the tag must look like v1.2.3, got: $tag"
 [ -f "$local_file" ] || die "local signed file not found: $local_file"
 [ "$(basename "$local_file")" = "ward-darwin-arm64" ] ||
   die "the local file must be named ward-darwin-arm64"
 
+repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)" ||
+  die "could not resolve the repository (set GH_REPO=owner/name)"
 body="$(gh release view "$tag" --json body -q .body)" ||
   die "could not read the published notes for $tag"
 [ -n "$body" ] || die "the published notes for $tag are empty"
@@ -50,13 +56,17 @@ gh release download "$tag" -p 'ward-darwin-arm64*' -D "$dir" ||
 [ -f "$dir/ward-darwin-arm64.sha256" ] ||
   die "the Release has no ward-darwin-arm64.sha256 asset"
 
+downloaded_sha="$(shasum -a 256 "$dir/ward-darwin-arm64" | awk '{print $1}')"
+# shasum -c reads whatever path the file names, so a checksum file naming
+# another file with that file's own hash would pass it. Pin the exact bytes.
+printf '%s  ward-darwin-arm64\n' "$downloaded_sha" | cmp -s - "$dir/ward-darwin-arm64.sha256" ||
+  die "the published checksum file is not exactly: <sha256 of the asset>, two spaces, ward-darwin-arm64"
 (cd "$dir" && shasum -a 256 -c ward-darwin-arm64.sha256) ||
   die "the published checksum file does not match the published asset"
 
 codesign --verify --strict --verbose=2 "$dir/ward-darwin-arm64" ||
   die "codesign --verify --strict failed on the published asset"
 
-downloaded_sha="$(shasum -a 256 "$dir/ward-darwin-arm64" | awk '{print $1}')"
 local_sha="$(shasum -a 256 "$local_file" | awk '{print $1}')"
 [ "$downloaded_sha" = "$local_sha" ] ||
   die "downloaded sha256 $downloaded_sha is not the local signed file's $local_sha"
@@ -70,4 +80,4 @@ downloaded_cdhash="$(printf '%s\n' "$signature" | sed -n 's/^CDHash=//p')"
 [ "$downloaded_cdhash" = "$body_cdhash" ] ||
   die "downloaded CDHash $downloaded_cdhash is not the published notes' $body_cdhash"
 
-echo "verify-published-release: PASS tag=$tag sha256=$downloaded_sha cdhash=$downloaded_cdhash"
+echo "verify-published-release: PASS repo=$repo tag=$tag sha256=$downloaded_sha cdhash=$downloaded_cdhash"

@@ -16,15 +16,14 @@ generated:
 ## Purpose
 
 The tag push publishes a Linux-built darwin asset that fails `codesign --verify
---strict`. For 0.1.1 the operator replaces it with a Mac-signed one (DEC-255,
-WCLI-96). The Release's sha256, cdhash and checksum file must then name the
-Mac-signed bytes, or install step 3 refuses on a cdhash mismatch. This
-supersedes the cutting runbook's runner-vs-Mac byte comparison.
+--strict`. For 0.1.1 the operator replaces it with a Mac-signed one (DEC-255).
+The notes' sha256 and cdhash and the checksum file must then name the signed
+bytes, or install step 3 refuses. This supersedes the cutting runbook's
+runner-vs-Mac byte comparison.
 
 ## Prerequisites
 
-- The tag's workflow run has published its Release, and `gh` is signed in as
-  the operator.
+- The tag's run has published its Release; `gh` is signed in as the operator.
 - The signed file `ward-darwin-arm64`, built from a detached checkout of the
   tag's commit as the cutting runbook's step 6 builds (`bun install
   --frozen-lockfile --os=darwin --cpu=arm64`, `bun scripts/build.ts --target
@@ -41,25 +40,27 @@ TAG is the release tag and DIR an empty scratch directory.
    notes.md`.
 3. Regenerate from the signed file: `node scripts/regenerate-release-metadata.mjs
    ward-darwin-arm64 notes.md DIR`. It rewrites the notes' sha256 and cdhash
-   lines and the `.sha256`, and prints both values.
+   lines and the `.sha256`.
 4. Replace the asset and checksum: `gh release upload TAG ward-darwin-arm64
    DIR/ward-darwin-arm64.sha256 --clobber`, then `gh release edit TAG
    --notes-file DIR/release-notes.md`.
-5. Verify what is PUBLISHED, not what you wrote: `scripts/verify-published-release.sh
-   TAG ward-darwin-arm64`. It re-reads the published notes body, downloads the
-   asset and checksum into a new empty directory, and stops on the first
-   mismatch: `shasum -a 256 -c`, `codesign --verify --strict`, the downloaded
-   sha256 against both the LOCAL signed file and the published notes line, and
-   `codesign -dvvv` CDHash against the published notes line. It exits non-zero
-   on any failure and prints PASS only when every comparison holds.
+5. Verify what is PUBLISHED: `scripts/verify-published-release.sh TAG
+   ward-darwin-arm64`. It re-reads the published notes, downloads into a new
+   empty directory, and stops on the first mismatch: the checksum file, `codesign
+   --verify --strict`, the sha256 against the LOCAL file and the notes line, and
+   `codesign -dvvv` CDHash against the notes line. PASS only if all hold.
+
+6. Mark v0.1.0 superseded (it is not republished): save its notes with `gh
+   release view v0.1.0 --json body -q .body > old.md`, append "Superseded by
+   v0.1.1: install that release.", then `gh release edit v0.1.0 --notes-file
+   old.md`.
 
 **Do not flip the repository to public, and do not tag again, until step 5
-prints PASS.**
+prints PASS and step 6 is done.**
 
 ## Rollback
 
-Steps 1 to 3 change nothing on GitHub. A failure between the upload and the
-edit in step 4 leaves the new asset with the old notes; a failure in step 5
-leaves both published and names the comparison that failed. Fix the cause and
-rerun from step 1: `--clobber` and `gh release edit` converge on the signed
-file's bytes.
+Steps 1 to 3 change nothing on GitHub. A failure in step 4 can leave the new
+asset with the old notes, or no asset or checksum; a failure in step 5 leaves
+both published and names the comparison. Fix the cause and rerun from step 1:
+`--clobber` and `gh release edit` converge on the signed file's bytes.
