@@ -33,7 +33,6 @@
 - 2026-10-26T16:18:06-05:00 f2bcc682ae32f67a351bdfbbdf00dcd9f67d7a8e docs(WCLI-82): record the 0.1.0 cut's gate results (#196)
 - 2026-10-26T16:19:53-05:00 5a616927579c3daf5d23d3bbcde04fe13d367a2e docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3
 - 2026-10-26T16:21:03-05:00 50b553b576c80a3495880fed817f3d211666d6da docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3 (#198)
-- 2026-10-28T09:19:42-05:00 e7cf35ce5fa6d028358f183fb59bfc63f3b2cb2c feat(WCLI-92): ship opum-ward from a lean plugin/ directory (#204)
 
 ## docs/adr
 
@@ -51,14 +50,8 @@
 - 2026-09-29T11:59:04-05:00 351ff7e05c6d90a36ab92bef0a5779ee9d07d80f feat(WCLI-46): reclaim stale test roots with an explicit clean:temp (DEC-49) (#127)
 - 2026-09-29T12:13:18-05:00 8b2a588098c85b75b69b74c0d861a4ac143040d7 feat(WCLI-14): skill-file drift and the init multiselect, with DEC-46..52 recorded (#128)
 - 2026-10-20T20:33:44-05:00 1142ac1e8f30896f8a08b009453329cf6277b89d feat(WCLI-73): ward unregister withdraws one checkout (#154)
-- 2026-10-30T11:29:30-05:00 24cc217f759c0ff3cc69804b583ed036f01c99e0 feat(WCLI-84): a secret in one named header is an auth scheme beside bearer (DEC-248) (#208)
-- 2026-10-30T12:32:39-05:00 c2ae0c0fd7ca613be0d025010e85a878176ad3e3 feat(WCLI-98): refuse the request-rewriting override headers (W-3b) (#215)
-- 2026-10-31T08:10:44-05:00 68c648db0be9621853a8c33521e5606d0494cfaf chore(WCLI-117): round-3 nits - proxy-* rule in ADR 0024, case-only rename test, comment widths and timestamps (#219)
 
 ## docs/runbooks
 
 - 2026-09-29T13:42:11-05:00 e04c287d4745d518495d5b5f7840dcb0b468c283 docs(WCLI-63): carry DEC-38's deferred compatibility question in the release runbook (#134)
 - 2026-10-20T18:36:39-05:00 66604baf4ced9270ab51ca84311cb2db48934b3c fix(WCLI-12): report a revoked grant distinctly; add the restore recovery runbook
-- 2026-10-31T17:49:18-05:00 014498101c2de2c4a1e76dc59eaa0a39ff681dbb feat(WCLI-96): gate the release on codesign --verify --strict on macOS (#224)
-- 2026-10-31T18:14:11-05:00 ae69da39f2e79acdd5b846745368fbeeba6e9a51 fix(WCLI-96): run verify on a dry run too and close the reviewer's non-blocking items (#226)
-- 2026-11-01T08:18:54-06:00 250d4f4b7ad8a1e64f2cbfbcfe8d123b5ed6a53d fix(WCLI-121): pre-flip hardening of the W-1 verify gate (#230)
