@@ -137,18 +137,35 @@ export function pollInput(
 // stops when poll reports quiet, when the descriptor is in error or hung up, or
 // at the deadline; a poll that fails (EINTR, say) is simply tried again within
 // the deadline.
-function drain(found: Resolved, descriptor: number): void {
-  if (found.poll === undefined) return;
-  const deadline = performance.now() + DRAIN_BUDGET_MS;
-  while (performance.now() < deadline) {
-    const polled = pollInput(descriptor, QUIET_MS);
+//
+// The two calls are passed in so a test can answer them: a tty will not report
+// POLLHUP or POLLNVAL on demand.
+export type DrainPorts = {
+  poll: (timeoutMs: number) => { result: number; revents: number } | undefined;
+  flush: () => void;
+  now?: () => number;
+};
+
+export function drainPending(ports: DrainPorts): void {
+  const now = ports.now ?? (() => performance.now());
+  const deadline = now() + DRAIN_BUDGET_MS;
+  while (now() < deadline) {
+    const polled = ports.poll(QUIET_MS);
     if (polled === undefined) return;
     if (polled.result < 0) continue;
     if (polled.result === 0) return;
     if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return;
     if (!(polled.revents & POLLIN)) return;
-    found.tcflush(descriptor, TCIFLUSH);
+    ports.flush();
   }
+}
+
+function drain(found: Resolved, descriptor: number): void {
+  if (found.poll === undefined) return;
+  drainPending({
+    poll: (timeoutMs) => pollInput(descriptor, timeoutMs),
+    flush: () => found.tcflush(descriptor, TCIFLUSH),
+  });
 }
 
 export function flushPendingInput(descriptor = 0): void {
