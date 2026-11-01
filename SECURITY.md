@@ -2,7 +2,7 @@
 
 Ward is a local-first secret-management CLI. This policy says how to report a
 suspected vulnerability, and what Ward does and does not defend against. The
-bounds below are deliberate parts of the v0.1 design, not gaps left for later;
+bounds below are deliberate bounds of the v0.1 design;
 the full record is the threat model in
 [`docs/adr/0002-p0-threat-model-and-non-guarantees.md`](docs/adr/0002-p0-threat-model-and-non-guarantees.md).
 
@@ -10,8 +10,10 @@ the full record is the threat model in
 
 Please report suspected vulnerabilities privately through GitHub's private
 vulnerability reporting: open this repository's **Security** tab and choose
-**Report a vulnerability**. Do not open a public issue for a suspected
-vulnerability.
+**Report a vulnerability**. If the Security tab offers no such option, private
+reporting is not switched on: open an issue that says only that you have a
+security report, with no details, and ask for a private route. Do not put the
+vulnerability itself in a public issue.
 
 ## What Ward protects against
 
@@ -33,7 +35,8 @@ same authority:
 
 - **Same-user authority.** A compromised OS account, root, a hostile runtime or
   dependency, a debugger, an unlocked keychain, or arbitrary code running as you
-  can reach the vault key and the secrets. `BUN_OPTIONS` and `BUN_BE_BUN` reach
+  can reach the vault key and the secrets, as can a process that reads Ward's
+  memory or a core dump of it. `BUN_OPTIONS` and `BUN_BE_BUN` reach
   the shipped executable with that authority.
 - **Interactive prompts are not authentication.** A TTY check is a
   mistake-reduction, not a consent gate. Anything that can supply a
@@ -56,10 +59,12 @@ same authority:
   project's activity can evict another's, and records carry the observed OS user
   and host plus self-asserted labels, not authenticated actor identity. Audit
   output is operator convenience, not an attestation.
-- **The release is ad-hoc signed and has no publisher identity.** Keychain trust
-  follows each build's cdhash, so expect one keychain approval after each
-  upgrade, and check that the dialog names the binary you installed. Checksums
-  and the cdhash detect a corrupted download, not a compromised release.
+- **The release is ad-hoc signed, not notarized, and has no publisher
+  identity.** Keychain trust follows each build's cdhash, so expect one
+  keychain approval after each upgrade. The dialog should appear right after
+  you ran `~/.local/bin/ward` and name the `opum.ward` item; if it appears when
+  you ran nothing, stop and do not approve. Checksums and the cdhash detect a
+  corrupted download, not a compromised release.
 
 Ward makes no claim of perfect memory zeroization, swap exclusion, forensic
 deletion, rollback resistance, immutable audit logging, FIPS validation,

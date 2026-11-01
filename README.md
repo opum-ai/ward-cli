@@ -13,21 +13,22 @@ Once the repository is public, the release downloads over HTTPS with no GitHub
 account:
 
 ```
-curl -fLO https://github.com/opum-ai/ward-cli/releases/download/v0.1.0/ward-darwin-arm64
-curl -fLO https://github.com/opum-ai/ward-cli/releases/download/v0.1.0/ward-darwin-arm64.sha256
-shasum -a 256 -c ward-darwin-arm64.sha256
-install -m 0755 ward-darwin-arm64 ~/.local/bin/ward
+curl -fLO https://github.com/opum-ai/ward-cli/releases/download/v0.1.1/ward-darwin-arm64
+curl -fLO https://github.com/opum-ai/ward-cli/releases/download/v0.1.1/ward-darwin-arm64.sha256
+shasum -a 256 -c ward-darwin-arm64.sha256 \
+  && codesign --verify --strict ward-darwin-arm64 \
+  && install -m 0755 ward-darwin-arm64 ~/.local/bin/ward
 ```
 
 Until the repository is public, fetch the same two files with
-`gh release download v0.1.0 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'` from an
+`gh release download v0.1.1 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'` from an
 account that can read it.
 
-Verify the checksum before installing anything, and expect one macOS keychain
+The chain stops at the first failed check. Expect one macOS keychain
 re-approval afterwards: the binary is ad-hoc signed, so the trust in the vault
 key follows that signature and a new build is a new identity. The full
-procedure — the cdhash check, checking the keychain dialog names the installed
-binary, the profile re-approval a snapshot bump raises, and how to upgrade — is
+procedure — the cdhash check, what the keychain dialog should look like, the
+profile re-approval a snapshot bump raises, and how to upgrade — is
 [Install and upgrade Ward from a release](docs/runbooks/install-and-upgrade-ward-from-a-release.md).
 
 Prerequisites: macOS on Apple silicon (the only artifact built is
@@ -56,8 +57,9 @@ Its stated limits:
   across the vault with observed user/host and self-asserted labels, not an
   authenticated actor identity. Audit output is operator convenience, not an
   attestation.
-- **The release is ad-hoc signed.** Expect one keychain approval after each
-  upgrade, and check that the dialog names the binary you installed.
+- **The release is ad-hoc signed, not notarized.** Expect one keychain approval
+  after each upgrade; the dialog should appear right after you ran
+  `~/.local/bin/ward`, and if it appears when you ran nothing, stop.
 - **Checksums prove integrity, not authorship.** The documented checks detect a
   corrupted download, not a compromised release.
 
