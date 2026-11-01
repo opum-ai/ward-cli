@@ -499,10 +499,38 @@ test("the install runbook verifies the signature and stops on a failure, not onl
 });
 
 // WCLI-96 (W-9, DEC-255): the public Release notes name no runner, host or
-// kernel. The line that printed them is gone, and so is its env input.
-test("the release notes carry no runner name, host or kernel line", () => {
+// kernel. The notes block is sliced out as the install-URL test does, so a
+// banned word elsewhere in the workflow cannot hide one in the notes.
+function notesBlock(): string {
+  const start = workflow.indexOf("- name: Hash it and write the release notes");
+  expect(start).toBeGreaterThan(-1);
+  const end = workflow.indexOf("- uses:", start);
+  const step = workflow.slice(start, end);
+  const open = step.indexOf("{\n", step.indexOf("run: |"));
+  const close = step.indexOf("} > release-notes.md");
+  expect(open).toBeGreaterThan(-1);
+  expect(close).toBeGreaterThan(open);
+  return step.slice(open, close);
+}
+
+test("the release notes carry no runner, host or kernel word", () => {
+  const notes = notesBlock();
+  expect(notes).toContain("- Source:");
+  for (const banned of [
+    "RUNNER_",
+    "runner.name",
+    "hostname",
+    "HOSTNAME",
+    "uname",
+  ])
+    expect(notes).not.toContain(banned);
   expect(workflow).not.toContain("RUNNER_HOST");
-  expect(workflow).not.toContain("runner.name");
-  expect(workflow).not.toContain("uname");
-  expect(workflow).not.toContain("Built on runner");
+});
+
+test("the notes carry the sha256 and cdhash lines the regeneration script rewrites", () => {
+  const notes = notesBlock();
+  expect(notes).toContain('echo "- sha256 ward-darwin-arm64: ${sha256}"');
+  expect(notes).toContain(
+    'echo "- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}"',
+  );
 });
