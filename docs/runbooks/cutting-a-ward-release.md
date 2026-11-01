@@ -77,10 +77,14 @@ that named a release-time obligation.
    to tolerate unknown keys - is the one to revisit here, and it was left aside
    deliberately: on authority records such as bindings and approvals, an
    unknown field would be dropped silently from something that decides access.
-6. **Confirm the release build is the one you will install.** Dispatch the
-   workflow's dry run and compare its hash with a build on your Mac. The dry
-   run builds, hashes and uploads the artifact to the run and creates no
-   Release:
+6. **Confirm the release build is the one you will install.** Until WCLI-123
+   lands, every release takes the Mac route (DEC-255): the runner's asset fails
+   `codesign --verify --strict`, so follow
+   [Publish a Mac-signed Ward release asset](publish-a-mac-signed-ward-release-asset.md)
+   instead of the comparison below. The comparison is kept as the reproducibility
+   measurement it was: dispatch the workflow's dry run and compare its hash with
+   a build on your Mac. The dry run builds, hashes and uploads the artifact to
+   the run and creates no Release:
 
    ```
    git fetch origin
@@ -109,16 +113,12 @@ that named a release-time obligation.
    git switch -
    ```
 
-   The expected result is the same sha256 from both, and that hash is the one
-   the release notes will carry. Three conditions decide the comparison. Keep
-   the fixed `out/ward` output name the workflow uses, because the compiled
-   bytes embed the output name. Build from a real `bun install` in the
-   checkout, because a `node_modules` symlinked out of the tree embeds a
-   different module path and changes the hash. Build the same commit the run
-   built, because two sources agreeing proves nothing about either. Measured 2026-10-26: the dry
-   run on `dev` and a Mac build of the same source agreed byte for byte. A
-   mismatch means the runner's toolchain or the checkout differs, so the
-   release is not reproducible; stop and report it rather than tagging.
+   Expect the same sha256 from both. Keep the fixed `out/ward` output name (the
+   bytes embed it), build from a real `bun install` in the checkout (a symlinked
+   `node_modules` changes the hash), and build the commit the run built.
+   Measured 2026-10-26: a dry run on `dev` and a Mac build agreed byte for byte.
+   A mismatch means the release is not reproducible: stop and report it rather
+   than tagging.
 7. **Record the gate results** where the release's results live - WCLI-15's
    `docs/security-tests.md` maps every gate to a test and a recorded result -
    including this runbook's items, so the next release reads one list.

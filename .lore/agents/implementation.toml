@@ -5,6 +5,7 @@ kind = "specialist"
 max_tokens = 26000
 pinned = ["adr/0001-vault-storage-and-key-custody"]
 sources = [
+  "runbooks/publish-a-mac-signed-ward-release-asset",
   "adr/0003-profile-approval-authority",
   "adr/0004-committed-platform-target",
   "adr/0002-p0-threat-model-and-non-guarantees",
