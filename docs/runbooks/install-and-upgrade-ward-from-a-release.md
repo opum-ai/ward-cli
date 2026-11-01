@@ -63,9 +63,9 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 ### Approve the keychain item, once
 
 7. On a new machine run `ward setup` first. A build that created the vault key
-   (a fresh `ward setup`) reads it back with no prompt; any other build,
-   including a checkout build you are replacing, prompts, and so may an
-   upgrade. The first command that needs the vault key (`ward status` is the
+   (a fresh `ward setup`) reads it back with no prompt; any other build (an
+   upgrade, or a checkout build you are replacing) is expected to prompt, and
+   the interactive dialog is not yet measured. The first command that needs the vault key (`ward status` is the
    cheapest) may raise a macOS keychain dialog. It should appear right after
    you ran `~/.local/bin/ward`; if it appears when you ran nothing, stop and do
    not approve it. The exact dialog text is not yet recorded from a released
