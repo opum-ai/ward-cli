@@ -62,8 +62,8 @@ same authority:
 - **The release is ad-hoc signed, not notarized, and has no publisher
   identity.** Keychain trust follows each build's cdhash, so expect one
   keychain approval after each upgrade. The dialog should appear right after
-  you ran `~/.local/bin/ward` and name the `opum.ward` item; if it appears when
-  you ran nothing, stop and do not approve. Checksums and the cdhash detect a
+  you ran `~/.local/bin/ward`; if it appears when you ran nothing, stop and do
+  not approve. Checksums and the cdhash detect a
   corrupted download, not a compromised release.
 
 Ward makes no claim of perfect memory zeroization, swap exclusion, forensic

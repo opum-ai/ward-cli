@@ -28,20 +28,19 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 
 - macOS on Apple silicon. The only artifact built is `darwin-arm64`; there is no
   Intel or Linux build.
-- A way to download from GitHub: HTTPS with no account once public, or the
-  GitHub CLI signed in while it is private.
+- A way to download from GitHub: HTTPS with no account, or the GitHub CLI
+  signed in to an account that can read the repository.
 - `~/.local/bin` on `PATH`.
-- Your developer vault is yours: no step here opens, rewrites or deletes
-  `~/.ward`.
+- Your developer vault is yours: no install, upgrade or rollback step opens,
+  rewrites or deletes `~/.ward`.
 
 ## Steps
 
 ### First install
 
-1. Download the artifact and its checksum into an empty directory; no account
-   is needed once public:
+1. Download the artifact and its checksum into an empty directory:
    `curl -fLO https://github.com/opum-ai/ward-cli/releases/download/v0.1.1/ward-darwin-arm64`
-   and the same URL with `.sha256` appended. Until then:
+   and the same URL with `.sha256` appended. Or with the GitHub CLI:
    `gh release download v0.1.1 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'`.
 2. Verify the checksum: `shasum -a 256 -c ward-darwin-arm64.sha256`. Stop on any
    mismatch; do not run the file.
@@ -57,18 +56,21 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
    install; the checkout's `dist/ward` is left as it was.
 5. Check the version: `ward --version` prints `0.1.1`.
 6. Install the agent skill (optional). It ships as the `opum-ward` Claude Code
-   plugin. No public marketplace listing exists yet: the skill is
-   `plugin/skills/ward/SKILL.md` in this repository. Use the plugin version
-   that matches `ward --version`; a mismatch is untested.
+   plugin. No public marketplace listing exists yet: read the skill at the same
+   tag as the binary (`plugin/skills/ward/SKILL.md` at v0.1.1). A mismatch with
+   `ward --version` is untested.
 
 ### Approve the keychain item, once
 
-7. On a new machine run `ward setup` first. The first command that needs the
-   vault key (`ward status` is the cheapest) may raise a macOS keychain dialog
-   on an upgrade, not on a first install. It should appear right after you ran
-   `~/.local/bin/ward`; if it appears when you ran nothing, stop and do not
-   approve it. The exact dialog text is not yet recorded from a released build. The approval is bound to this
-   build's cdhash and does not carry over to the next one. Over SSH the dialog cannot appear and the command fails with
+7. On a new machine run `ward setup` first. A build that created the vault key
+   (a fresh `ward setup`) reads it back with no prompt; any other build,
+   including a checkout build you are replacing, prompts, and so may an
+   upgrade. The first command that needs the vault key (`ward status` is the
+   cheapest) may raise a macOS keychain dialog. It should appear right after
+   you ran `~/.local/bin/ward`; if it appears when you ran nothing, stop and do
+   not approve it. The exact dialog text is not yet recorded from a released
+   build. The approval is bound to this build's cdhash and does not carry over
+   to the next one. Over SSH the dialog cannot appear and the command fails with
    `vault_key_unavailable`: approve it once at the Mac itself.
 
 ### Re-approve profiles
@@ -114,10 +116,8 @@ step 3.
 The vault itself is unchanged by an install, upgrade or rollback.
 
 A rollback is only as safe as the older build's ability to read what the newer
-one wrote. A pre-release build refuses the whole vault once it holds an
-approval written by 0.1.0 or later (`vault_format_unsupported`: it predates the
-versioned approval record). There is no migration back: reinstall the release
-that wrote the approvals, or revoke them before downgrading.
+one wrote. There is no migration back: reinstall the newest release, or revoke
+the approvals before downgrading.
 
 If a download fails its checksum, nothing was installed; retry the download,
 and report a repeat failure rather than installing the file.
