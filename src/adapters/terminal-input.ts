@@ -14,8 +14,9 @@
 // is drained: wait until the terminal has been quiet for a short interval,
 // flushing whatever shows up, then flush once more. The adapters call it on
 // every exit path before restoring echo. It narrows the residue window to a
-// paste that stalls for longer than the quiet interval; it does not make a
-// paste harmless.
+// paste that stalls for longer than the quiet interval (iTerm2's Paste Slowly,
+// mosh, ssh over a lossy link) or that is still streaming past the 1.5 s cap;
+// it does not make a paste harmless.
 //
 // The selector is not the same number on every platform: Darwin (BSD) numbers
 // TCIFLUSH 1, and Linux numbers it 0. POLLIN is 1 on both. The ship target is
@@ -25,25 +26,37 @@
 // has already succeeded or refused on its own terms, and a descriptor that is
 // not a terminal has no queue a shell could later read. A discard that cannot
 // run at all (no libc to load it from) is not silent: it says so once on
-// stderr, because a silent no-op is indistinguishable from a working flush.
+// stderr, because a silent no-op is indistinguishable from a working flush. The
+// same line is printed when the flush resolves without poll.
 import { dlopen } from "bun:ffi";
 import { writeSync } from "node:fs";
 import { isatty } from "node:tty";
 
 type Tcflush = (descriptor: number, selector: number) => number;
-type Poll = (fds: Int32Array, count: number, timeoutMs: number) => number;
+type Poll = (
+  fds: Int32Array,
+  count: number | bigint,
+  timeoutMs: number,
+) => number;
 
 // <termios.h>: TCIFLUSH, the selector for the terminal's input queue.
 const TCIFLUSH = process.platform === "darwin" ? 1 : 0;
 
-// <poll.h>: POLLIN.
-const POLLIN = 1;
+// <poll.h>: the event bit and the three revents that mean the descriptor is not
+// simply readable. The values are the same on darwin and Linux.
+const POLLIN = 0x1;
+const POLLERR = 0x8;
+const POLLHUP = 0x10;
+const POLLNVAL = 0x20;
 
 // How long the terminal must stay silent before the drain believes the paste
 // is over, and the most it will wait in total so a terminal that never goes
 // quiet cannot hold the command.
 const QUIET_MS = 30;
 const DRAIN_BUDGET_MS = 1_500;
+
+// nfds_t is unsigned int on darwin and unsigned long on glibc.
+const NFDS_TYPE = process.platform === "darwin" ? "u32" : "u64";
 
 // The C library to load from. glibc exposes libc.so.6; musl's is normally
 // reachable as libc.so. Tried in order, and the first that resolves wins.
@@ -66,7 +79,7 @@ function resolve(): Resolved | undefined {
     try {
       const symbols = dlopen(library, {
         tcflush: { args: ["int", "int"], returns: "int" },
-        poll: { args: ["ptr", "u32", "int"], returns: "int" },
+        poll: { args: ["ptr", NFDS_TYPE, "int"], returns: "int" },
       }).symbols as { tcflush?: Tcflush; poll?: Poll };
       if (symbols.tcflush !== undefined) {
         resolved = { tcflush: symbols.tcflush, poll: symbols.poll };
@@ -102,15 +115,38 @@ function warnOnce(): void {
   }
 }
 
-// Wait for the terminal to go quiet, flushing whatever arrives meanwhile.
+// One poll of a descriptor for input, through the same binding the drain uses.
+// result is poll's return (negative on error) and revents is what the kernel
+// reported for the descriptor. A behavioural CI probe calls this on a pipe.
+export function pollInput(
+  descriptor: number,
+  timeoutMs: number,
+): { result: number; revents: number } | undefined {
+  const found = resolve();
+  if (found?.poll === undefined) return undefined;
+  // struct pollfd { int fd; short events; short revents; }, little endian on
+  // both targets: events is the low half of the second word and revents the
+  // high half, which the kernel overwrites, so events is set again each call.
+  const fds = new Int32Array([descriptor, POLLIN]);
+  const count = NFDS_TYPE === "u64" ? 1n : 1;
+  const result = found.poll(fds, count, timeoutMs);
+  return { result, revents: ((fds[1] as number) >>> 16) & 0xffff };
+}
+
+// Wait for the terminal to go quiet, flushing whatever arrives meanwhile. It
+// stops when poll reports quiet, when the descriptor is in error or hung up, or
+// at the deadline; a poll that fails (EINTR, say) is simply tried again within
+// the deadline.
 function drain(found: Resolved, descriptor: number): void {
   if (found.poll === undefined) return;
-  // struct pollfd { int fd; short events; short revents; }, little endian on
-  // both targets: events is the low half of the second word.
-  const fds = new Int32Array([descriptor, POLLIN]);
-  const deadline = Date.now() + DRAIN_BUDGET_MS;
-  while (Date.now() < deadline) {
-    if (found.poll(fds, 1, QUIET_MS) <= 0) return;
+  const deadline = performance.now() + DRAIN_BUDGET_MS;
+  while (performance.now() < deadline) {
+    const polled = pollInput(descriptor, QUIET_MS);
+    if (polled === undefined) return;
+    if (polled.result < 0) continue;
+    if (polled.result === 0) return;
+    if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return;
+    if (!(polled.revents & POLLIN)) return;
     found.tcflush(descriptor, TCIFLUSH);
   }
 }
@@ -122,6 +158,9 @@ export function flushPendingInput(descriptor = 0): void {
     warnOnce();
     return;
   }
+  // A flush with no drain leaks a paste past the tty queue (measured), so the
+  // missing drain is said once, like a missing libc.
+  if (found.poll === undefined) warnOnce();
   try {
     found.tcflush(descriptor, TCIFLUSH);
     drain(found, descriptor);

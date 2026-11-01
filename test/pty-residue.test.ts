@@ -4,8 +4,9 @@
 // A hidden read ends on the newline that terminates the value. Any bytes a
 // paste carried after it stay in the terminal's input queue, and when Ward
 // restores echo and exits the shell reads them as its own input — and can run
-// them. The adapters now call tcflush(TCIFLUSH) on every exit path; these
-// cases prove it on a real pty rather than over the descriptor seam.
+// them. The adapters drain until the terminal is quiet and call tcflush(TCIFLUSH)
+// on every exit path; these cases prove it on a real pty rather than over the
+// descriptor seam.
 //
 // The harness runs the probe under `script(1)`, so the probe's stdin really is
 // a terminal. After the probe exits, the shell running it (`sh`) performs the
