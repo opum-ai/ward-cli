@@ -10,9 +10,9 @@
 // Echo is suppressed by putting the terminal into raw mode for the read and
 // restoring it afterwards, including on every failure path: the terminal's
 // line discipline is what echoes, so with it off no typed byte is displayed.
-// Before echo comes back the terminal's pending input is discarded, so the
-// bytes a paste carries past the newline the read stops on cannot reach the
-// shell that runs next. Nothing is printed in place of what is typed, not
+// Before echo comes back the terminal's pending input is discarded (drained
+// until quiet, then flushed), so the bytes a paste carries past the newline the
+// read stops on are very unlikely to reach the shell that runs next. Nothing is printed in place of what is typed, not
 // even one mask character per byte, because a mask discloses the
 // passphrase's length. Backspace (0x7f and 0x08) removes the last byte;
 // Enter ends the reading; Ctrl-C and Ctrl-D end it too, leaving whatever was

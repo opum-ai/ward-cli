@@ -5,7 +5,8 @@
 // `process.stdin.isTTY` must be true, echo is suppressed by raw mode for the
 // read and restored on every path, the terminal's pending input is discarded
 // before echo comes back (a paste carries bytes past the newline the read
-// stops on, and they would otherwise reach the shell), and nothing is printed
+// stops on, and they would otherwise reach the shell; this narrows that
+// window, it does not close it), and nothing is printed
 // in place of the bytes — not even a mask, because a mask discloses the
 // value's length.
 // --stdin is the explicit automation path: exact bytes through EOF, and it

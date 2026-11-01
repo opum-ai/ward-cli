@@ -46,7 +46,12 @@ function scenario(
 // only once the probe is done, so a leftover byte can only be one the flush
 // failed to discard.
 async function runScenario(mode: string, paste: string): Promise<string> {
-  const inner = `bun run ${JSON.stringify(probe)} ${mode}; read line; printf 'RESULT:%s\\n' "$line"`;
+  // PTY_PROBE_BINARY names a `bun build --compile` of the probe, so the same
+  // cases can run against compiled code (WCLI-97 AC4); the default is the source.
+  const command = process.env.PTY_PROBE_BINARY
+    ? JSON.stringify(process.env.PTY_PROBE_BINARY)
+    : `bun run ${JSON.stringify(probe)}`;
+  const inner = `${command} ${mode}; read line; printf 'RESULT:%s\\n' "$line"`;
   // `cat` is load-bearing: Bun's stdio pipe is a socket on macOS, and
   // script(1) refuses a socket on its stdin while it accepts the shell pipe
   // cat's stdout creates.
@@ -169,6 +174,56 @@ scenario(
     const paste = `${"a".repeat(1025)}\nLEAK-ONE\nLEAK-TWO\n`;
     const output = await runScenario("passphrase", paste);
     expectNothingReachedTheShell(output, "REFUSED:backup_passphrase_too_large");
+  },
+  20_000,
+);
+
+// A paste larger than the tty input queue: a pty applies flow control to the
+// master's writes once the slave's queue nears its high-water mark, so part of
+// a long paste (a multi-line PEM key is 1.6 to 3.2 KB) can still be in the
+// writer's buffer when the read returns on the first newline. A single
+// tcflush would then unblock the writer and the tail would land after it.
+const LONG_TAIL = Array.from(
+  { length: 800 },
+  (_, index) => `LEAK-${index}`,
+).join("\n");
+
+function expectNoTailReachedAnything(output: string): void {
+  expect(output).toContain("PROBE-DONE");
+  expect(output).toContain("RESULT:AFTER");
+  expect(output).not.toContain("RESULT:LEAK");
+  expect(output).not.toContain("LEAK-");
+}
+
+scenario(
+  "a paste with a tail past the tty queue leaves nothing for the shell (secret)",
+  async () => {
+    const output = await runScenario("secret", `s3cret\n${LONG_TAIL}\n`);
+    expect(output).toContain("LEN:6");
+    expectNoTailReachedAnything(output);
+  },
+  20_000,
+);
+
+scenario(
+  "a paste with a tail past the tty queue leaves nothing for the shell (passphrase)",
+  async () => {
+    const output = await runScenario("passphrase", `pass\n${LONG_TAIL}\n`);
+    expect(output).toContain("LEN:4");
+    expectNoTailReachedAnything(output);
+  },
+  20_000,
+);
+
+scenario(
+  "a refused bound passphrase with a tail past the tty queue leaves nothing",
+  async () => {
+    const output = await runScenario(
+      "passphrase",
+      `${"a".repeat(1025)}\n${LONG_TAIL}\n`,
+    );
+    expect(output).toContain("REFUSED:backup_passphrase_too_large");
+    expectNoTailReachedAnything(output);
   },
   20_000,
 );
