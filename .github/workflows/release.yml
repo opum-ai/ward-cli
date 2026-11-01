@@ -1,11 +1,13 @@
 # Builds the macOS artifact and attaches it to a GitHub Release (WCLI-82,
 # DEC-246).
 #
-# The release is a pushed v* tag. The build runs on the self-hosted Linux ARM64
-# runner and cross-compiles for darwin-arm64: measured on 2026-10-26, the
-# runner's bytes equal a Mac's for the same source and output name, and the
-# compiled bytes depend on the output file name, so the executable is always
-# built under the fixed name `ward` and only then renamed for the release.
+# The release is a pushed v* tag. The build runs on a GitHub-hosted Linux ARM64
+# runner (WCLI-99, ruling W-34 A) and cross-compiles for darwin-arm64. The
+# 2026-10-26 measurement that the build's bytes equal a Mac's for the same
+# source and output name was taken on the former self-hosted Linux ARM64 host;
+# cross-host byte parity is not re-measured here. The compiled bytes depend on
+# the output file name, so the executable is always built under the fixed name
+# `ward` and only then renamed for the release.
 #
 # workflow_dispatch is a dry run: it builds, hashes and uploads the artifact to
 # the run, and creates no Release. The Release is created by one job, the only
@@ -35,7 +37,7 @@ permissions:
 jobs:
   build:
     name: Build darwin-arm64
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       # Full history, so a tag push can be checked against main below. The
@@ -213,7 +215,7 @@ jobs:
     name: Create the GitHub Release
     needs: [build, verify]
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # The only write permission in this workflow: it creates the Release.
     permissions:

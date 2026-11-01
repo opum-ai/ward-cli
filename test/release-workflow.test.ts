@@ -497,3 +497,40 @@ test("the install runbook verifies the signature and stops on a failure, not onl
     runbook.indexOf("codesign -dvvv"),
   );
 });
+
+// WCLI-99 (ruling W-34 A): build and release moved to the same GitHub-hosted
+// Linux ARM64 runner as CI, because the organisation's self-hosted groups
+// refuse public repositories. verify keeps its WCLI-120 visibility-keyed runner
+// and is the only place a self-hosted label may appear in either workflow.
+function runsOnOf(name: string): string {
+  const line = /^ {4}runs-on: (.+)$/m.exec(jobText(name));
+  expect(line).not.toBeNull();
+  return (line?.[1] ?? "").trim();
+}
+
+test("build and release run on the hosted Linux ARM64 runner", () => {
+  for (const job of ["build", "release"])
+    expect(runsOnOf(job)).toBe("ubuntu-24.04-arm");
+});
+
+test("no job names a self-hosted label except verify's own keyed expression", () => {
+  const runsOns = [...workflow.matchAll(/^ {4}runs-on: (.+)$/gm)].map((m) =>
+    (m[1] ?? "").trim(),
+  );
+  expect(runsOns).toHaveLength(3);
+  const selfHosted = runsOns.filter((r) => r.includes("self-hosted"));
+  expect(selfHosted).toHaveLength(1);
+  // The one occurrence is verify's, and only through the visibility-keyed
+  // expression: an unconditional self-hosted label is what WCLI-99 removes.
+  expect(selfHosted[0]).toBe(runsOnOf("verify"));
+  expect(selfHosted[0]).toContain("github.event.repository.private == true");
+});
+
+test("the release workflow job names are unchanged", () => {
+  const names = [...workflow.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1]);
+  expect(names).toEqual([
+    "Build darwin-arm64",
+    "Verify the code signature on macOS",
+    "Create the GitHub Release",
+  ]);
+});
