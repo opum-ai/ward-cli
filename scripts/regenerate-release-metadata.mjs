@@ -23,6 +23,11 @@ const [asset, notesIn, outDir] = process.argv.slice(2);
 if (asset === undefined || notesIn === undefined || outDir === undefined)
   fail("usage: regenerate-release-metadata.mjs <asset> <notes-in> <out-dir>");
 
+// The notes regex and install step 2 both name this exact file, so a renamed
+// signed file would write a checksum that cannot be checked against the asset.
+if (basename(asset) !== "ward-darwin-arm64")
+  fail("the asset must be named ward-darwin-arm64");
+
 const sha256 = createHash("sha256").update(readFileSync(asset)).digest("hex");
 const here = dirname(fileURLToPath(import.meta.url));
 const cdhash = spawnSync("node", [join(here, "macho-cdhash.mjs"), asset], {

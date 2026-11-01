@@ -1,7 +1,13 @@
 // WCLI-96 (DEC-255): the notes' sha256 and cdhash lines and the checksum file
 // are regenerated from the Mac-signed asset. Synthetic bytes only.
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
@@ -95,3 +101,95 @@ test.skipIf(process.platform !== "darwin")(
     expect(r.stdout).toContain(`sha256 ${sha}`);
   },
 );
+
+// WCLI-96 (DEC-255): the cdhash the notes publish must be the one codesign
+// reports on the Mac-re-signed bytes, because install step 3 compares them.
+test.skipIf(process.platform !== "darwin")(
+  "the cdhash written for a Mac re-signed copy is the one codesign reports",
+  () => {
+    const entry = join(dir, "resign.ts");
+    const built = join(dir, "resign-built");
+    const asset = join(dir, "resign", "ward-darwin-arm64");
+    mkdirSync(join(dir, "resign"));
+    writeFileSync(entry, "console.log('resign');\n");
+    expect(
+      spawnSync("bun", ["build", "--compile", entry, "--outfile", built])
+        .status,
+    ).toBe(0);
+    copyFileSync(built, asset);
+    expect(spawnSync("codesign", ["-s", "-", "--force", asset]).status).toBe(0);
+    expect(spawnSync("codesign", ["--verify", "--strict", asset]).status).toBe(
+      0,
+    );
+    const signature = spawnSync("codesign", ["-dvvv", asset], {
+      encoding: "utf8",
+    });
+    const reported = /^CDHash=([0-9a-f]{40})$/m.exec(
+      `${signature.stdout}${signature.stderr}`,
+    )?.[1];
+    expect(reported).toBeDefined();
+    const notesIn = join(dir, "resign-notes.md");
+    writeFileSync(notesIn, notes);
+    const r = spawnSync(
+      "node",
+      [
+        join(root, "scripts", "regenerate-release-metadata.mjs"),
+        asset,
+        notesIn,
+        join(dir, "resign"),
+      ],
+      { encoding: "utf8" },
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(`cdhash ${reported}`);
+    expect(
+      readFileSync(join(dir, "resign", "release-notes.md"), "utf8"),
+    ).toContain(
+      `- cdhash (ad-hoc signature, macOS keychain trust follows it): ${reported}`,
+    );
+  },
+);
+
+test("an asset that is not a Mach-O executable exits 1 and writes nothing", () => {
+  const out = join(dir, "notmacho");
+  mkdirSync(out);
+  const asset = join(out, "ward-darwin-arm64");
+  writeFileSync(asset, "not an executable\n");
+  const notesIn = join(dir, "notmacho-notes.md");
+  writeFileSync(notesIn, notes);
+  const r = spawnSync(
+    "node",
+    [
+      join(root, "scripts", "regenerate-release-metadata.mjs"),
+      asset,
+      notesIn,
+      out,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(r.status).toBe(1);
+  expect(existsSync(join(out, "release-notes.md"))).toBe(false);
+  expect(existsSync(join(out, "ward-darwin-arm64.sha256"))).toBe(false);
+});
+
+test("an asset under another name is refused before anything is written", () => {
+  const out = join(dir, "renamed");
+  mkdirSync(out);
+  const asset = join(out, "ward");
+  writeFileSync(asset, "bytes\n");
+  const notesIn = join(dir, "renamed-notes.md");
+  writeFileSync(notesIn, notes);
+  const r = spawnSync(
+    "node",
+    [
+      join(root, "scripts", "regenerate-release-metadata.mjs"),
+      asset,
+      notesIn,
+      out,
+    ],
+    { encoding: "utf8" },
+  );
+  expect(r.status).toBe(1);
+  expect(r.stderr).toContain("must be named ward-darwin-arm64");
+  expect(existsSync(join(out, "release-notes.md"))).toBe(false);
+});

@@ -25,8 +25,11 @@ supersedes the cutting runbook's runner-vs-Mac byte comparison.
 
 - The tag's workflow run has published its Release, and `gh` is signed in as
   the operator.
-- The signed file `ward-darwin-arm64`, built on the Mac from the tagged commit
-  and ad-hoc signed with `codesign -s - --force`.
+- The signed file `ward-darwin-arm64`, built from a detached checkout of the
+  tag's commit as the cutting runbook's step 6 builds (`bun install
+  --frozen-lockfile --os=darwin --cpu=arm64`, `bun scripts/build.ts --target
+  bun-darwin-arm64 --outfile out/ward`), copied to `ward-darwin-arm64` and
+  signed with `codesign -s - --force`.
 
 ## Steps
 
@@ -42,11 +45,21 @@ TAG is the release tag and DIR an empty scratch directory.
 4. Replace the asset and checksum: `gh release upload TAG ward-darwin-arm64
    DIR/ward-darwin-arm64.sha256 --clobber`, then `gh release edit TAG
    --notes-file DIR/release-notes.md`.
-5. Re-download the published asset into an empty directory. Require
-   `codesign --verify --strict` to pass on it, its sha256 to equal the LOCAL
-   signed file's, and its cdhash to equal the notes'.
+5. Verify what is PUBLISHED, not what you wrote: `scripts/verify-published-release.sh
+   TAG ward-darwin-arm64`. It re-reads the published notes body, downloads the
+   asset and checksum into a new empty directory, and stops on the first
+   mismatch: `shasum -a 256 -c`, `codesign --verify --strict`, the downloaded
+   sha256 against both the LOCAL signed file and the published notes line, and
+   `codesign -dvvv` CDHash against the published notes line. It exits non-zero
+   on any failure and prints PASS only when every comparison holds.
+
+**Do not flip the repository to public, and do not tag again, until step 5
+prints PASS.**
 
 ## Rollback
 
-A step that fails leaves the Release as the tag run published it. Fix the cause
-and rerun from step 1; `--clobber` makes steps 4 and 5 repeatable.
+Steps 1 to 3 change nothing on GitHub. A failure between the upload and the
+edit in step 4 leaves the new asset with the old notes; a failure in step 5
+leaves both published and names the comparison that failed. Fix the cause and
+rerun from step 1: `--clobber` and `gh release edit` converge on the signed
+file's bytes.

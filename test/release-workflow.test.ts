@@ -527,10 +527,52 @@ test("the release notes carry no runner, host or kernel word", () => {
   expect(workflow).not.toContain("RUNNER_HOST");
 });
 
+test("the release notes expand only an allowlisted set of variables and run no command", () => {
+  // An allowlist closes the class: a runner, host or kernel value can reach the
+  // notes only through an expansion or a command, and neither is allowed
+  // beyond these names.
+  const notes = notesBlock();
+  const expanded = [...notes.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)].map(
+    (m) => m[1],
+  );
+  expect([...new Set(expanded)].sort()).toEqual(
+    [
+      "REF_NAME",
+      "REPO",
+      "SOURCE_SHA",
+      "cdhash",
+      "sha256",
+      "snapshot_bump",
+    ].sort(),
+  );
+  expect(notes).not.toContain("$(");
+  expect(notes).not.toContain("`");
+  expect(notes).not.toContain("${{");
+});
+
 test("the notes carry the sha256 and cdhash lines the regeneration script rewrites", () => {
   const notes = notesBlock();
   expect(notes).toContain('echo "- sha256 ward-darwin-arm64: ${sha256}"');
   expect(notes).toContain(
     'echo "- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}"',
   );
+});
+
+// WCLI-96 (DEC-255): step 5 of the publish runbook is the script, not prose,
+// and the flip waits for it.
+test("the publish runbook's verification step runs the fail-closed script", () => {
+  const runbook = readFileSync(
+    join(
+      import.meta.dir,
+      "..",
+      "docs",
+      "runbooks",
+      "publish-a-mac-signed-ward-release-asset.md",
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  expect(runbook).toContain(
+    "scripts/verify-published-release.sh TAG ward-darwin-arm64",
+  );
+  expect(runbook).toContain("until step 5 prints PASS");
 });

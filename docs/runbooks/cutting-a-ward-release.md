@@ -77,12 +77,14 @@ that named a release-time obligation.
    to tolerate unknown keys - is the one to revisit here, and it was left aside
    deliberately: on authority records such as bindings and approvals, an
    unknown field would be dropped silently from something that decides access.
-6. **Confirm the release build is the one you will install.** For a release
-   whose asset is built and re-signed on a Mac (DEC-255) follow
+6. **Confirm the release build is the one you will install.** Until WCLI-123
+   lands, every release takes the Mac route (DEC-255): the runner's asset fails
+   `codesign --verify --strict`, so follow
    [Publish a Mac-signed Ward release asset](publish-a-mac-signed-ward-release-asset.md)
-   instead of this comparison. Otherwise dispatch the workflow's dry run and
-   compare its hash with a build on your Mac. The dry run builds, hashes and
-   uploads the artifact to the run and creates no Release:
+   instead of the comparison below. The comparison is kept as the reproducibility
+   measurement it was: dispatch the workflow's dry run and compare its hash with
+   a build on your Mac. The dry run builds, hashes and uploads the artifact to
+   the run and creates no Release:
 
    ```
    git fetch origin
