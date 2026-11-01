@@ -125,24 +125,24 @@ that named a release-time obligation.
 
 ## Rollback
 
-Nothing here touches a developer's machine or an existing vault: a release
-that fails a gate is held back and re-cut, and no step above is destructive.
+Nothing here touches a developer's machine or vault: a release that fails a
+gate is held back and re-cut; no step is destructive.
 
-One case deserves its own sentence because it is not visible until later: a
-release that shipped with `profileSnapshotVersion` unbumped cannot be repaired
-by a second bump in the next release. Fix it forward - treat the next release
-as the bump that should have happened, say so in its notes, and never edit a
-stored snapshot to fit.
+One case is not visible until later: a release that shipped with
+`profileSnapshotVersion` unbumped cannot be repaired by a second bump in the
+next release. Fix it forward - treat the next release as the bump that should
+have happened, say so in its notes, and never edit a stored snapshot to fit.
 
 Never re-run a pre-flip run: it keeps its `private: true` payload, skipping the
-hosted check. After the flip, tag anew, matching `package.json` at main.
+hosted check. After the flip, tag anew with a new version: the build job
+requires the tag to equal `package.json`'s version and main's tip. Never delete
+and re-push a tag.
 
 A publish step that fails after the Release was created as a draft leaves an
 orphan draft on the tag. Delete it before rerunning -
 `gh release delete <tag> --yes`, without `--cleanup-tag`, which would delete
 the tag the Release belongs to. What a rerun does with the orphan still there
-is deliberately not asserted here: GitHub may allow a second draft on the same
-tag, in which case the rerun succeeds and the orphan stays behind for whoever
-finds it later. The draft-then-publish order is deliberate: it
-is what keeps a failed upload from leaving a public Release with missing
-files.
+is deliberately not asserted: GitHub may allow a second draft on the same tag,
+in which case the rerun succeeds and the orphan stays behind. The
+draft-then-publish order is deliberate: it keeps a failed upload from leaving
+a public Release with missing files.

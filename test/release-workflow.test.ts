@@ -18,14 +18,39 @@ const workflow = readFileSync(
 );
 const dir = createTempRoot("ward-release-");
 
+// A step's `uses` is read from parsed YAML, not from a line pattern: flow style
+// (`- {uses: x@main}`), a quoted `"uses":`, extra spaces after the colon and a
+// value on the next line all spell the same property, and a text match sees
+// none of them. The presence check is deliberate, so a runtime without the API
+// fails loudly instead of falling back to a text match that would pass.
+function parseWorkflow(): {
+  jobs: Record<string, { steps?: { uses?: unknown }[] }>;
+} {
+  const yaml = Bun.YAML as unknown as
+    | { parse?: (input: string) => unknown }
+    | undefined;
+  if (typeof yaml?.parse !== "function")
+    throw new Error(
+      "Bun.YAML.parse is required (Bun >= 1.3.14); refusing to fall back to a text match",
+    );
+  return yaml.parse(workflow) as {
+    jobs: Record<string, { steps?: { uses?: unknown }[] }>;
+  };
+}
+
 test("every action is pinned to a full commit SHA", () => {
-  // A `uses:` key at any indent and in any list form: a bare-dash step puts it
-  // on the next line, where `- uses:` would miss it.
-  const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map(
-    (m) => m[1],
+  // Every job's every step, whatever spelling the key uses.
+  const steps = Object.values(parseWorkflow().jobs).flatMap(
+    (job) => job.steps ?? [],
   );
-  expect(uses.length).toBe(6);
-  for (const use of uses) expect(use).toMatch(/@[0-9a-f]{40}$/);
+  // Positive control: a parse that read nothing must fail here, not pass.
+  expect(steps.length).toBeGreaterThan(0);
+  const withUses = steps.filter((step) => "uses" in step);
+  expect(withUses).toHaveLength(6);
+  for (const step of withUses) {
+    expect(typeof step.uses).toBe("string");
+    expect(step.uses as string).toMatch(/@[0-9a-f]{40}$/);
+  }
 });
 
 test("the checkout does not persist its credential", () => {
@@ -392,24 +417,32 @@ test("a repository payload without its visibility fails closed to the verifying 
 test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
   const steps = verifySteps();
   expect(steps).toHaveLength(3);
+  // Each step is one full shape anchored at both ends, so a key inserted
+  // between its own lines (a `shell:` between the name and the if, say) is red,
+  // and so is a tab after the dash that merges it into a neighbour.
   expect(steps[0]).toMatch(
-    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n/,
+    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n {8}if: github\.event\.repository\.private == true\n {8}run: \|\n {10}echo "::notice::codesign --verify --strict is skipped here[^\n]*\n*$/,
   );
-  expect(steps[0]).toMatch(/\n {8}run: \|\n {10}echo "::notice::/);
-  // Anchored at both ends: nothing may follow the download's own keys.
   expect(steps[1]).toMatch(
     /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64\n {10}path: out\n*$/,
   );
   // The job has exactly one action, whatever its indent or list form.
   expect(jobText("verify").match(/^\s+(?:- )?uses:/gm)).toHaveLength(1);
   expect(steps[2]).toMatch(
-    /^ {6}- name: codesign verifies the signature strictly\n/,
-  );
-  expect(steps[2]).toMatch(
-    /\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
+    /^ {6}- name: codesign verifies the signature strictly\n {8}if: github\.event\.repository\.private != true\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
   );
   // One command per step: nothing re-signs or rewrites the artifact before the check.
   expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
+});
+
+test("neither the verify job nor the workflow top level can override the shell", () => {
+  // A custom `shell:` (a step-level `shell: true {0}`, or a job-level
+  // `defaults: run: shell:`) makes the runner wrap the script in a template, so
+  // the codesign step can pass without running codesign. It adds no step for the
+  // count above to see, so it is banned here by key. Top-level keys are at
+  // column 0; a job's and a step's sit inside the job text.
+  expect(workflow).not.toMatch(/^(?:shell|defaults):/m);
+  expect(jobText("verify")).not.toMatch(/^\s+(?:- )?(?:shell|defaults):/m);
 });
 
 test("a repository payload with no repository object at all takes the verifying path", () => {
