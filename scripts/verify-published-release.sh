@@ -33,7 +33,7 @@ local_file="$2"
 
 repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)" ||
   die "could not resolve the repository (set GH_REPO=owner/name)"
-body="$(gh release view "$tag" --json body -q .body)" ||
+body="$(gh release view "$tag" -R "$repo" --json body -q .body)" ||
   die "could not read the published notes for $tag"
 [ -n "$body" ] || die "the published notes for $tag are empty"
 
@@ -50,7 +50,7 @@ body_cdhash="$(printf '%s\n' "$body" | grep -E "$cdhash_pattern" | sed 's/^.*: /
 
 dir="$(mktemp -d)"
 [ -z "$(ls -A "$dir")" ] || die "scratch directory is not empty: $dir"
-gh release download "$tag" -p 'ward-darwin-arm64*' -D "$dir" ||
+gh release download "$tag" -R "$repo" -p 'ward-darwin-arm64*' -D "$dir" ||
   die "could not download the published assets for $tag"
 [ -f "$dir/ward-darwin-arm64" ] || die "the Release has no ward-darwin-arm64 asset"
 [ -f "$dir/ward-darwin-arm64.sha256" ] ||

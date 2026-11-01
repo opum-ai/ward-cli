@@ -17,8 +17,8 @@ generated:
 
 The tag push publishes a Linux-built darwin asset that fails `codesign --verify
 --strict`. For 0.1.1 the operator replaces it with a Mac-signed one (DEC-255).
-The notes' sha256 and cdhash and the checksum file must then name the signed
-bytes, or install step 3 refuses. This supersedes the cutting runbook's
+The notes' sha256 and cdhash and the checksum must then name the signed bytes,
+or install step 3 refuses. This supersedes the cutting runbook's
 runner-vs-Mac byte comparison.
 
 ## Prerequisites
@@ -50,17 +50,17 @@ TAG is the release tag and DIR an empty scratch directory.
    --verify --strict`, the sha256 against the LOCAL file and the notes line, and
    `codesign -dvvv` CDHash against the notes line. PASS only if all hold.
 
-6. Mark v0.1.0 superseded (it is not republished): save its notes with `gh
-   release view v0.1.0 --json body -q .body > old.md`, append "Superseded by
-   v0.1.1: install that release.", then `gh release edit v0.1.0 --notes-file
-   old.md`.
+6. Mark v0.1.0 superseded (not republished): `gh release view v0.1.0 --json
+   body -q .body > old.md`. If `grep -qxF 'Superseded by v0.1.1: install that
+   release.' old.md` fails, append that line. Then `gh release edit v0.1.0
+   --notes-file old.md --latest=false`.
 
 **Do not flip the repository to public, and do not tag again, until step 5
 prints PASS and step 6 is done.**
 
 ## Rollback
 
-Steps 1 to 3 change nothing on GitHub. A failure in step 4 can leave the new
-asset with the old notes, or no asset or checksum; a failure in step 5 leaves
-both published and names the comparison. Fix the cause and rerun from step 1:
+Steps 1 to 3 change nothing on GitHub. A step 4 failure can leave the new
+asset with the old notes, or no asset or checksum; a step 5 failure leaves both
+published and names the comparison. Fix the cause and rerun from step 1:
 `--clobber` and `gh release edit` converge on the signed file's bytes.

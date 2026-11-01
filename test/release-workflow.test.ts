@@ -705,7 +705,13 @@ test("the publish runbook's verification step runs the fail-closed script", () =
   expect(runbook).toContain(
     "scripts/verify-published-release.sh TAG ward-darwin-arm64",
   );
-  expect(runbook).toContain("until step 5 prints PASS");
+  expect(runbook).toContain("until step 5 prints PASS and step 6 is done");
+  // Step 6 may be run twice: it appends its line only when it is absent, and it
+  // must not make the superseded release the Latest one.
+  expect(runbook).toContain(
+    "grep -qxF 'Superseded by v0.1.1: install that release.' old.md",
+  );
+  expect(runbook).toContain("--notes-file old.md --latest=false");
 });
 
 // WCLI-99 (ruling W-34 A): build and release moved to the same GitHub-hosted

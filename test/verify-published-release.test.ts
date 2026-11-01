@@ -29,8 +29,8 @@ writeFileSync(
   `#!/bin/sh
 case "$*" in
   "repo view --json nameWithOwner -q .nameWithOwner") echo "opum-ai/ward-cli"; exit 0 ;;
-  "release view v0.1.1 --json body -q .body") cat "$FAKE_BODY"; exit "\${FAKE_VIEW_EXIT:-0}" ;;
-  "release download v0.1.1 -p ward-darwin-arm64* -D "*)
+  "release view v0.1.1 -R opum-ai/ward-cli --json body -q .body") cat "$FAKE_BODY"; exit "\${FAKE_VIEW_EXIT:-0}" ;;
+  "release download v0.1.1 -R opum-ai/ward-cli -p ward-darwin-arm64* -D "*)
     [ "\${FAKE_DOWNLOAD_EXIT:-0}" = "0" ] || exit "$FAKE_DOWNLOAD_EXIT"
     for argument in "$@"; do dest="$argument"; done
     cp "$FAKE_ASSETS"/* "$dest"/; exit 0 ;;
@@ -45,8 +45,11 @@ writeFileSync(
 case "$1" in
   --verify)
     [ "$2 $3" = "--strict --verbose=2" ] || exit 9
+    # The published asset is what must be checked, never the local signed file.
+    [ "$4" != "$FAKE_LOCAL" ] && [ "$(basename "$4")" = "ward-darwin-arm64" ] || exit 9
     exit "\${FAKE_VERIFY_EXIT:-0}" ;;
   -dvvv)
+    [ "$2" != "$FAKE_LOCAL" ] && [ "$(basename "$2")" = "ward-darwin-arm64" ] || exit 9
     [ "\${FAKE_DV_EXIT:-0}" = "0" ] || exit "$FAKE_DV_EXIT"
     {
       echo "Executable=$2"
@@ -122,6 +125,7 @@ function run(c: Case = {}) {
       PATH: `${bin}:${process.env.PATH}`,
       TMPDIR: dir,
       FAKE_BODY: bodyFile,
+      FAKE_LOCAL: localFile,
       FAKE_ASSETS: assets,
       FAKE_CDHASH: c.signedCdhash ?? CDHASH,
       FAKE_CANDIDATE: "c".repeat(40),

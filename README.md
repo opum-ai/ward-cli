@@ -9,8 +9,7 @@ documentation is the design record rather than a finished manual.
 
 ## Install
 
-Once the repository is public, the release downloads over HTTPS with no GitHub
-account:
+The release downloads over HTTPS with no GitHub account:
 
 ```
 curl -fLO https://github.com/opum-ai/ward-cli/releases/download/v0.1.1/ward-darwin-arm64
@@ -20,13 +19,15 @@ shasum -a 256 -c ward-darwin-arm64.sha256 \
   && install -m 0755 ward-darwin-arm64 ~/.local/bin/ward
 ```
 
-Until the repository is public, fetch the same two files with
-`gh release download v0.1.1 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'` from an
-account that can read it.
+Or fetch the same two files with the GitHub CLI:
+`gh release download v0.1.1 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'`.
 
-The chain stops at the first failed check. A first install raises no keychain
-prompt; an upgrade does: the binary is ad-hoc signed, so the trust in the vault
-key follows that signature and a new build is a new identity. The full
+The chain stops at the first failed check. A build that created your vault key
+(a fresh `ward setup`) raises no keychain prompt; any other build (an upgrade,
+or a checkout build you are replacing) is expected to prompt, and the
+interactive dialog is not yet measured. The binary is ad-hoc signed, so the
+trust in the vault key follows that signature and a new build is a new
+identity. The full
 procedure — the cdhash check, what to check in the keychain dialog, the
 profile re-approval a snapshot bump raises, and how to upgrade — is
 [Install and upgrade Ward from a release](docs/runbooks/install-and-upgrade-ward-from-a-release.md).
