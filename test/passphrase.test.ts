@@ -53,6 +53,8 @@ function terminal(
         events.push(raw ? "read" : "read-while-echoing");
         return new Uint8Array(inputs[index++] ?? []);
       },
+      // Queued input is discarded on every exit path, before echo returns.
+      flushInput: () => events.push("flush"),
       writePrompt: (text: string) => events.push(`prompt:${text.trim()}`),
     },
     raw: () => raw,
@@ -81,6 +83,7 @@ describe("the terminal passphrase reader", () => {
       "prompt:Enter a passphrase for this backup:",
       "raw:on",
       "read",
+      "flush",
       "raw:off",
       // The reader ends each reading with a newline, so the terminal's next
       // output starts on its own line rather than beside the prompt.
@@ -88,6 +91,7 @@ describe("the terminal passphrase reader", () => {
       "prompt:Enter it again to confirm:",
       "raw:on",
       "read",
+      "flush",
       "raw:off",
       "prompt:",
     ]);
@@ -118,6 +122,7 @@ describe("the terminal passphrase reader", () => {
       "prompt:Enter a passphrase for this backup:",
       "raw:on",
       "read",
+      "flush",
       "raw:off",
       "prompt:",
     ]);
@@ -154,10 +159,11 @@ describe("the terminal passphrase reader", () => {
       readBytes: () => {
         throw new Error("the terminal went away");
       },
+      flushInput: () => events.push("flush"),
       writePrompt: () => {},
     });
     expect(source.read({ confirm: false })).toBeUndefined();
-    expect(events).toEqual(["raw:on", "raw:off"]);
+    expect(events).toEqual(["raw:on", "flush", "raw:off"]);
     expect(raw).toBe(false);
   });
 
@@ -223,8 +229,79 @@ describe("the byte reader the terminal path uses", () => {
     );
   });
 
-  test("the bound stops a stream that never ends", () => {
+  test("the bound refuses a stream that never ends rather than truncating", () => {
+    // The old reader stopped reading at the bound and returned what it had,
+    // so the confirm step could compare two identically truncated values and
+    // accept a passphrase the user never chose. It now refuses, exactly as
+    // the secret reader does.
     const endless = new Array(maxPassphraseBytes + 16).fill(0x61);
-    expect(read(endless).length).toBe(maxPassphraseBytes);
+    let caught: unknown;
+    try {
+      read(endless);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe(
+      "backup_passphrase_too_large",
+    );
+  });
+
+  test("exactly the bound is accepted, and the next byte is a refusal", () => {
+    const atBound = new Array(maxPassphraseBytes).fill(0x61);
+    // Terminated at the bound: accepted, unchanged.
+    expect(read([...atBound, 0x0a]).length).toBe(maxPassphraseBytes);
+    // End of input at the bound submits what was typed.
+    expect(read(atBound).length).toBe(maxPassphraseBytes);
+    // One more byte, whatever it is, is too large — including a byte that
+    // differs from the first reading only past the bound.
+    let caught: unknown;
+    try {
+      read([...atBound, 0x62]);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe(
+      "backup_passphrase_too_large",
+    );
+  });
+
+  test("a refusal or a cancel still flushes queued input before echo returns", () => {
+    // Drive the real reader through the adapter, over a descriptor that
+    // stands in for the terminal, so the bound refusal and the Ctrl-C cancel
+    // both land in the adapter's finally. Nothing queued may survive it.
+    const run = (input: number[]): string[] => {
+      const path = join(root, `exit-${++cases}`);
+      writeFileSync(path, Buffer.from(input));
+      const descriptor = openSync(path, "r");
+      const events: string[] = [];
+      try {
+        const source = createTerminalPassphrase({
+          isInteractive: () => true,
+          setRaw: (on: boolean) => events.push(on ? "raw:on" : "raw:off"),
+          readBytes: () => readPassphraseBytes(descriptor),
+          flushInput: () => events.push("flush"),
+          writePrompt: () => {},
+        });
+        try {
+          source.read({ confirm: false });
+        } catch {
+          // A refusal is an answer; only the ordering of the exit matters.
+        }
+        return events;
+      } finally {
+        closeSync(descriptor);
+      }
+    };
+
+    const atBound = new Array(maxPassphraseBytes).fill(0x61);
+    // The refusal at the bound, the Ctrl-C cancel, and a success all undo
+    // echo, and each flushes the queue first.
+    for (const input of [
+      [...atBound, 0x62], // too large
+      [...bytes("half"), 0x03], // Ctrl-C
+      [...bytes("value"), 0x0a, ...bytes("leftover")], // success
+    ]) {
+      expect(run(input)).toEqual(["raw:on", "flush", "raw:off"]);
+    }
   });
 });

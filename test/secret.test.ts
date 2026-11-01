@@ -905,6 +905,7 @@ describe("the terminal value adapters", () => {
         setRaw: () => {},
         writePrompt: () => {},
         readHiddenBytes: () => readHiddenValueBytes(descriptor),
+        flushInput: () => {},
       });
       // The adapter rethrows a reader's refusal and swallows only a terminal
       // failure; swallowing both would report a too-large value as empty.
@@ -912,6 +913,45 @@ describe("the terminal value adapters", () => {
     } finally {
       closeSync(descriptor);
     }
+  });
+
+  test("hidden entry flushes queued input before echo returns on every path", () => {
+    // A paste carries bytes past the newline the read stops on. They must not
+    // survive the read: on success, on a refusal at the bound, and on Ctrl-C,
+    // the queue is discarded before echo comes back.
+    const events = (input: Uint8Array): string[] =>
+      withInput(input, (fd) => {
+        const order: string[] = [];
+        const values = createTerminalSecretValues({
+          isInteractive: () => true,
+          setRaw: (on) => order.push(on ? "raw:on" : "raw:off"),
+          readHiddenBytes: () => readHiddenValueBytes(fd),
+          flushInput: () => order.push("flush"),
+          writePrompt: () => {},
+        });
+        try {
+          values.readHidden();
+        } catch {
+          // A refusal is an answer; only the exit ordering is asserted.
+        }
+        return order;
+      });
+
+    // Success: the paste's later lines are queued behind the terminator.
+    expect(events(encode("value\nLEFTOVER-ONE\nLEFTOVER-TWO\n"))).toEqual([
+      "raw:on",
+      "flush",
+      "raw:off",
+    ]);
+    // Refusal at the bound: bytes past the refused value are queued.
+    const over = new Uint8Array(secretLimits.maxValueBytes + 8).fill(0x61);
+    expect(events(over)).toEqual(["raw:on", "flush", "raw:off"]);
+    // Ctrl-C: the read is abandoned with the rest of the paste still queued.
+    expect(events(encode("half\u0003LEFTOVER\n"))).toEqual([
+      "raw:on",
+      "flush",
+      "raw:off",
+    ]);
   });
 
   test("stdin reads exact bytes and refuses more than the bound", () => {

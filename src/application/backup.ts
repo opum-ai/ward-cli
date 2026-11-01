@@ -42,7 +42,8 @@ export interface PassphraseSource {
   // requires the readings to match (creating a backup); opening reads it
   // once. Returns undefined when no terminal is available, and throws
   // backup_passphrase_rejected for an empty reading, a mismatch, or a
-  // cancelled prompt.
+  // cancelled prompt, and backup_passphrase_too_large for a reading past the
+  // reader's bound — never a silently truncated one.
   read(options: { confirm: boolean }): Uint8Array | undefined;
 }
 
