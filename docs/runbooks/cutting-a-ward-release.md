@@ -134,8 +134,8 @@ by a second bump in the next release. Fix it forward - treat the next release
 as the bump that should have happened, say so in its notes, and never edit a
 stored snapshot to fit.
 
-Never re-run a run from before the repository went public: it keeps its
-`private: true` payload, skipping the hosted check. After the flip, tag anew.
+Never re-run a pre-flip run: it keeps its `private: true` payload, skipping the
+hosted check. After the flip, tag anew, matching `package.json` at main.
 
 A publish step that fails after the Release was created as a draft leaves an
 orphan draft on the tag. Delete it before rerunning -

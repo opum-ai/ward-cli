@@ -19,7 +19,11 @@ const workflow = readFileSync(
 const dir = createTempRoot("ward-release-");
 
 test("every action is pinned to a full commit SHA", () => {
-  const uses = [...workflow.matchAll(/^\s*- uses: (\S+)/gm)].map((m) => m[1]);
+  // A `uses:` key at any indent and in any list form: a bare-dash step puts it
+  // on the next line, where `- uses:` would miss it.
+  const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map(
+    (m) => m[1],
+  );
   expect(uses.length).toBe(6);
   for (const use of uses) expect(use).toMatch(/@[0-9a-f]{40}$/);
 });
@@ -311,8 +315,10 @@ test("a manual dry run exercises the gate but release still cannot run on it", (
 // no hosted macOS runner and its verifying steps are skipped; once it is public
 // the same text resolves to macos-14 and the steps run. The conditions are
 // read from the workflow's own text and evaluated, so the proof is of what the
-// workflow says, not of a copy. The expressions use only `==`, `!=`, `&&`, `||`
-// and fromJSON, which mean the same in JavaScript.
+// workflow says, not of a copy. The forms in use are `== true`, `!= true`, `&&`,
+// `||` and fromJSON, which mean the same in JavaScript. A guard against false
+// would not: GitHub coerces null and false alike, so `null == false` is true
+// there and false here. Add that form only with its own evaluator.
 function evaluate(expression: string, repository: object | undefined): unknown {
   // An absent property is null in a workflow expression, where a bare property
   // access in JavaScript throws; `at` walks the path and yields null instead.
@@ -354,7 +360,7 @@ function verifySteps(): string[] {
   expect(start).toBeGreaterThan(-1);
   return verify
     .slice(start + "\n    steps:\n".length)
-    .split(/^(?= {6}- )/m)
+    .split(/^(?= {6}-(?: |$))/m)
     .filter((step) => step.trim() !== "");
 }
 
@@ -390,9 +396,12 @@ test("the verify job has exactly the notice, the download and the codesign step,
     /^ {6}- name: The hosted macOS check is skipped while the repository is private\n/,
   );
   expect(steps[0]).toMatch(/\n {8}run: \|\n {10}echo "::notice::/);
+  // Anchored at both ends: nothing may follow the download's own keys.
   expect(steps[1]).toMatch(
-    /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} /,
+    /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64\n {10}path: out\n*$/,
   );
+  // The job has exactly one action, whatever its indent or list form.
+  expect(jobText("verify").match(/^\s+(?:- )?uses:/gm)).toHaveLength(1);
   expect(steps[2]).toMatch(
     /^ {6}- name: codesign verifies the signature strictly\n/,
   );
