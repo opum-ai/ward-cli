@@ -23,9 +23,13 @@ const dir = createTempRoot("ward-release-");
 // value on the next line all spell the same property, and a text match sees
 // none of them. The presence check is deliberate, so a runtime without the API
 // fails loudly instead of falling back to a text match that would pass.
-function parseWorkflow(): {
-  jobs: Record<string, { steps?: { uses?: unknown }[] }>;
-} {
+type ParsedJob = Record<string, unknown> & {
+  steps?: Record<string, unknown>[];
+};
+type ParsedWorkflow = Record<string, unknown> & {
+  jobs: Record<string, ParsedJob>;
+};
+function parseWorkflow(): ParsedWorkflow {
   const yaml = Bun.YAML as unknown as
     | { parse?: (input: string) => unknown }
     | undefined;
@@ -33,9 +37,7 @@ function parseWorkflow(): {
     throw new Error(
       "Bun.YAML.parse is required (Bun >= 1.3.14); refusing to fall back to a text match",
     );
-  return yaml.parse(workflow) as {
-    jobs: Record<string, { steps?: { uses?: unknown }[] }>;
-  };
+  return yaml.parse(workflow) as ParsedWorkflow;
 }
 
 test("every action is pinned to a full commit SHA", () => {
@@ -421,7 +423,7 @@ test("the verify job has exactly the notice, the download and the codesign step,
   // between its own lines (a `shell:` between the name and the if, say) is red,
   // and so is a tab after the dash that merges it into a neighbour.
   expect(steps[0]).toMatch(
-    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n {8}if: github\.event\.repository\.private == true\n {8}run: \|\n {10}echo "::notice::codesign --verify --strict is skipped here[^\n]*\n*$/,
+    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n {8}if: github\.event\.repository\.private == true\n {8}run: \|\n {10}echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n*$/,
   );
   expect(steps[1]).toMatch(
     /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64\n {10}path: out\n*$/,
@@ -435,14 +437,53 @@ test("the verify job has exactly the notice, the download and the codesign step,
   expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
 });
 
-test("neither the verify job nor the workflow top level can override the shell", () => {
-  // A custom `shell:` (a step-level `shell: true {0}`, or a job-level
-  // `defaults: run: shell:`) makes the runner wrap the script in a template, so
-  // the codesign step can pass without running codesign. It adds no step for the
-  // count above to see, so it is banned here by key. Top-level keys are at
-  // column 0; a job's and a step's sit inside the job text.
-  expect(workflow).not.toMatch(/^(?:shell|defaults):/m);
-  expect(jobText("verify")).not.toMatch(/^\s+(?:- )?(?:shell|defaults):/m);
+test("the workflow, the verify job and each verify step carry exactly the keys they are known to need", () => {
+  // The shell override (`shell:`, `defaults: run: shell:`) and an environment
+  // that defines codesign away (`env: BASH_ENV: ...`) are properties of the
+  // parsed YAML, and a key can be spelled quoted, with a space before the colon
+  // or as `? defaults`, none of which a text match sees. Exact key sets close the
+  // class: any key not named here, however it is spelled, is red. `on` must
+  // parse as the string key "on", not a boolean true.
+  const parsed = parseWorkflow();
+  expect(Object.keys(parsed).sort()).toEqual(
+    ["jobs", "name", "on", "permissions"].sort(),
+  );
+  const verify = parsed.jobs.verify;
+  expect(verify).toBeDefined();
+  expect(Object.keys(verify ?? {}).sort()).toEqual(
+    [
+      "if",
+      "name",
+      "needs",
+      "permissions",
+      "runs-on",
+      "steps",
+      "timeout-minutes",
+    ].sort(),
+  );
+  const steps = verify?.steps ?? [];
+  expect(steps.map((step) => Object.keys(step).sort())).toEqual([
+    ["if", "name", "run"],
+    ["if", "uses", "with"],
+    ["if", "name", "run"],
+  ]);
+  expect(Object.keys(steps[1]?.with as object).sort()).toEqual([
+    "name",
+    "path",
+  ]);
+  // Every other job may carry only the keys the workflow already uses: no
+  // defaults, env, container or reusable-workflow `uses:` anywhere.
+  for (const job of Object.values(parsed.jobs))
+    for (const key of Object.keys(job))
+      expect([
+        "if",
+        "name",
+        "needs",
+        "permissions",
+        "runs-on",
+        "steps",
+        "timeout-minutes",
+      ]).toContain(key);
 });
 
 test("a repository payload with no repository object at all takes the verifying path", () => {
