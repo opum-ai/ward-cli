@@ -13,24 +13,69 @@
 // lives in the domain layer rather than beside either renderer. Escaped are
 // every code point below 0x20, DEL, the C1 range (0x80 to 0x9f, where the
 // eight-bit CSI U+009B sits), Unicode's Format (Cf) category — the bidi
-// overrides and zero-width characters among them — and the line and
-// paragraph separators. Each becomes a printable escape, so what is shown is
-// readable and cannot act on the terminal that shows it: every code point
-// that can move a cursor, end a line or reverse text is shown as text.
-const invisibleCharacter = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+// overrides and zero-width characters among them — the line and paragraph
+// separators, and every space separator (Zs) other than the ordinary ASCII
+// space. Ordinary ASCII space is escaped too when it appears in a run, so a
+// padded value cannot be used as layout: whitespace cannot push the real
+// destination of an operation off screen (WCLI-100). Each becomes a printable
+// escape, so what is shown is readable and cannot act on the terminal that
+// shows it: every code point that can move a cursor, end a line, reverse text
+// or pad a line is shown as text.
+// Also escaped: the default-ignorable code points outside Cf (Hangul fillers
+// U+115F, U+1160, U+3164, U+FFA0, the combining grapheme joiner U+034F, the
+// variation selectors) and the blank Braille pattern U+2800. They render as
+// nothing, so one laid against text hides as well as a zero-width space does.
+const invisibleCharacter =
+  /[\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/u;
+const spaceSeparator = /^\p{Zs}$/u;
 
-export function escapeForDisplay(value: string): string {
+// One source code point as the printable chunk that stands for it.
+function escapeCharacter(character: string, paddedSpace: boolean): string {
+  const code = character.codePointAt(0) ?? 0;
+  if (code < 0x20 || (code >= 0x7f && code <= 0x9f))
+    return `\\x${code.toString(16).padStart(2, "0")}`;
+  // An ordinary ASCII space is harmless alone and is shown as-is so prose and
+  // paths stay readable; in a run it is layout, and padding is what WCLI-100
+  // closes. Every other space separator (NBSP and its look-alikes) is
+  // invisible laid against text, so it is escaped even on its own.
+  if (code === 0x20) return paddedSpace ? "\\x20" : " ";
+  if (invisibleCharacter.test(character) || spaceSeparator.test(character))
+    return code <= 0xffff
+      ? `\\u${code.toString(16).padStart(4, "0")}`
+      : `\\u{${code.toString(16)}}`;
+  return character;
+}
+
+export interface EscapeForDisplayLimits {
+  // Cap the length of the escaped result, in characters. Truncation is
+  // display-only: the caller still holds the full value, and the result ends
+  // with "..." so a shortened value is visibly shortened. Never splits an
+  // escape sequence.
+  readonly maxChars?: number;
+}
+
+export function escapeForDisplay(
+  value: string,
+  limits: EscapeForDisplayLimits = {},
+): string {
+  const maxChars = limits.maxChars;
+  const characters = [...value];
+  const chunks = characters.map((character, index) =>
+    escapeCharacter(
+      character,
+      character === " " &&
+        (characters[index - 1] === " " || characters[index + 1] === " "),
+    ),
+  );
+  const whole = chunks.join("");
+  // A value that fits is shown whole: the three characters the ellipsis takes
+  // are only reserved when something is actually cut.
+  if (maxChars === undefined || whole.length <= maxChars) return whole;
+  const budget = Math.max(0, maxChars - 3);
   let escaped = "";
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || (code >= 0x7f && code <= 0x9f))
-      escaped += `\\x${code.toString(16).padStart(2, "0")}`;
-    else if (invisibleCharacter.test(character))
-      escaped +=
-        code <= 0xffff
-          ? `\\u${code.toString(16).padStart(4, "0")}`
-          : `\\u{${code.toString(16)}}`;
-    else escaped += character;
+  for (const chunk of chunks) {
+    if (escaped.length + chunk.length > budget) break;
+    escaped += chunk;
   }
-  return escaped;
+  return `${escaped}...`;
 }

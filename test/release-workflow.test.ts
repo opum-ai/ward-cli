@@ -313,7 +313,7 @@ test("a manual dry run exercises the gate but release still cannot run on it", (
 
 // WCLI-120 (DEC-253 (a2)): while the repository is private the verify job takes
 // no hosted macOS runner and its verifying steps are skipped; once it is public
-// the same text resolves to macos-14 and the steps run. The conditions are
+// the same text resolves to macos-15 and the steps run. The conditions are
 // read from the workflow's own text and evaluated, so the proof is of what the
 // workflow says, not of a copy. The forms in use are `== true`, `!= true`, `&&`,
 // `||` and fromJSON, which mean the same in JavaScript. A guard against false
@@ -372,21 +372,21 @@ function stepIfs(): string[] {
   });
 }
 
-test("while private the verify job takes no hosted macOS runner; once public it takes macos-14", () => {
+test("while private the verify job takes no hosted macOS runner; once public it takes macos-15", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
   expect(evaluate(runsOn, { private: true })).toEqual([
     "self-hosted",
     "Linux",
     "ARM64",
   ]);
-  expect(evaluate(runsOn, { private: false })).toBe("macos-14");
+  expect(evaluate(runsOn, { private: false })).toBe("macos-15");
 });
 
 test("a repository payload without its visibility fails closed to the verifying path", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
-  expect(evaluate(runsOn, {})).toBe("macos-14");
-  expect(evaluate(runsOn, { private: "true" })).toBe("macos-14");
-  expect(evaluate(runsOn, { private: null })).toBe("macos-14");
+  expect(evaluate(runsOn, {})).toBe("macos-15");
+  expect(evaluate(runsOn, { private: "true" })).toBe("macos-15");
+  expect(evaluate(runsOn, { private: null })).toBe("macos-15");
 });
 
 test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
@@ -414,7 +414,7 @@ test("the verify job has exactly the notice, the download and the codesign step,
 
 test("a repository payload with no repository object at all takes the verifying path", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
-  expect(evaluate(runsOn, undefined)).toBe("macos-14");
+  expect(evaluate(runsOn, undefined)).toBe("macos-15");
   const [notice, download, codesign] = stepIfs();
   expect(evaluate(notice ?? "", undefined)).toBe(false);
   expect(evaluate(download ?? "", undefined)).toBe(true);
@@ -496,4 +496,41 @@ test("the install runbook verifies the signature and stops on a failure, not onl
   expect(runbook.indexOf("codesign --verify --strict")).toBeLessThan(
     runbook.indexOf("codesign -dvvv"),
   );
+});
+
+// WCLI-99 (ruling W-34 A): build and release moved to the same GitHub-hosted
+// Linux ARM64 runner as CI, because the organisation's self-hosted groups
+// refuse public repositories. verify keeps its WCLI-120 visibility-keyed runner
+// and is the only place a self-hosted label may appear in either workflow.
+function runsOnOf(name: string): string {
+  const line = /^ {4}runs-on: (.+)$/m.exec(jobText(name));
+  expect(line).not.toBeNull();
+  return (line?.[1] ?? "").trim();
+}
+
+test("build and release run on the hosted Linux ARM64 runner", () => {
+  for (const job of ["build", "release"])
+    expect(runsOnOf(job)).toBe("ubuntu-24.04-arm");
+});
+
+test("no job names a self-hosted label except verify's own keyed expression", () => {
+  const runsOns = [...workflow.matchAll(/^ {4}runs-on: (.+)$/gm)].map((m) =>
+    (m[1] ?? "").trim(),
+  );
+  expect(runsOns).toHaveLength(3);
+  const selfHosted = runsOns.filter((r) => r.includes("self-hosted"));
+  expect(selfHosted).toHaveLength(1);
+  // The one occurrence is verify's, and only through the visibility-keyed
+  // expression: an unconditional self-hosted label is what WCLI-99 removes.
+  expect(selfHosted[0]).toBe(runsOnOf("verify"));
+  expect(selfHosted[0]).toContain("github.event.repository.private == true");
+});
+
+test("the release workflow job names are unchanged", () => {
+  const names = [...workflow.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1]);
+  expect(names).toEqual([
+    "Build darwin-arm64",
+    "Verify the code signature on macOS",
+    "Create the GitHub Release",
+  ]);
 });
