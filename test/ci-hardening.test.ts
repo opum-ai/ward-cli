@@ -116,7 +116,7 @@ test("no step output is interpolated inside a run: body", () => {
 // groups refuse public repositories, so a self-hosted label would leave the
 // three required checks queued with no runner once the repository is public.
 // Each assertion reads a job's own runs-on, so moving one job back to
-// [self-hosted, Linux, ARM64] turns exactly one red.
+// [self-hosted, Linux, ARM64] turns that job's assertions red.
 function jobText(name: string): string {
   const start = ci.indexOf(`\n  ${name}:\n`);
   expect(start).toBeGreaterThan(-1);

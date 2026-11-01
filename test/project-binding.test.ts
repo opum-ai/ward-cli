@@ -359,8 +359,10 @@ describe("T10: no checkout inherits a binding", () => {
     // The old directory is moved aside, not deleted, until the new one exists:
     // a filesystem may hand a freed inode straight to the next directory made
     // at the same path (the hosted runner's does), which would make the two
-    // inodes equal and the precondition below false for a reason unrelated to
-    // what this case tests.
+    // inodes equal and the precondition below false. That reuse is a real gap
+    // in the product, not noise: identity is (root, device, inode) only, so an
+    // rm -rf and re-clone at the same path inherits the binding. It is filed as
+    // its own task; this case tests the different-inode path.
     const aside = `${checkout}.old`;
     renameSync(checkout, aside);
     mkdirSync(join(checkout, ".git"), { recursive: true });

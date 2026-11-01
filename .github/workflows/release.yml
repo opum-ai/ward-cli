@@ -81,7 +81,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: node scripts/check-release-tag.mjs
-      # The runner has no gh, so the release job uses node and the REST API.
+      # The release job uses node and the REST API, not a third-party release action.
       - run: node --version
       - name: Install with the darwin native module
         run: bun install --frozen-lockfile --os=darwin --cpu=arm64
@@ -189,12 +189,12 @@ jobs:
   # the hosted check was skipped. The visibility is read from the event's
   # repository payload and fails closed: only an explicit `private == true`
   # skips, so a payload without the field takes the public, verifying path.
-  # After the flip the same expression resolves to macos-14 with no edit.
+  # After the flip the same expression resolves to macos-15 with no edit.
   verify:
     name: Verify the code signature on macOS
     needs: build
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
-    runs-on: ${{ github.event.repository.private == true && fromJSON('["self-hosted","Linux","ARM64"]') || 'macos-14' }}
+    runs-on: ${{ github.event.repository.private == true && fromJSON('["self-hosted","Linux","ARM64"]') || 'macos-15' }}
     timeout-minutes: 10
     permissions: {}
     steps:

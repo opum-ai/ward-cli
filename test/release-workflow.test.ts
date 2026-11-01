@@ -313,7 +313,7 @@ test("a manual dry run exercises the gate but release still cannot run on it", (
 
 // WCLI-120 (DEC-253 (a2)): while the repository is private the verify job takes
 // no hosted macOS runner and its verifying steps are skipped; once it is public
-// the same text resolves to macos-14 and the steps run. The conditions are
+// the same text resolves to macos-15 and the steps run. The conditions are
 // read from the workflow's own text and evaluated, so the proof is of what the
 // workflow says, not of a copy. The forms in use are `== true`, `!= true`, `&&`,
 // `||` and fromJSON, which mean the same in JavaScript. A guard against false
@@ -372,21 +372,21 @@ function stepIfs(): string[] {
   });
 }
 
-test("while private the verify job takes no hosted macOS runner; once public it takes macos-14", () => {
+test("while private the verify job takes no hosted macOS runner; once public it takes macos-15", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
   expect(evaluate(runsOn, { private: true })).toEqual([
     "self-hosted",
     "Linux",
     "ARM64",
   ]);
-  expect(evaluate(runsOn, { private: false })).toBe("macos-14");
+  expect(evaluate(runsOn, { private: false })).toBe("macos-15");
 });
 
 test("a repository payload without its visibility fails closed to the verifying path", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
-  expect(evaluate(runsOn, {})).toBe("macos-14");
-  expect(evaluate(runsOn, { private: "true" })).toBe("macos-14");
-  expect(evaluate(runsOn, { private: null })).toBe("macos-14");
+  expect(evaluate(runsOn, {})).toBe("macos-15");
+  expect(evaluate(runsOn, { private: "true" })).toBe("macos-15");
+  expect(evaluate(runsOn, { private: null })).toBe("macos-15");
 });
 
 test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
@@ -414,7 +414,7 @@ test("the verify job has exactly the notice, the download and the codesign step,
 
 test("a repository payload with no repository object at all takes the verifying path", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
-  expect(evaluate(runsOn, undefined)).toBe("macos-14");
+  expect(evaluate(runsOn, undefined)).toBe("macos-15");
   const [notice, download, codesign] = stepIfs();
   expect(evaluate(notice ?? "", undefined)).toBe(false);
   expect(evaluate(download ?? "", undefined)).toBe(true);
