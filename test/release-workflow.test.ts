@@ -497,3 +497,12 @@ test("the install runbook verifies the signature and stops on a failure, not onl
     runbook.indexOf("codesign -dvvv"),
   );
 });
+
+// WCLI-96 (W-9, DEC-255): the public Release notes name no runner, host or
+// kernel. The line that printed them is gone, and so is its env input.
+test("the release notes carry no runner name, host or kernel line", () => {
+  expect(workflow).not.toContain("RUNNER_HOST");
+  expect(workflow).not.toContain("runner.name");
+  expect(workflow).not.toContain("uname");
+  expect(workflow).not.toContain("Built on runner");
+});

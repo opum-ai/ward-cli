@@ -109,16 +109,15 @@ that named a release-time obligation.
    git switch -
    ```
 
-   The expected result is the same sha256 from both, and that hash is the one
-   the release notes will carry. Three conditions decide the comparison. Keep
-   the fixed `out/ward` output name the workflow uses, because the compiled
-   bytes embed the output name. Build from a real `bun install` in the
-   checkout, because a `node_modules` symlinked out of the tree embeds a
-   different module path and changes the hash. Build the same commit the run
-   built, because two sources agreeing proves nothing about either. Measured 2026-10-26: the dry
-   run on `dev` and a Mac build of the same source agreed byte for byte. A
-   mismatch means the runner's toolchain or the checkout differs, so the
-   release is not reproducible; stop and report it rather than tagging.
+   Expect the same sha256 from both; it is the hash the release notes carry.
+   Keep the fixed `out/ward` output name (the bytes embed it), build from a
+   real `bun install` in the checkout (a symlinked `node_modules` changes the
+   hash), and build the commit the run built. Measured 2026-10-26: a dry run on
+   `dev` and a Mac build agreed byte for byte. A mismatch means the release is
+   not reproducible: stop and report it rather than tagging. For a release whose
+   asset is built and re-signed on a Mac (DEC-255) this comparison is superseded:
+   the re-downloaded asset must pass `codesign --verify --strict`, and its sha256
+   must match the manifest regenerated from those bytes.
 7. **Record the gate results** where the release's results live - WCLI-15's
    `docs/security-tests.md` maps every gate to a test and a recorded result -
    including this runbook's items, so the next release reads one list.

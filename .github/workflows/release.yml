@@ -95,7 +95,6 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           REF_NAME: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-          RUNNER_HOST: ${{ runner.name }}
         run: |
           set -euo pipefail
           # The notes carry the re-approval warning only for a release that
@@ -150,7 +149,6 @@ jobs:
             echo "- Source: ${SOURCE_SHA}"
             echo "- sha256 ward-darwin-arm64: ${sha256}"
             echo "- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}"
-            echo "- Built on runner ${RUNNER_HOST}, $(uname -srm), bun $(bun --version), cross-compiled for bun-darwin-arm64 under the output name ward"
             echo
             echo "Install and upgrade: https://github.com/${REPO}/blob/${REF_NAME}/docs/runbooks/install-and-upgrade-ward-from-a-release.md"
             if [ -n "$snapshot_bump" ]; then
