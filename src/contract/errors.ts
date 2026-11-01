@@ -504,6 +504,11 @@ export const errorCatalog = {
       "The backup passphrase was empty, the confirmation did not match, or the prompt was cancelled.",
     hint: "A backup passphrase is only as strong as its entropy; length alone does not make it strong. Nothing was created or opened.",
   },
+  backup_passphrase_too_large: {
+    type: "validation",
+    message: "The backup passphrase is longer than 1024 bytes.",
+    hint: "Nothing was created or opened. A shorter passphrase of equal entropy is just as strong; length alone does not make it strong.",
+  },
   backup_file_exists: {
     type: "conflict",
     message:

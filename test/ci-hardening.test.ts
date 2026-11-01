@@ -110,3 +110,46 @@ test("no step output is interpolated inside a run: body", () => {
     if (/^\s*(- )?run: .*\$\{\{/.test(line)) throw new Error(line);
   }
 });
+
+// WCLI-99 (ruling W-34 A): every CI job runs on a GitHub-hosted Linux ARM64
+// runner, never a self-hosted label. The organisation's self-hosted runner
+// groups refuse public repositories, so a self-hosted label would leave the
+// three required checks queued with no runner once the repository is public.
+// Each assertion reads a job's own runs-on, so moving one job back to
+// [self-hosted, Linux, ARM64] turns that job's assertions red.
+function jobText(name: string): string {
+  const start = ci.indexOf(`\n  ${name}:\n`);
+  expect(start).toBeGreaterThan(-1);
+  const rest = ci.slice(start + 1);
+  const next = rest.slice(1).search(/^ {2}[a-z][a-z-]*:\n/m);
+  return next === -1 ? rest : rest.slice(0, next + 1);
+}
+
+function runsOnOf(name: string): string {
+  const line = /^ {4}runs-on: (.+)$/m.exec(jobText(name));
+  expect(line).not.toBeNull();
+  return (line?.[1] ?? "").trim();
+}
+
+const HOSTED_LINUX_ARM64 = "ubuntu-24.04-arm";
+
+test("every ci job runs on the hosted Linux ARM64 runner", () => {
+  for (const job of ["check", "docs", "tracker"])
+    expect(runsOnOf(job)).toBe(HOSTED_LINUX_ARM64);
+});
+
+test("no ci job names a self-hosted label", () => {
+  const runsOns = [...ci.matchAll(/^ {4}runs-on: (.+)$/gm)].map((m) =>
+    (m[1] ?? "").trim(),
+  );
+  expect(runsOns).toHaveLength(3);
+  for (const runsOn of runsOns) {
+    expect(runsOn).toBe(HOSTED_LINUX_ARM64);
+    expect(runsOn).not.toContain("self-hosted");
+  }
+});
+
+test("the three required job names are unchanged", () => {
+  const names = [...ci.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1]);
+  expect(names).toEqual(["Check", "Docs", "Tracker integrity"]);
+});
