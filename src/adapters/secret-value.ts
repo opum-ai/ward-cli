@@ -3,8 +3,11 @@
 // Two value paths, each with the gate its trust model needs. Hidden entry
 // uses the same gate as registration and the backup passphrase:
 // `process.stdin.isTTY` must be true, echo is suppressed by raw mode for the
-// read and restored on every path, and nothing is printed in place of the
-// bytes — not even a mask, because a mask discloses the value's length.
+// read and restored on every path, the terminal's pending input is discarded
+// before echo comes back (a paste carries bytes past the newline the read
+// stops on, and they would otherwise reach the shell), and nothing is printed
+// in place of the bytes — not even a mask, because a mask discloses the
+// value's length.
 // --stdin is the explicit automation path: exact bytes through EOF, and it
 // refuses a terminal as its source, where the terminal's own line discipline
 // would echo whatever is typed onto the screen.
@@ -26,11 +29,13 @@ import { WardError } from "../contract/errors.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { secretLimits } from "../domain/secret.ts";
 import { isConsentAnswer, readAnswerLine } from "./terminal-consent.ts";
+import { flushPendingInput } from "./terminal-input.ts";
 
 export interface TerminalSecretParts {
   isInteractive?: () => boolean;
   setRaw?: (on: boolean) => void;
   readHiddenBytes?: () => Uint8Array;
+  flushInput?: () => void;
   readStdinBytes?: (maxBytes: number) => Uint8Array;
   readAnswer?: () => string;
   writePrompt?: (text: string) => void;
@@ -135,6 +140,7 @@ export function createTerminalSecretValues(
   const setRaw = parts.setRaw ?? defaultSetRaw;
   const readHiddenBytes =
     parts.readHiddenBytes ?? (() => readHiddenValueBytes(0));
+  const flushInput = parts.flushInput ?? (() => flushPendingInput(0));
   const readStdinBytes =
     parts.readStdinBytes ?? ((maxBytes) => readStdinValueBytes(maxBytes, 0));
   const readAnswer = parts.readAnswer ?? readAnswerLine;
@@ -163,6 +169,16 @@ export function createTerminalSecretValues(
         if (error instanceof WardError) throw error;
         return undefined;
       } finally {
+        // Discard anything still queued on the terminal before echo comes
+        // back. The bytes after the newline the read stopped on are not part
+        // of the value; left in the line discipline, the shell that runs next
+        // reads them as its own input. Best-effort, and never in place of
+        // restoring echo.
+        try {
+          flushInput();
+        } catch {
+          // The flush is best-effort; restoring echo is not.
+        }
         try {
           // Restored on every path, so a failure never leaves the
           // developer's terminal without echo.

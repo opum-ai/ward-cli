@@ -10,12 +10,16 @@
 // Echo is suppressed by putting the terminal into raw mode for the read and
 // restoring it afterwards, including on every failure path: the terminal's
 // line discipline is what echoes, so with it off no typed byte is displayed.
-// Nothing is printed in place of what is typed, not even one mask character
-// per byte, because a mask discloses the passphrase's length. Backspace
-// (0x7f and 0x08) removes the last byte; Enter ends the reading; Ctrl-C and
-// Ctrl-D end it too, leaving whatever was typed. Reading is bounded, so a
-// stream that never ends cannot grow it, and the prompt goes to the
-// controlling terminal (or stderr) and never to stdout.
+// Before echo comes back the terminal's pending input is discarded, so the
+// bytes a paste carries past the newline the read stops on cannot reach the
+// shell that runs next. Nothing is printed in place of what is typed, not
+// even one mask character per byte, because a mask discloses the
+// passphrase's length. Backspace (0x7f and 0x08) removes the last byte;
+// Enter ends the reading; Ctrl-C and Ctrl-D end it too, leaving whatever was
+// typed. Reading refuses past its bound rather than truncating: a stream that
+// never ends cannot grow it, and a passphrase longer than the bound is
+// rejected rather than silently shortened. The prompt goes to the controlling
+// terminal (or stderr) and never to stdout.
 import {
   closeSync,
   constants as fileConstants,
@@ -25,11 +29,13 @@ import {
 } from "node:fs";
 import type { PassphraseSource } from "../application/backup.ts";
 import { WardError } from "../contract/errors.ts";
+import { flushPendingInput } from "./terminal-input.ts";
 
 export interface TerminalPassphraseParts {
   isInteractive?: () => boolean;
   setRaw?: (on: boolean) => void;
   readBytes?: () => Uint8Array;
+  flushInput?: () => void;
   writePrompt?: (text: string) => void;
 }
 
@@ -46,10 +52,15 @@ function defaultSetRaw(on: boolean): void {
 
 // The reader the terminal path uses, over any readable descriptor so its
 // byte semantics (backspace, Ctrl-C, the bound) can be tested without a pty.
+// At the bound it refuses rather than truncates, matching the secret reader:
+// a value of exactly the limit is accepted, and the next byte that is not a
+// terminator, an edit or an end-of-input fails the read as too large. A
+// silently shortened passphrase would let the confirm step compare two
+// identically truncated values and accept one the user never chose.
 export function readPassphraseBytes(descriptor = 0): Uint8Array {
   const bytes: number[] = [];
   const buffer = new Uint8Array(1);
-  while (bytes.length < maxPassphraseBytes) {
+  for (;;) {
     const read = readSync(descriptor, buffer, 0, 1, null);
     if (read === 0) break;
     const byte = buffer[0] as number;
@@ -63,6 +74,8 @@ export function readPassphraseBytes(descriptor = 0): Uint8Array {
       bytes.pop();
       continue;
     }
+    if (bytes.length === maxPassphraseBytes)
+      throw new WardError("backup_passphrase_too_large");
     bytes.push(byte);
   }
   return new Uint8Array(bytes);
@@ -92,6 +105,7 @@ export function createTerminalPassphrase(
     parts.isInteractive ?? (() => process.stdin.isTTY === true);
   const setRaw = parts.setRaw ?? defaultSetRaw;
   const readBytes = parts.readBytes ?? (() => readPassphraseBytes(0));
+  const flushInput = parts.flushInput ?? (() => flushPendingInput(0));
   const writePrompt = parts.writePrompt ?? defaultWritePrompt;
   const available = (): boolean => {
     try {
@@ -107,6 +121,15 @@ export function createTerminalPassphrase(
     try {
       return readBytes();
     } finally {
+      // Discard anything still queued on the terminal before echo comes
+      // back: a paste carries bytes past the newline the read stops on, and
+      // left in the line discipline the shell that runs next reads them as
+      // its own input. Best-effort, and never in place of restoring echo.
+      try {
+        flushInput();
+      } catch {
+        // The flush is best-effort; restoring echo is not.
+      }
       // Restored on every path, so a failure never leaves the developer's
       // terminal without echo.
       try {
