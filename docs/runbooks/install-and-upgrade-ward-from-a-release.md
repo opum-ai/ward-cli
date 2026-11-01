@@ -58,16 +58,16 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 5. Check the version: `ward --version` prints `0.1.1`.
 6. Install the agent skill (optional). It ships as the `opum-ward` Claude Code
    plugin. No public marketplace listing exists yet: the skill is
-   `plugin/skills/ward/SKILL.md` in this repository, and the plugin and CLI are
-   cut separately, so compare versions with `ward --version`.
+   `plugin/skills/ward/SKILL.md` in this repository. Use the plugin version
+   that matches `ward --version`; a mismatch is untested.
 
 ### Approve the keychain item, once
 
-7. The first command that needs the vault key (`ward status` is the cheapest)
-   may raise a macOS keychain dialog. It should appear right after you ran
-   `~/.local/bin/ward` and name the `opum.ward` item; if it appears when you ran
-   nothing, or names another item, stop and do not approve it. The exact dialog
-   text is not yet recorded from a released build. The approval is bound to this
+7. On a new machine run `ward setup` first. The first command that needs the
+   vault key (`ward status` is the cheapest) may raise a macOS keychain dialog
+   on an upgrade, not on a first install. It should appear right after you ran
+   `~/.local/bin/ward`; if it appears when you ran nothing, stop and do not
+   approve it. The exact dialog text is not yet recorded from a released build. The approval is bound to this
    build's cdhash and does not carry over to the next one. Over SSH the dialog cannot appear and the command fails with
    `vault_key_unavailable`: approve it once at the Mac itself.
 
@@ -109,15 +109,15 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 ## Rollback
 
 Keep the previous artifact and install it the same way (`install -m 0755`),
-after steps 2 and 3 pass on it.
+after steps 2 and 3 pass on it. There is no rollback to 0.1.0: its asset fails
+step 3.
 The vault itself is unchanged by an install, upgrade or rollback.
 
 A rollback is only as safe as the older build's ability to read what the newer
 one wrote. A pre-release build refuses the whole vault once it holds an
 approval written by 0.1.0 or later (`vault_format_unsupported`: it predates the
 versioned approval record). There is no migration back: reinstall the release
-that wrote the approvals, or revoke them before downgrading. Rolling 0.1.1 back
-to 0.1.0 is unmeasured: revoke them first.
+that wrote the approvals, or revoke them before downgrading.
 
 If a download fails its checksum, nothing was installed; retry the download,
 and report a repeat failure rather than installing the file.

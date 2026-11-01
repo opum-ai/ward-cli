@@ -24,17 +24,18 @@ Until the repository is public, fetch the same two files with
 `gh release download v0.1.1 -R opum-ai/ward-cli -p 'ward-darwin-arm64*'` from an
 account that can read it.
 
-The chain stops at the first failed check. Expect one macOS keychain
-re-approval afterwards: the binary is ad-hoc signed, so the trust in the vault
+The chain stops at the first failed check. A first install raises no keychain
+prompt; an upgrade does: the binary is ad-hoc signed, so the trust in the vault
 key follows that signature and a new build is a new identity. The full
-procedure — the cdhash check, what the keychain dialog should look like, the
+procedure — the cdhash check, what to check in the keychain dialog, the
 profile re-approval a snapshot bump raises, and how to upgrade — is
 [Install and upgrade Ward from a release](docs/runbooks/install-and-upgrade-ward-from-a-release.md).
 
 Prerequisites: macOS on Apple silicon (the only artifact built is
 `darwin-arm64`) and `~/.local/bin` on `PATH`. The
-[latest release](https://github.com/opum-ai/ward-cli/releases/latest) carries
-the same install steps.
+[latest release](https://github.com/opum-ai/ward-cli/releases/latest) links the
+install runbook at that tag. On a new machine run `ward setup` first to create
+a vault.
 
 ## Security and limits
 
@@ -47,9 +48,9 @@ Its stated limits:
   choosing — and with the keychain item set to always allow, no OS dialog
   appears. Ward does not defend against a same-user agent.
 - **Same-user authority is outside the boundary.** A compromised account, root,
-  a debugger, an unlocked keychain, or arbitrary code running as you can reach
-  the vault key; so can `BUN_OPTIONS` and `BUN_BE_BUN` against the shipped
-  executable.
+  a debugger, an unlocked keychain, a process that reads Ward's memory or a
+  core dump of it, or arbitrary code running as you can reach the vault key; so
+  can `BUN_OPTIONS` and `BUN_BE_BUN` against the shipped executable.
 - **Rollback is undetected.** Integrity detects a modified ciphertext, not an
   older valid vault copied back, which revives revoked grants and approvals.
 - **There is no forensic deletion.** Memory zeroing is best effort, replaced
