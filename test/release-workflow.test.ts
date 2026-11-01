@@ -437,6 +437,63 @@ test("the verify job has exactly the notice, the download and the codesign step,
   expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
 });
 
+// The text helpers above (jobText) take the first `verify:` they find, so a
+// decoy copy of the job inside a top-level block scalar would be read by every
+// text assertion while the YAML parser resolves the real, neutered job. This
+// case reads the PARSED job and compares it in full, so the decoy cannot help:
+// the real codesign step must be the command, and nothing else may be there.
+test("the parsed verify job is exactly the known job, with the real codesign command", () => {
+  const parsed = parseWorkflow();
+  expect(parsed.name).toBe("Release");
+  expect(Object.keys(parsed.jobs).sort()).toEqual([
+    "build",
+    "release",
+    "verify",
+  ]);
+  const verify = parsed.jobs.verify as ParsedJob;
+  const steps = verify.steps as Record<string, unknown>[];
+  expect(steps).toHaveLength(3);
+  const [notice, download, codesign] = steps as [
+    Record<string, unknown>,
+    Record<string, unknown>,
+    Record<string, unknown>,
+  ];
+  expect(notice?.run as string).toMatch(
+    /^echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n$/,
+  );
+  expect(download?.uses as string).toMatch(
+    /^actions\/download-artifact@[0-9a-f]{40}$/,
+  );
+  const { steps: _steps, ...verifyRest } = verify;
+  const runsOn = verifyRest["runs-on"] as string;
+  expect(runsOn).toMatch(
+    /^\$\{\{ github\.event\.repository\.private == true && fromJSON\('\["self-hosted","Linux","ARM64"\]'\) \|\| 'macos-15' \}\}$/,
+  );
+  expect({ ...verifyRest, "runs-on": "" } as Record<string, unknown>).toEqual({
+    name: "Verify the code signature on macOS",
+    needs: "build",
+    if: "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')",
+    "runs-on": "",
+    "timeout-minutes": 10,
+    permissions: {},
+  });
+  const { run: _run, ...noticeRest } = notice;
+  expect(noticeRest).toEqual({
+    name: "The hosted macOS check is skipped while the repository is private",
+    if: "github.event.repository.private == true",
+  });
+  const { uses: _uses, ...downloadRest } = download;
+  expect(downloadRest).toEqual({
+    if: "github.event.repository.private != true",
+    with: { name: "ward-darwin-arm64", path: "out" },
+  });
+  expect(codesign).toEqual({
+    name: "codesign verifies the signature strictly",
+    if: "github.event.repository.private != true",
+    run: "codesign --verify --strict --verbose=2 out/ward-darwin-arm64",
+  });
+});
+
 test("the workflow, the verify job and each verify step carry exactly the keys they are known to need", () => {
   // The shell override (`shell:`, `defaults: run: shell:`) and an environment
   // that defines codesign away (`env: BASH_ENV: ...`) are properties of the

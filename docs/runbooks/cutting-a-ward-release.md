@@ -126,7 +126,7 @@ that named a release-time obligation.
 ## Rollback
 
 Nothing here touches a developer's machine or vault: a release that fails a
-gate is held back and re-tagged by the rule below.
+gate is held back and tagged anew by the rule below.
 
 One case is not visible until later: a release that shipped with
 `profileSnapshotVersion` unbumped cannot be repaired by a second bump in the
