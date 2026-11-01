@@ -307,11 +307,82 @@ test("a manual dry run exercises the gate but release still cannot run on it", (
   expect(jobText("build")).not.toMatch(/^\s+if: github\.event_name/m);
 });
 
-test("the verify job runs on a GitHub-hosted macOS runner, never a self-hosted one", () => {
+// WCLI-120 (DEC-253 (a2)): while the repository is private the verify job takes
+// no hosted macOS runner and its verifying steps are skipped; once it is public
+// the same text resolves to macos-14 and the steps run. The conditions are
+// read from the workflow's own text and evaluated, so the proof is of what the
+// workflow says, not of a copy. The expressions use only `==`, `!=`, `&&`, `||`
+// and fromJSON, which mean the same in JavaScript.
+function evaluate(expression: string, repository: object | undefined): unknown {
+  const github = { event: { repository } };
+  return new Function("github", "fromJSON", `return (${expression});`)(
+    github,
+    JSON.parse,
+  );
+}
+
+function expressionAfter(text: string, key: string): string {
+  const line = new RegExp(`^\\s+${key}: \\$\\{\\{ (.*) \\}\\}$`, "m").exec(
+    text,
+  );
+  expect(line).not.toBeNull();
+  return line?.[1] ?? "";
+}
+
+function stepIfs(): string[] {
+  return [
+    ...jobText("verify").matchAll(
+      /^ {8}if: (github\.event\.repository\.private .*)$/gm,
+    ),
+  ].map((m) => m[1] ?? "");
+}
+
+test("while private the verify job takes no hosted macOS runner; once public it takes macos-14", () => {
+  const runsOn = expressionAfter(jobText("verify"), "runs-on");
+  expect(evaluate(runsOn, { private: true })).toEqual([
+    "self-hosted",
+    "Linux",
+    "ARM64",
+  ]);
+  expect(evaluate(runsOn, { private: false })).toBe("macos-14");
+});
+
+test("a repository payload without its visibility fails closed to the verifying path", () => {
+  const runsOn = expressionAfter(jobText("verify"), "runs-on");
+  expect(evaluate(runsOn, {})).toBe("macos-14");
+  expect(evaluate(runsOn, { private: "true" })).toBe("macos-14");
+  expect(evaluate(runsOn, { private: null })).toBe("macos-14");
+});
+
+test("the verifying steps are skipped while private, run once public, and the skip says why", () => {
   const verify = jobText("verify");
-  expect(verify).toMatch(/^\s+runs-on: macos-14$/m);
-  expect(verify).not.toContain("self-hosted");
-  expect(verify).not.toContain("contents: write");
+  const ifs = stepIfs();
+  expect(ifs).toEqual([
+    "github.event.repository.private == true",
+    "github.event.repository.private != true",
+    "github.event.repository.private != true",
+  ]);
+  const [notice, download, codesign] = ifs;
+  for (const [repository, notices, verifies] of [
+    [{ private: true }, true, false],
+    [{ private: false }, false, true],
+    [{}, false, true],
+  ] as const) {
+    expect(evaluate(notice ?? "", repository)).toBe(notices);
+    expect(evaluate(download ?? "", repository)).toBe(verifies);
+    expect(evaluate(codesign ?? "", repository)).toBe(verifies);
+  }
+  expect(verify).toMatch(
+    /::notice::codesign --verify --strict is skipped here/,
+  );
+  expect(verify).toMatch(
+    /if: github\.event\.repository\.private != true\n\s+run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64/,
+  );
+  expect(verify).not.toContain("macos-latest");
+});
+
+test("the verify job still never holds a write permission", () => {
+  expect(jobText("verify")).not.toContain("contents: write");
 });
 
 test("the release job needs the verify job, so an unverified artifact cannot publish", () => {
