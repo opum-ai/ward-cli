@@ -19,7 +19,11 @@ const workflow = readFileSync(
 const dir = createTempRoot("ward-release-");
 
 test("every action is pinned to a full commit SHA", () => {
-  const uses = [...workflow.matchAll(/^\s*- uses: (\S+)/gm)].map((m) => m[1]);
+  // A `uses:` key at any indent and in any list form: a bare-dash step puts it
+  // on the next line, where `- uses:` would miss it.
+  const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map(
+    (m) => m[1],
+  );
   expect(uses.length).toBe(6);
   for (const use of uses) expect(use).toMatch(/@[0-9a-f]{40}$/);
 });
@@ -311,12 +315,30 @@ test("a manual dry run exercises the gate but release still cannot run on it", (
 // no hosted macOS runner and its verifying steps are skipped; once it is public
 // the same text resolves to macos-14 and the steps run. The conditions are
 // read from the workflow's own text and evaluated, so the proof is of what the
-// workflow says, not of a copy. The expressions use only `==`, `!=`, `&&`, `||`
-// and fromJSON, which mean the same in JavaScript.
+// workflow says, not of a copy. The forms in use are `== true`, `!= true`, `&&`,
+// `||` and fromJSON, which mean the same in JavaScript. A guard against false
+// would not: GitHub coerces null and false alike, so `null == false` is true
+// there and false here. Add that form only with its own evaluator.
 function evaluate(expression: string, repository: object | undefined): unknown {
-  const github = { event: { repository } };
-  return new Function("github", "fromJSON", `return (${expression});`)(
-    github,
+  // An absent property is null in a workflow expression, where a bare property
+  // access in JavaScript throws; `at` walks the path and yields null instead.
+  const root = { event: { repository } };
+  const at = (path: string): unknown =>
+    path
+      .split(".")
+      .reduce<unknown>(
+        (node, key) =>
+          node === null || node === undefined
+            ? null
+            : ((node as Record<string, unknown>)[key] ?? null),
+        root,
+      );
+  const translated = expression.replace(
+    /github\.([A-Za-z_.]+)/g,
+    (_, path: string) => `at("${path}")`,
+  );
+  return new Function("at", "fromJSON", `return (${translated});`)(
+    at,
     JSON.parse,
   );
 }
@@ -329,12 +351,25 @@ function expressionAfter(text: string, key: string): string {
   return line?.[1] ?? "";
 }
 
+// The verify job's steps, split at their list markers. Pinned below to exactly
+// the notice, the download and the codesign step, so a step added anywhere in
+// the job, guarded or not, is a red test.
+function verifySteps(): string[] {
+  const verify = jobText("verify");
+  const start = verify.indexOf("\n    steps:\n");
+  expect(start).toBeGreaterThan(-1);
+  return verify
+    .slice(start + "\n    steps:\n".length)
+    .split(/^(?= {6}-(?: |$))/m)
+    .filter((step) => step.trim() !== "");
+}
+
 function stepIfs(): string[] {
-  return [
-    ...jobText("verify").matchAll(
-      /^ {8}if: (github\.event\.repository\.private .*)$/gm,
-    ),
-  ].map((m) => m[1] ?? "");
+  return verifySteps().map((step) => {
+    const guards = [...step.matchAll(/^ {8}if: (.*)$/gm)];
+    expect(guards).toHaveLength(1);
+    return guards[0]?.[1] ?? "";
+  });
 }
 
 test("while private the verify job takes no hosted macOS runner; once public it takes macos-14", () => {
@@ -352,6 +387,38 @@ test("a repository payload without its visibility fails closed to the verifying 
   expect(evaluate(runsOn, {})).toBe("macos-14");
   expect(evaluate(runsOn, { private: "true" })).toBe("macos-14");
   expect(evaluate(runsOn, { private: null })).toBe("macos-14");
+});
+
+test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
+  const steps = verifySteps();
+  expect(steps).toHaveLength(3);
+  expect(steps[0]).toMatch(
+    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n/,
+  );
+  expect(steps[0]).toMatch(/\n {8}run: \|\n {10}echo "::notice::/);
+  // Anchored at both ends: nothing may follow the download's own keys.
+  expect(steps[1]).toMatch(
+    /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64\n {10}path: out\n*$/,
+  );
+  // The job has exactly one action, whatever its indent or list form.
+  expect(jobText("verify").match(/^\s+(?:- )?uses:/gm)).toHaveLength(1);
+  expect(steps[2]).toMatch(
+    /^ {6}- name: codesign verifies the signature strictly\n/,
+  );
+  expect(steps[2]).toMatch(
+    /\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
+  );
+  // One command per step: nothing re-signs or rewrites the artifact before the check.
+  expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
+});
+
+test("a repository payload with no repository object at all takes the verifying path", () => {
+  const runsOn = expressionAfter(jobText("verify"), "runs-on");
+  expect(evaluate(runsOn, undefined)).toBe("macos-14");
+  const [notice, download, codesign] = stepIfs();
+  expect(evaluate(notice ?? "", undefined)).toBe(false);
+  expect(evaluate(download ?? "", undefined)).toBe(true);
+  expect(evaluate(codesign ?? "", undefined)).toBe(true);
 });
 
 test("the verifying steps are skipped while private, run once public, and the skip says why", () => {
@@ -399,10 +466,16 @@ test("a failed verify cannot be waved through: no continue-on-error, and release
   );
 });
 
-test("the verify job takes no token permissions and the header describes the gate", () => {
+test("the verify job takes no token permissions and the header states the gate conditionally", () => {
   expect(jobText("verify")).toMatch(/^\s+permissions: \{\}$/m);
-  expect(workflow.slice(0, workflow.indexOf("\nname: Release"))).toContain(
-    "macOS verify job that runs codesign --verify --strict",
+  const header = workflow
+    .slice(0, workflow.indexOf("\nname: Release"))
+    .replace(/\n# ?/g, " ");
+  expect(header).toContain(
+    "Once the repository is public the release job needs a macOS verify job that runs codesign --verify --strict",
+  );
+  expect(header).toContain(
+    "While it is private the verify job only logs that it skipped",
   );
 });
 

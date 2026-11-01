@@ -11,9 +11,11 @@
 # the run, and creates no Release. The Release is created by one job, the only
 # one that holds contents: write.
 #
-# The release job needs a macOS verify job that runs codesign --verify --strict
-# on this artifact (WCLI-96, DEC-253), so a signature that does not verify
-# cannot publish.
+# Once the repository is public the release job needs a macOS verify job that
+# runs codesign --verify --strict on this artifact (WCLI-96, DEC-253), so a
+# signature that does not verify cannot publish. While it is private the verify
+# job only logs that it skipped (DEC-253 (a2), WCLI-120), and the gate is the
+# install runbook's local check on a Mac before the tag.
 #
 # The binary is ad-hoc signed by the compiler. codesign is not available on
 # Linux, so the cdhash the notes carry is read from the Mach-O itself by
