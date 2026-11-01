@@ -1,6 +1,6 @@
 // Creates a GitHub Release for an existing tag and attaches files to it, using
-// only the REST API (WCLI-82). The self-hosted runner has no `gh`, and a
-// third-party release action would run with contents: write.
+// only the REST API (WCLI-82). A third-party release action would run with
+// contents: write.
 //
 // The release is created as a draft, the assets are uploaded, and only then is
 // it published, so a failed upload never leaves a public Release with missing
