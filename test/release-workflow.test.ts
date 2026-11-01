@@ -18,14 +18,41 @@ const workflow = readFileSync(
 );
 const dir = createTempRoot("ward-release-");
 
+// A step's `uses` is read from parsed YAML, not from a line pattern: flow style
+// (`- {uses: x@main}`), a quoted `"uses":`, extra spaces after the colon and a
+// value on the next line all spell the same property, and a text match sees
+// none of them. The presence check is deliberate, so a runtime without the API
+// fails loudly instead of falling back to a text match that would pass.
+type ParsedJob = Record<string, unknown> & {
+  steps?: Record<string, unknown>[];
+};
+type ParsedWorkflow = Record<string, unknown> & {
+  jobs: Record<string, ParsedJob>;
+};
+function parseWorkflow(): ParsedWorkflow {
+  const yaml = Bun.YAML as unknown as
+    | { parse?: (input: string) => unknown }
+    | undefined;
+  if (typeof yaml?.parse !== "function")
+    throw new Error(
+      "Bun.YAML.parse is required (Bun >= 1.3.14); refusing to fall back to a text match",
+    );
+  return yaml.parse(workflow) as ParsedWorkflow;
+}
+
 test("every action is pinned to a full commit SHA", () => {
-  // A `uses:` key at any indent and in any list form: a bare-dash step puts it
-  // on the next line, where `- uses:` would miss it.
-  const uses = [...workflow.matchAll(/^\s*(?:- )?uses: (\S+)/gm)].map(
-    (m) => m[1],
+  // Every job's every step, whatever spelling the key uses.
+  const steps = Object.values(parseWorkflow().jobs).flatMap(
+    (job) => job.steps ?? [],
   );
-  expect(uses.length).toBe(6);
-  for (const use of uses) expect(use).toMatch(/@[0-9a-f]{40}$/);
+  // Positive control: a parse that read nothing must fail here, not pass.
+  expect(steps.length).toBeGreaterThan(0);
+  const withUses = steps.filter((step) => "uses" in step);
+  expect(withUses).toHaveLength(6);
+  for (const step of withUses) {
+    expect(typeof step.uses).toBe("string");
+    expect(step.uses as string).toMatch(/@[0-9a-f]{40}$/);
+  }
 });
 
 test("the checkout does not persist its credential", () => {
@@ -313,7 +340,7 @@ test("a manual dry run exercises the gate but release still cannot run on it", (
 
 // WCLI-120 (DEC-253 (a2)): while the repository is private the verify job takes
 // no hosted macOS runner and its verifying steps are skipped; once it is public
-// the same text resolves to macos-14 and the steps run. The conditions are
+// the same text resolves to macos-15 and the steps run. The conditions are
 // read from the workflow's own text and evaluated, so the proof is of what the
 // workflow says, not of a copy. The forms in use are `== true`, `!= true`, `&&`,
 // `||` and fromJSON, which mean the same in JavaScript. A guard against false
@@ -372,49 +399,153 @@ function stepIfs(): string[] {
   });
 }
 
-test("while private the verify job takes no hosted macOS runner; once public it takes macos-14", () => {
+test("while private the verify job takes no hosted macOS runner; once public it takes macos-15", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
   expect(evaluate(runsOn, { private: true })).toEqual([
     "self-hosted",
     "Linux",
     "ARM64",
   ]);
-  expect(evaluate(runsOn, { private: false })).toBe("macos-14");
+  expect(evaluate(runsOn, { private: false })).toBe("macos-15");
 });
 
 test("a repository payload without its visibility fails closed to the verifying path", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
-  expect(evaluate(runsOn, {})).toBe("macos-14");
-  expect(evaluate(runsOn, { private: "true" })).toBe("macos-14");
-  expect(evaluate(runsOn, { private: null })).toBe("macos-14");
+  expect(evaluate(runsOn, {})).toBe("macos-15");
+  expect(evaluate(runsOn, { private: "true" })).toBe("macos-15");
+  expect(evaluate(runsOn, { private: null })).toBe("macos-15");
 });
 
 test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
   const steps = verifySteps();
   expect(steps).toHaveLength(3);
+  // Each step is one full shape anchored at both ends, so a key inserted
+  // between its own lines (a `shell:` between the name and the if, say) is red,
+  // and so is a tab after the dash that merges it into a neighbour.
   expect(steps[0]).toMatch(
-    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n/,
+    /^ {6}- name: The hosted macOS check is skipped while the repository is private\n {8}if: github\.event\.repository\.private == true\n {8}run: \|\n {10}echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n*$/,
   );
-  expect(steps[0]).toMatch(/\n {8}run: \|\n {10}echo "::notice::/);
-  // Anchored at both ends: nothing may follow the download's own keys.
   expect(steps[1]).toMatch(
     /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64\n {10}path: out\n*$/,
   );
   // The job has exactly one action, whatever its indent or list form.
   expect(jobText("verify").match(/^\s+(?:- )?uses:/gm)).toHaveLength(1);
   expect(steps[2]).toMatch(
-    /^ {6}- name: codesign verifies the signature strictly\n/,
-  );
-  expect(steps[2]).toMatch(
-    /\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
+    /^ {6}- name: codesign verifies the signature strictly\n {8}if: github\.event\.repository\.private != true\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
   );
   // One command per step: nothing re-signs or rewrites the artifact before the check.
   expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
 });
 
+// The text helpers above (jobText) take the first `verify:` they find, so a
+// decoy copy of the job inside a top-level block scalar would be read by every
+// text assertion while the YAML parser resolves the real, neutered job. This
+// case reads the PARSED job and compares it in full, so the decoy cannot help:
+// the real codesign step must be the command, and nothing else may be there.
+test("the parsed verify job is exactly the known job, with the real codesign command", () => {
+  const parsed = parseWorkflow();
+  expect(parsed.name).toBe("Release");
+  expect(Object.keys(parsed.jobs).sort()).toEqual([
+    "build",
+    "release",
+    "verify",
+  ]);
+  const verify = parsed.jobs.verify as ParsedJob;
+  const steps = verify.steps as Record<string, unknown>[];
+  expect(steps).toHaveLength(3);
+  const [notice, download, codesign] = steps as [
+    Record<string, unknown>,
+    Record<string, unknown>,
+    Record<string, unknown>,
+  ];
+  expect(notice?.run as string).toMatch(
+    /^echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n$/,
+  );
+  expect(download?.uses as string).toMatch(
+    /^actions\/download-artifact@[0-9a-f]{40}$/,
+  );
+  const { steps: _steps, ...verifyRest } = verify;
+  const runsOn = verifyRest["runs-on"] as string;
+  expect(runsOn).toMatch(
+    /^\$\{\{ github\.event\.repository\.private == true && fromJSON\('\["self-hosted","Linux","ARM64"\]'\) \|\| 'macos-15' \}\}$/,
+  );
+  expect({ ...verifyRest, "runs-on": "" } as Record<string, unknown>).toEqual({
+    name: "Verify the code signature on macOS",
+    needs: "build",
+    if: "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')",
+    "runs-on": "",
+    "timeout-minutes": 10,
+    permissions: {},
+  });
+  const { run: _run, ...noticeRest } = notice;
+  expect(noticeRest).toEqual({
+    name: "The hosted macOS check is skipped while the repository is private",
+    if: "github.event.repository.private == true",
+  });
+  const { uses: _uses, ...downloadRest } = download;
+  expect(downloadRest).toEqual({
+    if: "github.event.repository.private != true",
+    with: { name: "ward-darwin-arm64", path: "out" },
+  });
+  expect(codesign).toEqual({
+    name: "codesign verifies the signature strictly",
+    if: "github.event.repository.private != true",
+    run: "codesign --verify --strict --verbose=2 out/ward-darwin-arm64",
+  });
+});
+
+test("the workflow, the verify job and each verify step carry exactly the keys they are known to need", () => {
+  // The shell override (`shell:`, `defaults: run: shell:`) and an environment
+  // that defines codesign away (`env: BASH_ENV: ...`) are properties of the
+  // parsed YAML, and a key can be spelled quoted, with a space before the colon
+  // or as `? defaults`, none of which a text match sees. Exact key sets close the
+  // class: any key not named here, however it is spelled, is red. `on` must
+  // parse as the string key "on", not a boolean true.
+  const parsed = parseWorkflow();
+  expect(Object.keys(parsed).sort()).toEqual(
+    ["jobs", "name", "on", "permissions"].sort(),
+  );
+  const verify = parsed.jobs.verify;
+  expect(verify).toBeDefined();
+  expect(Object.keys(verify ?? {}).sort()).toEqual(
+    [
+      "if",
+      "name",
+      "needs",
+      "permissions",
+      "runs-on",
+      "steps",
+      "timeout-minutes",
+    ].sort(),
+  );
+  const steps = verify?.steps ?? [];
+  expect(steps.map((step) => Object.keys(step).sort())).toEqual([
+    ["if", "name", "run"],
+    ["if", "uses", "with"],
+    ["if", "name", "run"],
+  ]);
+  expect(Object.keys(steps[1]?.with as object).sort()).toEqual([
+    "name",
+    "path",
+  ]);
+  // Every other job may carry only the keys the workflow already uses: no
+  // defaults, env, container or reusable-workflow `uses:` anywhere.
+  for (const job of Object.values(parsed.jobs))
+    for (const key of Object.keys(job))
+      expect([
+        "if",
+        "name",
+        "needs",
+        "permissions",
+        "runs-on",
+        "steps",
+        "timeout-minutes",
+      ]).toContain(key);
+});
+
 test("a repository payload with no repository object at all takes the verifying path", () => {
   const runsOn = expressionAfter(jobText("verify"), "runs-on");
-  expect(evaluate(runsOn, undefined)).toBe("macos-14");
+  expect(evaluate(runsOn, undefined)).toBe("macos-15");
   const [notice, download, codesign] = stepIfs();
   expect(evaluate(notice ?? "", undefined)).toBe(false);
   expect(evaluate(download ?? "", undefined)).toBe(true);
@@ -496,4 +627,126 @@ test("the install runbook verifies the signature and stops on a failure, not onl
   expect(runbook.indexOf("codesign --verify --strict")).toBeLessThan(
     runbook.indexOf("codesign -dvvv"),
   );
+});
+
+// WCLI-96 (W-9, DEC-255): the public Release notes name no runner, host or
+// kernel. The notes block is sliced out as the install-URL test does, so a
+// banned word elsewhere in the workflow cannot hide one in the notes.
+function notesBlock(): string {
+  const start = workflow.indexOf("- name: Hash it and write the release notes");
+  expect(start).toBeGreaterThan(-1);
+  const end = workflow.indexOf("- uses:", start);
+  const step = workflow.slice(start, end);
+  const open = step.indexOf("{\n", step.indexOf("run: |"));
+  const close = step.indexOf("} > release-notes.md");
+  expect(open).toBeGreaterThan(-1);
+  expect(close).toBeGreaterThan(open);
+  return step.slice(open, close);
+}
+
+test("the release notes carry no runner, host or kernel word", () => {
+  const notes = notesBlock();
+  expect(notes).toContain("- Source:");
+  for (const banned of [
+    "RUNNER_",
+    "runner.name",
+    "hostname",
+    "HOSTNAME",
+    "uname",
+  ])
+    expect(notes).not.toContain(banned);
+  expect(workflow).not.toContain("RUNNER_HOST");
+});
+
+test("the release notes expand only an allowlisted set of variables and run no command", () => {
+  // An allowlist closes the class: a runner, host or kernel value can reach the
+  // notes only through an expansion or a command, and neither is allowed
+  // beyond these names.
+  const notes = notesBlock();
+  const expanded = [...notes.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)].map(
+    (m) => m[1],
+  );
+  expect([...new Set(expanded)].sort()).toEqual(
+    [
+      "REF_NAME",
+      "REPO",
+      "SOURCE_SHA",
+      "cdhash",
+      "sha256",
+      "snapshot_bump",
+    ].sort(),
+  );
+  expect(notes).not.toContain("$(");
+  expect(notes).not.toContain("`");
+  expect(notes).not.toContain("${{");
+});
+
+test("the notes carry the sha256 and cdhash lines the regeneration script rewrites", () => {
+  const notes = notesBlock();
+  expect(notes).toContain('echo "- sha256 ward-darwin-arm64: ${sha256}"');
+  expect(notes).toContain(
+    'echo "- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}"',
+  );
+});
+
+// WCLI-96 (DEC-255): step 5 of the publish runbook is the script, not prose,
+// and the flip waits for it.
+test("the publish runbook's verification step runs the fail-closed script", () => {
+  const runbook = readFileSync(
+    join(
+      import.meta.dir,
+      "..",
+      "docs",
+      "runbooks",
+      "publish-a-mac-signed-ward-release-asset.md",
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  expect(runbook).toContain(
+    "scripts/verify-published-release.sh TAG ward-darwin-arm64",
+  );
+  expect(runbook).toContain("until step 5 prints PASS and step 6 is done");
+  // Step 6 may be run twice: it appends its line only when it is absent, and it
+  // must not make the superseded release the Latest one.
+  expect(runbook).toContain(
+    "grep -qxF 'Superseded by v0.1.1: install that release.' old.md",
+  );
+  expect(runbook).toContain("--notes-file old.md --latest=false");
+});
+
+// WCLI-99 (ruling W-34 A): build and release moved to the same GitHub-hosted
+// Linux ARM64 runner as CI, because the organisation's self-hosted groups
+// refuse public repositories. verify keeps its WCLI-120 visibility-keyed runner
+// and is the only place a self-hosted label may appear in either workflow.
+function runsOnOf(name: string): string {
+  const line = /^ {4}runs-on: (.+)$/m.exec(jobText(name));
+  expect(line).not.toBeNull();
+  return (line?.[1] ?? "").trim();
+}
+
+test("build and release run on the hosted Linux ARM64 runner", () => {
+  for (const job of ["build", "release"])
+    expect(runsOnOf(job)).toBe("ubuntu-24.04-arm");
+});
+
+test("no job names a self-hosted label except verify's own keyed expression", () => {
+  const runsOns = [...workflow.matchAll(/^ {4}runs-on: (.+)$/gm)].map((m) =>
+    (m[1] ?? "").trim(),
+  );
+  expect(runsOns).toHaveLength(3);
+  const selfHosted = runsOns.filter((r) => r.includes("self-hosted"));
+  expect(selfHosted).toHaveLength(1);
+  // The one occurrence is verify's, and only through the visibility-keyed
+  // expression: an unconditional self-hosted label is what WCLI-99 removes.
+  expect(selfHosted[0]).toBe(runsOnOf("verify"));
+  expect(selfHosted[0]).toContain("github.event.repository.private == true");
+});
+
+test("the release workflow job names are unchanged", () => {
+  const names = [...workflow.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1]);
+  expect(names).toEqual([
+    "Build darwin-arm64",
+    "Verify the code signature on macOS",
+    "Create the GitHub Release",
+  ]);
 });

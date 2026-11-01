@@ -1,11 +1,14 @@
 # Builds the macOS artifact and attaches it to a GitHub Release (WCLI-82,
 # DEC-246).
 #
-# The release is a pushed v* tag. The build runs on the self-hosted Linux ARM64
-# runner and cross-compiles for darwin-arm64: measured on 2026-10-26, the
-# runner's bytes equal a Mac's for the same source and output name, and the
-# compiled bytes depend on the output file name, so the executable is always
-# built under the fixed name `ward` and only then renamed for the release.
+# The release is a pushed v* tag. The build runs on a GitHub-hosted Linux ARM64
+# runner (WCLI-99, ruling W-34 A) and cross-compiles for darwin-arm64. That
+# asset FAILS codesign --verify --strict (DEC-255), so until WCLI-123 lands the
+# operator replaces it with a Mac-signed one and regenerates the notes and
+# checksum from the signed bytes, then runs scripts/verify-published-release.sh
+# (docs/runbooks/publish-a-mac-signed-ward-release-asset.md). The compiled bytes
+# depend on the output file name, so the executable is always built under the
+# fixed name `ward` and only then renamed for the release.
 #
 # workflow_dispatch is a dry run: it builds, hashes and uploads the artifact to
 # the run, and creates no Release. The Release is created by one job, the only
@@ -15,7 +18,7 @@
 # runs codesign --verify --strict on this artifact (WCLI-96, DEC-253), so a
 # signature that does not verify cannot publish. While it is private the verify
 # job only logs that it skipped (DEC-253 (a2), WCLI-120), and the gate is the
-# install runbook's local check on a Mac before the tag.
+# publish runbook's strict verify of the downloaded Release after the tag.
 #
 # The binary is ad-hoc signed by the compiler. codesign is not available on
 # Linux, so the cdhash the notes carry is read from the Mach-O itself by
@@ -35,7 +38,7 @@ permissions:
 jobs:
   build:
     name: Build darwin-arm64
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       # Full history, so a tag push can be checked against main below. The
@@ -79,7 +82,7 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: node scripts/check-release-tag.mjs
-      # The runner has no gh, so the release job uses node and the REST API.
+      # The release job uses node and the REST API, not a third-party release action.
       - run: node --version
       - name: Install with the darwin native module
         run: bun install --frozen-lockfile --os=darwin --cpu=arm64
@@ -95,7 +98,6 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           REF_NAME: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-          RUNNER_HOST: ${{ runner.name }}
         run: |
           set -euo pipefail
           # The notes carry the re-approval warning only for a release that
@@ -150,7 +152,6 @@ jobs:
             echo "- Source: ${SOURCE_SHA}"
             echo "- sha256 ward-darwin-arm64: ${sha256}"
             echo "- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}"
-            echo "- Built on runner ${RUNNER_HOST}, $(uname -srm), bun $(bun --version), cross-compiled for bun-darwin-arm64 under the output name ward"
             echo
             echo "Install and upgrade: https://github.com/${REPO}/blob/${REF_NAME}/docs/runbooks/install-and-upgrade-ward-from-a-release.md"
             if [ -n "$snapshot_bump" ]; then
@@ -180,26 +181,26 @@ jobs:
   # a dry run can never publish.
   #
   # While the repository is private (DEC-253 (a2), WCLI-120) the gate is the
-  # install runbook's local codesign --verify --strict on a Mac before the tag,
+  # publish runbook's strict verify of the downloaded Release after the tag,
   # and this job must not queue a billed macOS run. It still runs, so the
   # release job's needs is met without a status function in its condition, but
   # on the self-hosted Linux runner, takes no step but a notice, and says why
   # the hosted check was skipped. The visibility is read from the event's
   # repository payload and fails closed: only an explicit `private == true`
   # skips, so a payload without the field takes the public, verifying path.
-  # After the flip the same expression resolves to macos-14 with no edit.
+  # After the flip the same expression resolves to macos-15 with no edit.
   verify:
     name: Verify the code signature on macOS
     needs: build
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
-    runs-on: ${{ github.event.repository.private == true && fromJSON('["self-hosted","Linux","ARM64"]') || 'macos-14' }}
+    runs-on: ${{ github.event.repository.private == true && fromJSON('["self-hosted","Linux","ARM64"]') || 'macos-15' }}
     timeout-minutes: 10
     permissions: {}
     steps:
       - name: The hosted macOS check is skipped while the repository is private
         if: github.event.repository.private == true
         run: |
-          echo "::notice::codesign --verify --strict is skipped here while the repository is private (DEC-253 (a2)). The gate is the runbook's local check on a Mac before the tag; it is required here again once the repository is public."
+          echo "::notice::codesign --verify --strict is skipped here while the repository is private (DEC-253 (a2)). The gate is the publish runbook's strict verify of the downloaded Release after the tag; it is required here again once the repository is public."
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: github.event.repository.private != true
         with:
@@ -213,7 +214,7 @@ jobs:
     name: Create the GitHub Release
     needs: [build, verify]
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # The only write permission in this workflow: it creates the Release.
     permissions:

@@ -44,10 +44,19 @@ concurrency:
   group: ward-cli-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job runs on a GitHub-hosted Linux ARM64 runner (WCLI-99, ruling W-34 A).
+# The organisation's self-hosted runner groups refuse public repositories
+# (allows_public_repositories: false, and setting it true is a security
+# relaxation this repository does not make), so a self-hosted label would leave
+# every job queued with no runner the moment the repository is public. Hosted
+# Linux ARM64 runners serve private repositories too, billed from the account's
+# included minutes, and are free and unlimited on public repositories, so one
+# label works before and after the flip. ARM64 keeps the platform these checks
+# were measured on.
 jobs:
   check:
     name: Check
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -65,7 +74,7 @@ jobs:
 
   docs:
     name: Docs
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
       # The published lore this job runs. The lore managed block in CLAUDE.md
@@ -111,7 +120,7 @@ jobs:
   # build on somebody's unrelated pull request.
   tracker:
     name: Tracker integrity
-    runs-on: [self-hosted, Linux, ARM64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
