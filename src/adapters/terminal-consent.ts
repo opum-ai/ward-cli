@@ -131,23 +131,65 @@ export function createTerminalConsent(
   };
 }
 
+// Display-only caps on the approval prompt (WCLI-100). These bound what is
+// shown, never what is approved: `normalizeProfile` still accepts up to
+// `profileLimits.maxHeadersPerProfile` headers of `maxHeaderValueChars`, and
+// the snapshot recorded on approval is the full declared set (ADR 0003, and
+// the snapshot version in src/domain/profile.ts is unchanged). A capped
+// header list says how many it did not show, so a shortened view is visibly
+// shortened rather than silently incomplete.
+const maxDisplayedHeaders = 8;
+const maxDisplayedHeaderNameChars = 60;
+const maxDisplayedHeaderValueChars = 120;
+const maxDisplayedHostChars = 120;
+
+// The destination host the final answer line repeats. The URL is normalized
+// to HTTPS before it reaches this port, but the renderer stands on its own:
+// an unparseable URL is named as such rather than thrown over, and the host
+// is escaped and bounded like every other shown value.
+function destinationHostForDisplay(url: string): string {
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    return "(unparseable url)";
+  }
+  if (host === "") return "(no host)";
+  return escapeForDisplay(host, { maxChars: maxDisplayedHostChars });
+}
+
 // The approval question shows the normalized operation, because approving it
 // is the whole point of asking: the developer has to read what Ward would
 // send. Every value shown is escaped, so a URL or header value that contains
-// terminal control bytes cannot redraw the prompt asking about it. Headers
-// are listed one per line, and a body policy or output policy is named by
-// its normalized value rather than described.
+// terminal control bytes cannot redraw the prompt asking about it, and runs
+// of whitespace are escaped too, so padding cannot scroll the destination off
+// screen. Headers are listed one per line, capped in number and length, and a
+// body policy or output policy is named by its normalized value rather than
+// described.
+//
+// The answer line repeats the method, the destination host and the header
+// count, so the line immediately above the y/N cannot be counterfeited by
+// layout: whatever else a value does to the screen, the person answering sees
+// the real destination beside the question.
 function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
   const { snapshot } = question;
+  const shownHeaders = snapshot.headers.slice(0, maxDisplayedHeaders);
+  const hiddenHeaders = snapshot.headers.length - shownHeaders.length;
+  const headerCount = `${snapshot.headers.length} header${snapshot.headers.length === 1 ? "" : "s"}`;
   const headers =
     snapshot.headers.length === 0
       ? ["  headers:  none"]
       : [
           "  headers:",
-          ...snapshot.headers.map(
+          ...shownHeaders.map(
             (header) =>
-              `    ${escapeForDisplay(header.name)}: ${escapeForDisplay(header.value)}`,
+              `    ${escapeForDisplay(header.name, { maxChars: maxDisplayedHeaderNameChars })}: ${escapeForDisplay(header.value, { maxChars: maxDisplayedHeaderValueChars })}`,
           ),
+          ...(hiddenHeaders > 0
+            ? [
+                `    ... ${hiddenHeaders} more header${hiddenHeaders === 1 ? "" : "s"} not shown (all ${snapshot.headers.length} are recorded on approval)`,
+              ]
+            : []),
         ];
   return [
     "Ward is asking you to approve an HTTPS operation for this checkout.",
@@ -168,7 +210,7 @@ function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
     "checkout. Ward refuses the profile if any part of it changes, and you",
     "would approve the new version. Nothing here is a secret value: the",
     "credential is read from the vault when the profile runs.",
-    "Answer y to approve, anything else to decline. [y/N] ",
+    `Answer y to approve ${escapeForDisplay(snapshot.method)} to ${destinationHostForDisplay(snapshot.url)} (${headerCount}), anything else to decline. [y/N] `,
   ].join("\n");
 }
 

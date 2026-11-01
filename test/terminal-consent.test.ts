@@ -126,6 +126,24 @@ describe("the prompt shows the value it is asking about", () => {
     expect(prompts[0]).toContain("/tmp/a\\x1b[2Kb");
     expect(prompts[0]).not.toContain("\u001b");
   });
+
+  // WCLI-100: a value is also layout. A run of spaces is visible padding that
+  // can scroll the real destination off screen, and a single space separator
+  // such as NBSP is invisible laid against ordinary text. A single ordinary
+  // space is kept so paths and prose stay readable.
+  test("runs of spaces are escaped, a single space is not", () => {
+    expect(escapeForDisplay("a b")).toBe("a b");
+    expect(escapeForDisplay("a  b")).toBe("a\\x20\\x20b");
+    expect(escapeForDisplay("a      b")).toBe(
+      "a\\x20\\x20\\x20\\x20\\x20\\x20b",
+    );
+  });
+
+  test("non-breaking and other space separators are escaped even alone", () => {
+    expect(escapeForDisplay("a b")).toBe("a\\u00a0b");
+    expect(escapeForDisplay("a b")).toBe("a\\u2003b");
+    expect(escapeForDisplay("a　b")).toBe("a\\u3000b");
+  });
 });
 
 // The approval prompt itself: what a developer reads before an operation is
@@ -209,6 +227,94 @@ describe("the approval prompt", () => {
     expect(prompt.endsWith("[y/N] ")).toBe(true);
     // It says what approving does, in the same breath as what is approved.
     expect(prompt).toContain("records exactly this operation");
+  });
+
+  // WCLI-100 AC1: the line above the answer restates the destination, so a
+  // padded or wrapped value above it cannot leave a benign url line looking
+  // like the operation being approved.
+  test("the answer line repeats the method, destination host and header count", () => {
+    const { prompt } = asked(approval);
+    const answerLine = prompt.split("\n").at(-1);
+    expect(answerLine).toBe(
+      "Answer y to approve POST to api.example.invalid (2 headers), anything else to decline. [y/N] ",
+    );
+  });
+
+  test("the answer line names zero headers when the profile declares none", () => {
+    const { prompt } = asked({
+      ...approval,
+      snapshot: { ...snapshot, headers: [] },
+    });
+    expect(prompt).toContain("headers:  none");
+    expect(prompt.split("\n").at(-1)).toContain("(0 headers)");
+  });
+
+  // WCLI-100 AC2: the displayed header list is capped in number and length,
+  // and says how many it did not show. The snapshot itself is unchanged.
+  test("the displayed header count is capped and says how many it hid", () => {
+    const many = Array.from({ length: 32 }, (_, index) => ({
+      name: `X-Pad-${index}`,
+      value: `value-${index}`,
+    }));
+    const { prompt } = asked({
+      ...approval,
+      snapshot: { ...snapshot, headers: many },
+    });
+    expect(prompt).toContain("X-Pad-0: value-0");
+    expect(prompt).toContain("X-Pad-7: value-7");
+    expect(prompt).not.toContain("X-Pad-8");
+    expect(prompt).toContain(
+      "... 24 more headers not shown (all 32 are recorded on approval)",
+    );
+  });
+
+  test("a long header value is shortened and marked as shortened", () => {
+    const value = "A".repeat(500);
+    const { prompt } = asked({
+      ...approval,
+      snapshot: { ...snapshot, headers: [{ name: "X-Long", value }] },
+    });
+    expect(prompt).not.toContain(value);
+    const shownLine = prompt
+      .split("\n")
+      .find((line) => line.includes("X-Long: "));
+    expect(shownLine).toBeDefined();
+    const shownValue = (shownLine as string).slice("    X-Long: ".length);
+    expect(shownValue.endsWith("...")).toBe(true);
+    expect(shownValue.length).toBeLessThanOrEqual(120);
+  });
+
+  // WCLI-100 AC4: the padded-header spoof from the review, end to end. A
+  // profile may declare 32 headers of 2048 characters each; padded values used
+  // to scroll the real destination off screen and leave a benign url line
+  // above the y/N. What the person answering reads last must still be the
+  // true destination, and the whole prompt must stay bounded.
+  test("padded header values cannot scroll the real destination off the answer line", () => {
+    const padded: NormalizedProfile = {
+      ...snapshot,
+      method: "DELETE",
+      url: "https://attacker.example/wipe",
+      headers: Array.from({ length: 32 }, (_, index) => ({
+        name: `X-Pad-${index}`,
+        value: `${" ".repeat(2000)}benign-${index}`,
+      })),
+    };
+    const { prompt, result } = asked({ ...approval, snapshot: padded });
+    expect(result).toBe("approved");
+    // The padding is escaped as text, never emitted as layout.
+    expect(prompt).toContain("\\x20\\x20\\x20");
+    expect(prompt).not.toContain(" ".repeat(20));
+    // What the person answering reads last is the true destination.
+    const answerLine = prompt.split("\n").at(-1) ?? "";
+    expect(answerLine).toContain("DELETE");
+    expect(answerLine).toContain("attacker.example");
+    expect(answerLine).toContain("32 headers");
+    expect(answerLine.endsWith("[y/N] ")).toBe(true);
+    // 32 x 2000 declared characters, but a bounded prompt with bounded lines:
+    // no single line wraps unpredictably.
+    expect(prompt.length).toBeLessThan(4000);
+    for (const line of prompt.split("\n"))
+      expect(line.length).toBeLessThan(200);
   });
 
   test("a header-type credential names its header and the alias, never a value (DEC-248 (5))", () => {
