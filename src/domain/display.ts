@@ -21,7 +21,12 @@
 // escape, so what is shown is readable and cannot act on the terminal that
 // shows it: every code point that can move a cursor, end a line, reverse text
 // or pad a line is shown as text.
-const invisibleCharacter = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+// Also escaped: the default-ignorable code points outside Cf (Hangul fillers
+// U+115F, U+1160, U+3164, U+FFA0, the combining grapheme joiner U+034F, the
+// variation selectors) and the blank Braille pattern U+2800. They render as
+// nothing, so one laid against text hides as well as a zero-width space does.
+const invisibleCharacter =
+  /[\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/u;
 const spaceSeparator = /^\p{Zs}$/u;
 
 // One source code point as the printable chunk that stands for it.
@@ -54,17 +59,23 @@ export function escapeForDisplay(
   limits: EscapeForDisplayLimits = {},
 ): string {
   const maxChars = limits.maxChars;
-  const budget = maxChars === undefined ? Infinity : Math.max(0, maxChars - 3);
-  let escaped = "";
   const characters = [...value];
-  for (let index = 0; index < characters.length; index++) {
-    const character = characters[index] as string;
-    const padded =
+  const chunks = characters.map((character, index) =>
+    escapeCharacter(
+      character,
       character === " " &&
-      (characters[index - 1] === " " || characters[index + 1] === " ");
-    const chunk = escapeCharacter(character, padded);
-    if (escaped.length + chunk.length > budget) return `${escaped}...`;
+        (characters[index - 1] === " " || characters[index + 1] === " "),
+    ),
+  );
+  const whole = chunks.join("");
+  // A value that fits is shown whole: the three characters the ellipsis takes
+  // are only reserved when something is actually cut.
+  if (maxChars === undefined || whole.length <= maxChars) return whole;
+  const budget = Math.max(0, maxChars - 3);
+  let escaped = "";
+  for (const chunk of chunks) {
+    if (escaped.length + chunk.length > budget) break;
     escaped += chunk;
   }
-  return escaped;
+  return `${escaped}...`;
 }

@@ -264,7 +264,7 @@ describe("the approval prompt", () => {
     expect(prompt).toContain("X-Pad-7: value-7");
     expect(prompt).not.toContain("X-Pad-8");
     expect(prompt).toContain(
-      "... 24 more headers not shown (all 32 are recorded on approval)",
+      "... 24 more headers not shown (all 32 are declared in the manifest and recorded on approval; the ones shown are the first by name)",
     );
   });
 
@@ -310,11 +310,69 @@ describe("the approval prompt", () => {
     expect(answerLine).toContain("attacker.example");
     expect(answerLine).toContain("32 headers");
     expect(answerLine.endsWith("[y/N] ")).toBe(true);
-    // 32 x 2000 declared characters, but a bounded prompt with bounded lines:
-    // no single line wraps unpredictably.
+    // 32 x 2000 declared characters, but a bounded prompt. The line bound is
+    // true because this url and host are short; a long host is shown whole on
+    // the answer line by design (see the long-host case below).
     expect(prompt.length).toBeLessThan(4000);
     for (const line of prompt.split("\n"))
       expect(line.length).toBeLessThan(200);
+  });
+
+  // A host far longer than any display cap, with the real domain at the end:
+  // the answer line must keep the end, because that is the part that decides
+  // where the request goes.
+  test("a host past 120 characters still shows its real domain on the answer line", () => {
+    const label = "a".repeat(40);
+    const host = `api.stripe.com.${label}.${label}.${label}.evil.example`;
+    expect(host.length).toBeGreaterThan(120);
+    const { prompt } = asked({
+      ...approval,
+      snapshot: { ...snapshot, url: `https://${host}/` },
+    });
+    const answerLine = prompt.split("\n").at(-1) ?? "";
+    expect(answerLine).toContain(host);
+    expect(answerLine).toContain("evil.example");
+    expect(answerLine.endsWith("[y/N] ")).toBe(true);
+  });
+
+  test("a header value that fits its cap is shown whole, and one a character over is shortened", () => {
+    for (const [length, whole] of [
+      [118, true],
+      [120, true],
+      [121, false],
+    ] as const) {
+      const value = "B".repeat(length);
+      const { prompt } = asked({
+        ...approval,
+        snapshot: { ...snapshot, headers: [{ name: "X-Edge", value }] },
+      });
+      expect(prompt.includes(value)).toBe(whole);
+      if (!whole) expect(prompt).toContain(`${"B".repeat(117)}...`);
+    }
+  });
+
+  test("code points that render as nothing are shown as escapes, not left blank", () => {
+    const blanks = [
+      "\u3164",
+      "\uffa0",
+      "\u115f",
+      "\u1160",
+      "\u2800",
+      "\u034f",
+      "\ufe0f",
+    ];
+    const { prompt } = asked({
+      ...approval,
+      snapshot: {
+        ...snapshot,
+        headers: [{ name: "X-Blank", value: `a${blanks.join("")}b` }],
+      },
+    });
+    const line = prompt.split("\n").find((l) => l.includes("X-Blank: ")) ?? "";
+    for (const blank of blanks) expect(line).not.toContain(blank);
+    expect(line).toContain("\\u3164");
+    expect(line).toContain("\\u2800");
+    expect(line).toContain("\\ufe0f");
   });
 
   test("a header-type credential names its header and the alias, never a value (DEC-248 (5))", () => {

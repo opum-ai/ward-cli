@@ -141,12 +141,15 @@ export function createTerminalConsent(
 const maxDisplayedHeaders = 8;
 const maxDisplayedHeaderNameChars = 60;
 const maxDisplayedHeaderValueChars = 120;
-const maxDisplayedHostChars = 120;
 
 // The destination host the final answer line repeats. The URL is normalized
 // to HTTPS before it reaches this port, but the renderer stands on its own:
 // an unparseable URL is named as such rather than thrown over, and the host
-// is escaped and bounded like every other shown value.
+// is escaped but NOT shortened: the registrable suffix is the end of the host,
+// a profile may declare a host far longer than any cap (a long run of labels
+// ahead of the real domain), and a cap that keeps the left end would cut the
+// one part the answer line exists to show. The host is ASCII with no spaces
+// and bounded by the URL limit, so it cannot pad the line.
 function destinationHostForDisplay(url: string): string {
   let host: string;
   try {
@@ -155,7 +158,7 @@ function destinationHostForDisplay(url: string): string {
     return "(unparseable url)";
   }
   if (host === "") return "(no host)";
-  return escapeForDisplay(host, { maxChars: maxDisplayedHostChars });
+  return escapeForDisplay(host);
 }
 
 // The approval question shows the normalized operation, because approving it
@@ -187,7 +190,7 @@ function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
           ),
           ...(hiddenHeaders > 0
             ? [
-                `    ... ${hiddenHeaders} more header${hiddenHeaders === 1 ? "" : "s"} not shown (all ${snapshot.headers.length} are recorded on approval)`,
+                `    ... ${hiddenHeaders} more header${hiddenHeaders === 1 ? "" : "s"} not shown (all ${snapshot.headers.length} are declared in the manifest and recorded on approval; the ones shown are the first by name)`,
               ]
             : []),
         ];
