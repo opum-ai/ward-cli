@@ -77,23 +77,18 @@ that named a release-time obligation.
    to tolerate unknown keys - is the one to revisit here, and it was left aside
    deliberately: on authority records such as bindings and approvals, an
    unknown field would be dropped silently from something that decides access.
-6. **Confirm the release build is the one you will install.** Until WCLI-123
-   lands, every release takes the Mac route (DEC-255): the runner's asset fails
-   `codesign --verify --strict`, so follow
-   [Publish a Mac-signed Ward release asset](publish-a-mac-signed-ward-release-asset.md)
-   instead of the comparison below. The comparison is kept as the reproducibility
-   measurement it was: dispatch the workflow's dry run and compare its hash with
-   a build on your Mac. The dry run builds, hashes and uploads the artifact to
-   the run and creates no Release:
+6. **Confirm the release build signs and verifies.** The tag run builds the
+   darwin asset on a hosted macOS runner, ad-hoc signs it and runs
+   `codesign --verify --strict` before upload (WCLI-123, DEC-253 (a4)), so a
+   dry run on `dev` is the rehearsal. It builds, signs, verifies and uploads the
+   artifact to the run and creates no Release:
 
    ```
    git fetch origin
    head="$(git rev-parse origin/dev)"
    gh workflow run release.yml --ref dev
-   # Select the run by the head SHA it built, not by recency: the newest run at
-   # this moment can still be the previous one. Poll, because the run is not
-   # listed the instant the dispatch returns and a null id here is a race, not
-   # an answer.
+   # Select the run by the head SHA it built, not by recency, and poll: the run
+   # is not listed the instant the dispatch returns.
    run_id=""
    while [ -z "$run_id" ]; do
      run_id="$(gh run list --workflow release.yml --branch dev --limit 20 \
@@ -102,23 +97,14 @@ that named a release-time obligation.
      [ -n "$run_id" ] || sleep 5
    done
    gh run watch "$run_id" --exit-status
-   gh run download "$run_id" -n ward-darwin-arm64 -D dry-run
-   cat dry-run/ward-darwin-arm64.sha256
-   # Build from the commit the run built, so the comparison measures the
-   # toolchain rather than two different sources.
-   git switch --detach "$head"
-   bun install --frozen-lockfile --os=darwin --cpu=arm64
-   bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward
-   shasum -a 256 out/ward
-   git switch -
    ```
 
-   Expect the same sha256 from both. Keep the fixed `out/ward` output name (the
-   bytes embed it), build from a real `bun install` in the checkout (a symlinked
-   `node_modules` changes the hash), and build the commit the run built.
-   Measured 2026-10-26: a dry run on `dev` and a Mac build agreed byte for byte.
-   A mismatch means the release is not reproducible: stop and report it rather
-   than tagging.
+   The run must succeed: a failure in the build job's sign step is a signature
+   or cdhash mismatch, so stop and report it rather than tagging. After the tag
+   run, follow
+   [Publish a Mac-signed Ward release asset](publish-a-mac-signed-ward-release-asset.md):
+   its first step reads the run's billing, and the sitting route there is the
+   fallback when a CI-built asset cannot be used.
 7. **Record the gate results** where the release's results live - WCLI-15's
    `docs/security-tests.md` maps every gate to a test and a recorded result -
    including this runbook's items, so the next release reads one list.

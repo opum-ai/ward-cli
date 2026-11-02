@@ -64,9 +64,9 @@ export function buildCommand(options: {
   entry: string;
   outfile: string;
   service?: string;
-  // A bun cross-compile target such as bun-darwin-arm64 (WCLI-82): the release
-  // workflow builds the macOS artifact on a Linux runner. Unset, the build is
-  // for the host, as before.
+  // A bun compile target such as bun-darwin-arm64 (WCLI-82): the release
+  // workflow passes it on its macOS runner (WCLI-123). Unset, the build is for
+  // the host, as before.
   target?: string;
 }): string[] {
   const service = options.service ?? productionService;
