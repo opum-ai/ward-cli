@@ -15,9 +15,10 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-02, under **DEC-255 (3)**, recorded by opum-doc and carried
-here from its outcome. The record binds, not this document's copy of it; the
-decision's text is DEC-255 (3) in opum-doc. Implemented by WCLI-100.
+Accepted, 2026-11-02, under **DEC-255 (3)**, recorded by opum-doc in its
+tracker (opum-ai/opum-doc#1560) and carried here from its outcome. (3) is a base
+part of DEC-255, not an amendment. The record binds, not this document's copy of
+it; the decision's text is DEC-255 (3) in opum-doc. Implemented by WCLI-100.
 
 ## Context
 
