@@ -597,16 +597,16 @@ test("a failed verify cannot be waved through: no continue-on-error, and release
   );
 });
 
-test("the verify job takes no token permissions and the header states the gate conditionally", () => {
+test("the verify job takes no token permissions and the header states the gate", () => {
   expect(jobText("verify")).toMatch(/^\s+permissions: \{\}$/m);
   const header = workflow
     .slice(0, workflow.indexOf("\nname: Release"))
     .replace(/\n# ?/g, " ");
   expect(header).toContain(
-    "Once the repository is public the release job needs a macOS verify job that runs codesign --verify --strict",
+    "The verify job below re-downloads the uploaded artifact and runs codesign --verify --strict again, and the release job needs it",
   );
   expect(header).toContain(
-    "While it is private the verify job only logs that it skipped",
+    "the release runbook reads /actions/runs/<id>/timing and MACOS billable must be 0",
   );
 });
 
@@ -724,9 +724,88 @@ function runsOnOf(name: string): string {
   return (line?.[1] ?? "").trim();
 }
 
-test("build and release run on the hosted Linux ARM64 runner", () => {
-  for (const job of ["build", "release"])
-    expect(runsOnOf(job)).toBe("ubuntu-24.04-arm");
+test("build runs on hosted macos-15 and release on hosted Linux ARM64", () => {
+  expect(runsOnOf("build")).toBe("macos-15");
+  expect(runsOnOf("release")).toBe("ubuntu-24.04-arm");
+});
+
+// WCLI-123 (DEC-253 (a4)): the artifact is built, ad-hoc signed and verified
+// strictly on macOS in ONE job, before upload, and the checksum and notes are
+// written from those signed bytes. Each assertion reads the parsed build job,
+// so deleting the sign step, the verify command, the cdhash agreement check or
+// reordering a step turns the matching test red.
+function buildSteps(): Record<string, unknown>[] {
+  const steps = parseWorkflow().jobs.build?.steps;
+  expect(Array.isArray(steps)).toBe(true);
+  return steps ?? [];
+}
+function stepIndex(match: (step: Record<string, unknown>) => boolean): number {
+  return buildSteps().findIndex(match);
+}
+const runOf = (step: Record<string, unknown>): string =>
+  typeof step.run === "string" ? step.run : "";
+const signIndex = () =>
+  stepIndex((s) => runOf(s).includes("codesign -s - --force"));
+const notesIndex = () =>
+  stepIndex((s) => s.name === "Hash it and write the release notes");
+const uploadIndex = () =>
+  stepIndex((s) => String(s.uses ?? "").startsWith("actions/upload-artifact@"));
+const buildIndex = () =>
+  stepIndex((s) =>
+    runOf(s).includes(
+      "bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward",
+    ),
+  );
+
+test("the build job signs ad hoc with codesign -s - --force, then verifies strictly, in the same step", () => {
+  const step = buildSteps()[signIndex()];
+  expect(step).toBeDefined();
+  const run = runOf(step ?? {});
+  expect(run).toContain("set -euo pipefail");
+  expect(
+    run.indexOf("codesign -s - --force ward-darwin-arm64"),
+  ).toBeGreaterThan(-1);
+  expect(
+    run.indexOf("codesign --verify --strict --verbose=2 ward-darwin-arm64"),
+  ).toBeGreaterThan(run.indexOf("codesign -s - --force"));
+});
+
+test("the cdhash agreement between codesign and macho-cdhash.mjs fails the job", () => {
+  const run = runOf(buildSteps()[signIndex()] ?? {});
+  expect(run).toContain("codesign -dvvv ward-darwin-arm64");
+  expect(run).toContain("node ../scripts/macho-cdhash.mjs ward-darwin-arm64");
+  expect(run).toContain('[ "$signed" != "$computed" ]');
+  expect(run).toContain("exit 1");
+});
+
+test("build, sign and verify come before the notes and the upload, in that order", () => {
+  const order = [buildIndex(), signIndex(), notesIndex(), uploadIndex()];
+  for (const index of order) expect(index).toBeGreaterThan(-1);
+  expect([...order].sort((a, b) => a - b)).toEqual(order);
+  // The sign step is the only one that renames, so the notes hash the signed
+  // file and no step after the signature touches its bytes.
+  const steps = buildSteps();
+  const renamed = steps
+    .map((s, i) => (/\bmv ward /.test(runOf(s)) ? i : -1))
+    .filter((i) => i !== -1);
+  expect(renamed).toEqual([signIndex()]);
+});
+
+test("the build job hashes with shasum on macOS and no step builds the darwin target on Linux", () => {
+  const job = jobText("build");
+  expect(job).not.toContain("sha256sum");
+  expect(job).toContain("shasum -a 256 ward-darwin-arm64");
+  expect(runsOnOf("build")).not.toContain("ubuntu");
+  expect(workflow.split("--target bun-darwin-arm64").length - 1).toBe(1);
+});
+
+test("verify still re-downloads the artifact and release needs build and verify", () => {
+  const verify = parseWorkflow().jobs.verify;
+  const uses = (verify?.steps ?? []).map((s) => String(s.uses ?? ""));
+  expect(uses.some((u) => u.startsWith("actions/download-artifact@"))).toBe(
+    true,
+  );
+  expect(parseWorkflow().jobs.release?.needs).toEqual(["build", "verify"]);
 });
 
 test("no job names a self-hosted label except verify's own keyed expression", () => {

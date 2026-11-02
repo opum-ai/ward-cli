@@ -5,7 +5,7 @@ title: Publish a Mac-signed Ward release asset
 tags:
   - release
   - install
-summary: Replace the Linux-built darwin asset with the Mac-signed one, regenerate the notes and checksum from its bytes, and verify the published download (DEC-255).
+summary: After a tag run check the macOS billing is zero and verify the download; replacing the asset by hand is the fallback.
 generated:
   by: lore/0.14.1
   at: 2026-11-01T15:33:40.421Z
@@ -15,11 +15,14 @@ generated:
 
 ## Purpose
 
-The tag push publishes a Linux-built darwin asset that fails `codesign --verify
---strict`. For 0.1.1 the operator replaces it with a Mac-signed one (DEC-255).
-The notes' sha256 and cdhash and the checksum must then name the signed bytes,
-or install step 3 refuses. This supersedes the cutting runbook's
-runner-vs-Mac byte comparison.
+A tag push signs and verifies the asset on a hosted macOS runner (DEC-253
+(a4)). Prerequisites and Steps below are the fallback sitting route (DEC-255 (1)).
+
+## After a tag run
+
+1. `gh api repos/opum-ai/ward-cli/actions/runs/RUN/timing --jq
+   .billable.MACOS.total_ms` must print `0`; otherwise stop and report.
+2. Run step 5 below.
 
 ## Prerequisites
 
