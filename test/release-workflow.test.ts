@@ -702,10 +702,21 @@ test("the publish runbook's verification step runs the fail-closed script", () =
     ),
     "utf8",
   ).replace(/\s+/g, " ");
+  // The fallback route verifies against the operator's local signed file.
   expect(runbook).toContain(
     "scripts/verify-published-release.sh TAG ward-darwin-arm64",
   );
-  expect(runbook).toContain("until step 5 prints PASS and step 6 is done");
+  expect(runbook).toContain("Do not tag again until step 5 prints PASS.");
+  // The CI route has no local file: it finds the tag run, downloads the
+  // uploaded artifact and compares that with the published asset (WCLI-123).
+  expect(runbook).toContain(
+    "gh run list --workflow release.yml --event push --json databaseId,headBranch,headSha",
+  );
+  expect(runbook).toContain("gh run download RUN -n ward-darwin-arm64 -D DIR");
+  expect(runbook).toContain(
+    "scripts/verify-published-release.sh TAG DIR/ward-darwin-arm64",
+  );
+  expect(runbook).toContain(".billable.MACOS.total_ms");
   // Step 6 may be run twice: it appends its line only when it is absent, and it
   // must not make the superseded release the Latest one.
   expect(runbook).toContain(
@@ -714,10 +725,11 @@ test("the publish runbook's verification step runs the fail-closed script", () =
   expect(runbook).toContain("--notes-file old.md --latest=false");
 });
 
-// WCLI-99 (ruling W-34 A): build and release moved to the same GitHub-hosted
-// Linux ARM64 runner as CI, because the organisation's self-hosted groups
-// refuse public repositories. verify keeps its WCLI-120 visibility-keyed runner
-// and is the only place a self-hosted label may appear in either workflow.
+// WCLI-99 (ruling W-34 A) moved the release workflow off the organisation's
+// self-hosted groups, which refuse public repositories; WCLI-123 then moved the
+// build to hosted macos-15 to sign it there. release stays on hosted Linux ARM64.
+// verify keeps its WCLI-120 visibility-keyed runner and is the only place a
+// self-hosted label may appear in either workflow.
 function runsOnOf(name: string): string {
   const line = /^ {4}runs-on: (.+)$/m.exec(jobText(name));
   expect(line).not.toBeNull();
@@ -774,8 +786,49 @@ test("the cdhash agreement between codesign and macho-cdhash.mjs fails the job",
   const run = runOf(buildSteps()[signIndex()] ?? {});
   expect(run).toContain("codesign -dvvv ward-darwin-arm64");
   expect(run).toContain("node ../scripts/macho-cdhash.mjs ward-darwin-arm64");
+  expect(run).toContain('[ -z "$signed" ]');
   expect(run).toContain('[ "$signed" != "$computed" ]');
   expect(run).toContain("exit 1");
+});
+
+// N1 (WCLI-123 review): nothing may make the sign step soft. A key the step does
+// not need (continue-on-error, if, env, shell, defaults), a `|| true` after the
+// verify command, or a comment-led trailer would all let a bad signature pass,
+// so the build job and each of its steps carry exactly the keys they are known
+// to need and the verify command is the whole of its line.
+test("the build job and each build step carry exactly the keys they are known to need", () => {
+  const build = parseWorkflow().jobs.build ?? {};
+  expect(Object.keys(build).sort()).toEqual(
+    ["name", "runs-on", "steps", "timeout-minutes"].sort(),
+  );
+  const sign = buildSteps()[signIndex()] ?? {};
+  expect(Object.keys(sign).sort()).toEqual(["name", "run"]);
+  const known = [
+    ["uses", "with"],
+    ["name", "if", "env", "run"],
+    ["name", "run"],
+    ["name", "env", "run"],
+    ["run"],
+  ].map((keys) => [...keys].sort().join(","));
+  for (const step of buildSteps())
+    expect(known).toContain(Object.keys(step).sort().join(","));
+  for (const step of buildSteps()) {
+    expect("continue-on-error" in step).toBe(false);
+    expect("shell" in step).toBe(false);
+  }
+});
+
+test("nothing can follow the sign and verify commands on their line", () => {
+  const lines = runOf(buildSteps()[signIndex()] ?? {})
+    .split("\n")
+    .map((l) => l.trim());
+  expect(lines).toContain("codesign -s - --force ward-darwin-arm64");
+  expect(lines).toContain(
+    "codesign --verify --strict --verbose=2 ward-darwin-arm64",
+  );
+  for (const line of lines.filter((l) => l.startsWith("codesign ")))
+    expect(/\|\||;|&|#/.test(line)).toBe(false);
+  expect(runOf(buildSteps()[signIndex()] ?? {})).not.toMatch(/\|\|\s*true/);
 });
 
 test("build, sign and verify come before the notes and the upload, in that order", () => {

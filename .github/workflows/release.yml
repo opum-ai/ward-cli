@@ -191,24 +191,26 @@ jobs:
           if-no-files-found: error
 
   # WCLI-96 (W-1, DEC-253): the release is gated on macOS's own verdict on the
-  # signature. The Linux build cannot run codesign, and a published v0.1.0 whose
-  # sha256 matched its manifest still failed `codesign --verify --strict`. Once
-  # the repository is public this job downloads the exact artifact the release
-  # would publish, on a GitHub-hosted macOS runner (a self-hosted one is not
-  # used for a repository that is public), and the release job needs it, so a
-  # signature that does not verify cannot be published. It runs on a release tag
-  # and on a manual dry run (DEC-253 (a1)); only the release job is tag-only, so
-  # a dry run can never publish.
+  # signature. The build job signs and checks the asset itself (WCLI-123); this
+  # job is the independent re-check, because a published v0.1.0 whose sha256
+  # matched its manifest still failed `codesign --verify --strict`. Once the
+  # repository is public it downloads the exact artifact the release would
+  # publish, on a GitHub-hosted macOS runner (a self-hosted one is not used for
+  # a repository that is public), and the release job needs it, so a signature
+  # that does not verify cannot be published. It runs on a release tag and on a
+  # manual dry run (DEC-253 (a1)); only the release job is tag-only, so a dry
+  # run can never publish.
   #
-  # While the repository is private (DEC-253 (a2), WCLI-120) the gate is the
-  # publish runbook's strict verify of the downloaded Release after the tag,
-  # and this job must not queue a billed macOS run. It still runs, so the
-  # release job's needs is met without a status function in its condition, but
-  # on the self-hosted Linux runner, takes no step but a notice, and says why
-  # the hosted check was skipped. The visibility is read from the event's
-  # repository payload and fails closed: only an explicit `private == true`
-  # skips, so a payload without the field takes the public, verifying path.
-  # After the flip the same expression resolves to macos-15 with no edit.
+  # While the repository is private (DEC-253 (a2), WCLI-120) this job runs on the
+  # self-hosted Linux runner and only logs why the hosted re-check is skipped,
+  # and the gate is the publish runbook's strict verify of the downloaded
+  # Release after the tag. It still runs, so the release job's needs is met
+  # without a status function in its condition. The build job, by contrast, is
+  # on macos-15 whatever the visibility (DEC-253 (a4)); the key below is this
+  # job's alone. The visibility is read from the event's repository payload and
+  # fails closed: only an explicit `private == true` skips, so a payload without
+  # the field takes the public, verifying path. After the flip the same
+  # expression resolves to macos-15 with no edit.
   verify:
     name: Verify the code signature on macOS
     needs: build
