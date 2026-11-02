@@ -26,27 +26,33 @@ asks the developer to approve one exact operation. The review behind WCLI-100
 (W-5) found its layout spoofable by whitespace, and asked whether the developer
 should have to type the destination host instead of answering `y`. The first
 fix capped the host at 120 characters and kept the left end, which could hide
-a registrable suffix; the Opus review of #233 caught it.
+a registrable suffix; the Opus review of opum-ai/ward-cli#233 caught it.
 
 ## Decision
 
 1. **Keep `y/N`.** The developer is not asked to type the host.
-2. **Because the answer line carries what is being approved**: the method, the
-   whole host and the header count, on the line the developer answers
-   (`src/adapters/terminal-consent.ts`). The host is ASCII, has no spaces and is
+2. **Because the answer line carries the destination**: the method, the whole
+   host and the header count, on the line the developer answers
+   (`src/adapters/terminal-consent.ts`); the path, header values, body and
+   output are on the lines above it. The host is ASCII, has no spaces and is
    bounded by the profile's URL limit, so it is shown whole, never capped. A
    test pins a 150-character host that ends in the attacker's domain.
-3. **The display is escaped, not trusted.** Runs of spaces, no-break and
-   other blank-rendering code points are escaped, at most 8 headers show with
-   a count line, names are capped at 60 characters and values at 120.
+3. **The display is escaped, not trusted.** Runs of spaces, and every
+   no-break or blank-rendering code point, are escaped; at most 8 headers show
+   with a count line, names are capped at 60 characters and values at 120.
 
 ## Consequences
 
 - **Fewer keystrokes, same information.** The developer sees the whole host
   before answering; typing it would add friction without showing more.
+- **`y/N` does not prove the developer read the host.** A habitual `y` approves
+  whatever the line shows. Typing the host would have forced that read; this
+  decision gives up that proof of attention and accepts the cost for less
+  friction.
 - **Residuals, not fixed.** A backslash is not escaped, so the escaping is not
   injective, which cannot forge a host because the answer line cannot carry a
   backslash. Headers are listed by name, so the declaration picks which 8 show;
   the line says the full set is in the manifest. Follow-up: WCLI-128.
 - **Revisit** if a way appears to make the host on that line differ from the one
-  the request uses; that would be a new decision, not a reading of this one.
+  the request uses, or if there is evidence of habitual `y` answers; either would
+  be a new decision, not a reading of this one.

@@ -54,6 +54,7 @@
 - 2026-10-30T11:29:30-05:00 24cc217f759c0ff3cc69804b583ed036f01c99e0 feat(WCLI-84): a secret in one named header is an auth scheme beside bearer (DEC-248) (#208)
 - 2026-10-30T12:32:39-05:00 c2ae0c0fd7ca613be0d025010e85a878176ad3e3 feat(WCLI-98): refuse the request-rewriting override headers (W-3b) (#215)
 - 2026-10-31T08:10:44-05:00 68c648db0be9621853a8c33521e5606d0494cfaf chore(WCLI-117): round-3 nits - proxy-* rule in ADR 0024, case-only rename test, comment widths and timestamps (#219)
+- 2026-11-02T13:07:16-06:00 0a3585ec122fbb5c5a6b51ca0ee4e6310227e543 docs(WCLI-100): ADR 0025, the approval prompt keeps y/N because its answer line shows the whole host (DEC-255 (3))
 
 ## docs/runbooks
 
