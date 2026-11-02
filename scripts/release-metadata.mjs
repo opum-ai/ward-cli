@@ -1,10 +1,11 @@
 // The two release-notes lines that name the artifact's bytes, and the checksum
 // file's text, rewritten from a different set of bytes (WCLI-96, DEC-255).
 //
-// The tag push publishes the Linux-built darwin asset with notes written from
-// those bytes. A Mac re-sign changes both the sha256 and the cdhash, so the
-// notes and the checksum file are regenerated from the Mac-signed file; install
-// step 3 refuses on a cdhash that does not match the notes.
+// The tag run signs the darwin asset on macOS and writes the notes from those
+// signed bytes (WCLI-123). A re-sign changes both the sha256 and the cdhash, so
+// the operator sitting route regenerates the notes and the checksum file from
+// the re-signed file; install step 3 refuses on a cdhash that does not match
+// the notes.
 
 const SHA256_LINE = /^- sha256 ward-darwin-arm64: [0-9a-f]{64}$/;
 const CDHASH_LINE =

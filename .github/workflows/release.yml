@@ -1,29 +1,30 @@
 # Builds the macOS artifact and attaches it to a GitHub Release (WCLI-82,
-# DEC-246).
+# DEC-246, WCLI-123, DEC-253 (a4)).
 #
-# The release is a pushed v* tag. The build runs on a GitHub-hosted Linux ARM64
-# runner (WCLI-99, ruling W-34 A) and cross-compiles for darwin-arm64. That
-# asset FAILS codesign --verify --strict (DEC-255), so until WCLI-123 lands the
-# operator replaces it with a Mac-signed one and regenerates the notes and
-# checksum from the signed bytes, then runs scripts/verify-published-release.sh
-# (docs/runbooks/publish-a-mac-signed-ward-release-asset.md). The compiled bytes
-# depend on the output file name, so the executable is always built under the
-# fixed name `ward` and only then renamed for the release.
+# The release is a pushed v* tag. The build job runs on a GitHub-hosted macOS
+# runner, because the binary has to be signed by macOS itself: the Linux
+# cross-build of the darwin target FAILED codesign --verify --strict (DEC-255)
+# and is retired from this path. In that one job it builds under the fixed name
+# `ward` (the compiled bytes depend on the output file name), renames it for the
+# release, ad-hoc signs it with `codesign -s - --force`, runs
+# `codesign --verify --strict --verbose=2`, and checks that codesign's CDHash
+# and scripts/macho-cdhash.mjs agree, all before anything is uploaded. The
+# checksum and the notes' sha256 and cdhash are then written from those signed
+# bytes. The signing recipe is the DEC-255 (1) sitting's, recorded in
+# docs/runbooks/publish-a-mac-signed-ward-release-asset.md.
 #
-# workflow_dispatch is a dry run: it builds, hashes and uploads the artifact to
-# the run, and creates no Release. The Release is created by one job, the only
-# one that holds contents: write.
+# workflow_dispatch is a dry run: it builds, signs, verifies, hashes and uploads
+# the artifact to the run, and creates no Release. The Release is created by one
+# job, the only one that holds contents: write.
 #
-# Once the repository is public the release job needs a macOS verify job that
-# runs codesign --verify --strict on this artifact (WCLI-96, DEC-253), so a
-# signature that does not verify cannot publish. While it is private the verify
-# job only logs that it skipped (DEC-253 (a2), WCLI-120), and the gate is the
-# publish runbook's strict verify of the downloaded Release after the tag.
+# The verify job below re-downloads the uploaded artifact and runs
+# codesign --verify --strict again, and the release job needs it, so a signature
+# that does not verify cannot publish. While the repository was private the
+# verify job only logged that it skipped (DEC-253 (a2), WCLI-120).
 #
-# The binary is ad-hoc signed by the compiler. codesign is not available on
-# Linux, so the cdhash the notes carry is read from the Mach-O itself by
-# scripts/macho-cdhash.mjs, which test/release-workflow.test.ts checks against
-# codesign when it runs on a Mac.
+# Billing is read after each tag run by the operator, not here: the release
+# runbook reads /actions/runs/<id>/timing and MACOS billable must be 0
+# (DEC-253 (a4)); if not, ward-cli stops and reports.
 name: Release
 
 on:
@@ -38,7 +39,7 @@ permissions:
 jobs:
   build:
     name: Build darwin-arm64
-    runs-on: ubuntu-24.04-arm
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       # Full history, so a tag push can be checked against main below. The
@@ -93,6 +94,26 @@ jobs:
           mkdir out
           bun scripts/build.ts --target bun-darwin-arm64 --outfile out/ward
           ls -l out/ward
+      # Signed on the machine that will judge it, and judged before upload: a
+      # signature that fails here stops the job, so nothing unsigned or
+      # mis-signed is uploaded. The two cdhash readers must agree, because the
+      # notes carry the one from scripts/macho-cdhash.mjs (DEC-255 (1)).
+      - name: Ad-hoc sign it, verify it strictly and check the cdhash
+        run: |
+          set -euo pipefail
+          cd out
+          mv ward ward-darwin-arm64
+          codesign -s - --force ward-darwin-arm64
+          codesign --verify --strict --verbose=2 ward-darwin-arm64
+          signed="$(codesign -dvvv ward-darwin-arm64 2>&1 | sed -n 's/^CDHash=//p')"
+          computed="$(node ../scripts/macho-cdhash.mjs ward-darwin-arm64)"
+          echo "codesign CDHash=${signed} macho-cdhash=${computed}"
+          if [ -z "$signed" ] || [ "$signed" != "$computed" ]; then
+            echo "::error::codesign and scripts/macho-cdhash.mjs disagree on the cdhash"
+            exit 1
+          fi
+      # Hashes the SIGNED bytes from the step above, so the checksum, the
+      # notes' sha256 and the notes' cdhash all name what is published.
       - name: Hash it and write the release notes
         env:
           SOURCE_SHA: ${{ github.sha }}
@@ -142,8 +163,7 @@ jobs:
             snapshot_bump=""
           fi
           cd out
-          mv ward ward-darwin-arm64
-          sha256sum ward-darwin-arm64 > ward-darwin-arm64.sha256
+          shasum -a 256 ward-darwin-arm64 > ward-darwin-arm64.sha256
           sha256="$(cut -d' ' -f1 ward-darwin-arm64.sha256)"
           cdhash="$(node ../scripts/macho-cdhash.mjs ward-darwin-arm64)"
           {
@@ -171,24 +191,26 @@ jobs:
           if-no-files-found: error
 
   # WCLI-96 (W-1, DEC-253): the release is gated on macOS's own verdict on the
-  # signature. The Linux build cannot run codesign, and a published v0.1.0 whose
-  # sha256 matched its manifest still failed `codesign --verify --strict`. Once
-  # the repository is public this job downloads the exact artifact the release
-  # would publish, on a GitHub-hosted macOS runner (a self-hosted one is not
-  # used for a repository that is public), and the release job needs it, so a
-  # signature that does not verify cannot be published. It runs on a release tag
-  # and on a manual dry run (DEC-253 (a1)); only the release job is tag-only, so
-  # a dry run can never publish.
+  # signature. The build job signs and checks the asset itself (WCLI-123); this
+  # job is the independent re-check, because a published v0.1.0 whose sha256
+  # matched its manifest still failed `codesign --verify --strict`. Once the
+  # repository is public it downloads the exact artifact the release would
+  # publish, on a GitHub-hosted macOS runner (a self-hosted one is not used for
+  # a repository that is public), and the release job needs it, so a signature
+  # that does not verify cannot be published. It runs on a release tag and on a
+  # manual dry run (DEC-253 (a1)); only the release job is tag-only, so a dry
+  # run can never publish.
   #
-  # While the repository is private (DEC-253 (a2), WCLI-120) the gate is the
-  # publish runbook's strict verify of the downloaded Release after the tag,
-  # and this job must not queue a billed macOS run. It still runs, so the
-  # release job's needs is met without a status function in its condition, but
-  # on the self-hosted Linux runner, takes no step but a notice, and says why
-  # the hosted check was skipped. The visibility is read from the event's
-  # repository payload and fails closed: only an explicit `private == true`
-  # skips, so a payload without the field takes the public, verifying path.
-  # After the flip the same expression resolves to macos-15 with no edit.
+  # While the repository is private (DEC-253 (a2), WCLI-120) this job runs on the
+  # self-hosted Linux runner and only logs why the hosted re-check is skipped,
+  # and the gate is the publish runbook's strict verify of the downloaded
+  # Release after the tag. It still runs, so the release job's needs is met
+  # without a status function in its condition. The build job, by contrast, is
+  # on macos-15 whatever the visibility (DEC-253 (a4)); the key below is this
+  # job's alone. The visibility is read from the event's repository payload and
+  # fails closed: only an explicit `private == true` skips, so a payload without
+  # the field takes the public, verifying path. After the flip the same
+  # expression resolves to macos-15 with no edit.
   verify:
     name: Verify the code signature on macOS
     needs: build
