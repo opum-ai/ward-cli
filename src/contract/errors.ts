@@ -255,6 +255,16 @@ export const errorCatalog = {
       "This checkout is not registered with Ward, so it has no access to this project's secrets.",
     hint: "Run `ward init` in a terminal to register this checkout.",
   },
+  // unregister's in-transaction check (DEC-255 a9): what it was about to
+  // remove is no longer what the developer was shown. The checkout is still
+  // registered as far as this refusal knows, so project_not_registered would
+  // be false here.
+  binding_changed: {
+    type: "conflict",
+    message:
+      "This checkout's registration changed while the command was running, so Ward removed nothing.",
+    hint: "Run `ward unregister` again to see what is registered now.",
+  },
   unregister_requires_terminal: {
     type: "denied",
     message:
