@@ -70,6 +70,8 @@ export interface ProbedCheckout {
   readonly root: string;
   readonly device: string;
   readonly inode: string;
+  // The nonce in that checkout's git directory, when it has one.
+  readonly checkoutId?: string;
   // The project manifest's text, or undefined when there is none to read.
   readonly manifest: string | undefined;
 }
@@ -417,10 +419,22 @@ function describeStaleApproval(
     probed.inode !== record.inode
   )
     return inert("a different directory now stands at that path");
+  // An approval with no nonce was written before checkouts had an identity. It
+  // is named as such rather than as a different directory: the directory is the
+  // same, and the remedy is to approve again (the new record replaces it).
+  if (record.checkoutId === undefined)
+    return inert(
+      "this is a legacy approval, written before checkouts had an identity; approve the profile again from that checkout",
+    );
+  if (probed.checkoutId !== record.checkoutId)
+    return inert("a different directory now stands at that path");
   const identity = {
     root: record.root,
     device: record.device,
     inode: record.inode,
+    ...(record.checkoutId === undefined
+      ? {}
+      : { checkoutId: record.checkoutId }),
   };
   const binding = findBinding(state, identity);
   if (binding === undefined)

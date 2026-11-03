@@ -26,4 +26,5 @@
 - [Keep the vault state reader's exact key-set comparison at the first release](0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md)
 - [A secret in one named header is an auth scheme beside bearer](0024-a-secret-in-one-named-header-is-an-auth-scheme-beside-bearer.md)
 - [The profile approval prompt keeps y/N because its answer line shows the whole host](0025-the-profile-approval-prompt-keeps-y-n-because-its-answer-line-shows-the-whole-host.md)
+- [A checkout is identified by its directory identity and a nonce in its git directory](0026-a-checkout-is-identified-by-its-directory-identity-and-a-nonce-in-its-git-directory.md)
 <!-- lore:index:end -->

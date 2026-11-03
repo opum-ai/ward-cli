@@ -542,6 +542,9 @@ async function approveProfile(
     root: options.checkout.root,
     device: options.checkout.device,
     inode: options.checkout.inode,
+    ...(options.checkout.checkoutId === undefined
+      ? {}
+      : { checkoutId: options.checkout.checkoutId }),
     approvedAt,
     expiresAt,
     // Written with the record so a later build reads the snapshot under the

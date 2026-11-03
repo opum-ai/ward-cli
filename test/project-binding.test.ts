@@ -43,7 +43,17 @@ import { wardBlockBody } from "../src/application/bridges.ts";
 import { bindingFor, readCheckout } from "../src/application/project.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
-import { parseVaultState, type VaultState } from "../src/domain/vault-state.ts";
+import {
+  findProfileApproval,
+  parseVaultState,
+  serializeVaultState,
+  type VaultState,
+  withProfileApproval,
+} from "../src/domain/vault-state.ts";
+import {
+  normalizeProfile,
+  profileSnapshotVersion,
+} from "../src/domain/profile.ts";
 import { MemoryKeychain } from "./support/memory-keychain.ts";
 
 const SERVICE = "opum.ward.binding";
@@ -82,11 +92,13 @@ function worktree(
   const directory = join(root, `${name}-${++cases}`);
   mkdirSync(directory);
   if (git === "directory") mkdirSync(join(directory, ".git"));
-  else
-    writeFileSync(
-      join(directory, ".git"),
-      `gitdir: ${directory}/.git/worktrees/x\n`,
-    );
+  else {
+    // A linked worktree's git directory exists, elsewhere: the pointer Ward
+    // follows must resolve to a real directory (DEC-255 a6 Q2).
+    const gitDirectory = `${directory}-gitdir`;
+    mkdirSync(gitDirectory);
+    writeFileSync(join(directory, ".git"), `gitdir: ${gitDirectory}\n`);
+  }
   return directory;
 }
 
@@ -360,9 +372,10 @@ describe("T10: no checkout inherits a binding", () => {
     // a filesystem may hand a freed inode straight to the next directory made
     // at the same path (the hosted runner's does), which would make the two
     // inodes equal and the precondition below false. That reuse is a real gap
-    // in the product, not noise: identity is (root, device, inode) only, so an
-    // rm -rf and re-clone at the same path inherits the binding. It is filed as
-    // its own task; this case tests the different-inode path.
+    // in the product, not noise: identity was (root, device, inode) only, so an
+    // rm -rf and re-clone at the same path would have inherited the binding
+    // before the checkout nonce (WCLI-125); this case tests the different-inode
+    // path, and the re-clone case below the same-inode one.
     const aside = `${checkout}.old`;
     renameSync(checkout, aside);
     mkdirSync(join(checkout, ".git"), { recursive: true });
@@ -377,6 +390,92 @@ describe("T10: no checkout inherits a binding", () => {
     expect(after.inode).not.toBe(before.inode);
     expect(h.resolve(checkout).projectId).toBe(registered.projectId);
     expect(h.resolve(checkout).binding).toBeUndefined();
+  });
+
+  // WCLI-125 (DEC-255 a2 clause 4): the old directory is deleted, not moved
+  // aside, so a filesystem that reuses a freed inode (the hosted ext4 runner
+  // does; APFS rarely does) hands the new directory the old inode. Whether or
+  // not it does here, the re-clone carries no nonce in its fresh git directory,
+  // so it inherits neither the old clone's binding nor its profile approvals;
+  // registered again, it gets a binding of its own with a different nonce.
+  test("an rm -rf and re-clone at the same path is a new checkout, inode reused or not", async () => {
+    const h = harness();
+    const checkout = worktree("recloned");
+    await h.setUp(checkout);
+    const registered = json((await h.init(checkout)).stdout).data;
+    const manifest = readFileSync(manifestPath(checkout));
+    const before = locateCheckout(checkout);
+    expect(before.checkoutId).toMatch(/^[0-9a-f]{32}$/);
+    expect(h.resolve(checkout).binding?.projectId).toBe(registered.projectId);
+
+    rmSync(checkout, { recursive: true, force: true });
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    mkdirSync(join(checkout, ".ward"));
+    writeFileSync(manifestPath(checkout), manifest);
+    const after = locateCheckout(checkout);
+
+    expect(after.root).toBe(before.root);
+    expect(after.checkoutId).toBeUndefined();
+    expect(h.resolve(checkout).projectId).toBe(registered.projectId);
+    expect(h.resolve(checkout).binding).toBeUndefined();
+
+    // The old clone's approval stays with its nonce: the re-clone inherits none
+    // (AC2), before or after it registers again.
+    const staleNonce = before.checkoutId as string;
+    h.store.mutate(
+      new Uint8Array(h.keychain.items.values().next().value as number[]),
+      (plaintext) => {
+        const current = parseVaultState(plaintext);
+        return serializeVaultState(
+          withProfileApproval(current, {
+            profile: "deploy",
+            projectId: registered.projectId,
+            root: before.root,
+            device: before.device,
+            inode: before.inode,
+            checkoutId: staleNonce,
+            approvedAt: REGISTERED_AT,
+            expiresAt: "2026-11-04T00:00:00.000Z",
+            snapshotVersion: profileSnapshotVersion,
+            snapshot: normalizeProfile({
+              adapter: "http",
+              method: "GET",
+              url: "https://api.example.invalid/a",
+              auth: { type: "bearer", secret: "example.token" },
+              headers: {},
+              requestBody: "none",
+              output: "status",
+            }),
+          }),
+        );
+      },
+    );
+    expect(
+      findProfileApproval(
+        h.state() as VaultState,
+        after,
+        registered.projectId,
+        "deploy",
+      ),
+    ).toBeUndefined();
+
+    // Registered explicitly, it is a binding of its own beside the old one.
+    h.approver.answer = "approved";
+    const again = await h.init(checkout);
+    expect(json(again.stdout).data.registration).toBe("registered");
+    expect(h.state()?.localBindings).toHaveLength(2);
+    expect(h.resolve(checkout).binding?.checkoutId).toBe(
+      locateCheckout(checkout).checkoutId,
+    );
+    expect(locateCheckout(checkout).checkoutId).not.toBe(before.checkoutId);
+    expect(
+      findProfileApproval(
+        h.state() as VaultState,
+        locateCheckout(checkout),
+        registered.projectId,
+        "deploy",
+      ),
+    ).toBeUndefined();
   });
 
   test("re-registering the same checkout asks nothing and writes nothing", async () => {
