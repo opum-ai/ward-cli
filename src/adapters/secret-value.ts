@@ -30,13 +30,14 @@ import { WardError } from "../contract/errors.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { secretLimits } from "../domain/secret.ts";
 import { isConsentAnswer, readAnswerLine } from "./terminal-consent.ts";
-import { flushPendingInput } from "./terminal-input.ts";
+import { flushPendingInput, inputQueued } from "./terminal-input.ts";
 
 export interface TerminalSecretParts {
   isInteractive?: () => boolean;
   setRaw?: (on: boolean) => void;
   readHiddenBytes?: () => Uint8Array;
   flushInput?: () => void;
+  inputPending?: () => boolean;
   readStdinBytes?: (maxBytes: number) => Uint8Array;
   readAnswer?: () => string;
   writePrompt?: (text: string) => void;
@@ -142,10 +143,18 @@ export function createTerminalSecretValues(
   const readHiddenBytes =
     parts.readHiddenBytes ?? (() => readHiddenValueBytes(0));
   const flushInput = parts.flushInput ?? (() => flushPendingInput(0));
+  const inputPending = parts.inputPending ?? (() => inputQueued(0));
   const readStdinBytes =
     parts.readStdinBytes ?? ((maxBytes) => readStdinValueBytes(maxBytes, 0));
   const readAnswer = parts.readAnswer ?? readAnswerLine;
   const writePrompt = parts.writePrompt ?? defaultWritePrompt;
+  const pending = (): boolean => {
+    try {
+      return inputPending();
+    } catch {
+      return false;
+    }
+  };
   const available = (): boolean => {
     try {
       return isInteractive();
@@ -161,7 +170,16 @@ export function createTerminalSecretValues(
       writePrompt("Enter the secret value: ");
       setRaw(true);
       try {
-        return readHiddenBytes();
+        const value = readHiddenBytes();
+        // A value that ended on its terminator with more input still queued
+        // behind it is a multi-line paste (DEC-255 a2 clause 3). It is refused
+        // rather than stored as its first line, the same way a value past the
+        // bound is refused rather than truncated; the finally below drains and
+        // flushes what is queued before echo returns. An abandoned or empty
+        // read is refused later on its own terms.
+        if (value.length > 0 && pending())
+          throw new WardError("secret_value_multiline");
+        return value;
       } catch (error) {
         // A reading that refused the value is an answer, not a failure, and
         // is rethrown: swallowing it would report a too-large value as an

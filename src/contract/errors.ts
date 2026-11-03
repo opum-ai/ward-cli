@@ -290,6 +290,12 @@ export const errorCatalog = {
     type: "validation",
     message: "The secret value is larger than 64 KiB.",
   },
+  secret_value_multiline: {
+    type: "validation",
+    message:
+      "More input was queued after the value's first line, so it looks like a multi-line paste. Ward refused it, stored nothing and discarded what was queued.",
+    hint: "Enter a one-line value, or pipe a multi-line secret in with --stdin, for example from a file.",
+  },
   secret_not_found: {
     type: "not_found",
     message: "No secret with that alias exists in this project.",

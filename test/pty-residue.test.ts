@@ -135,7 +135,20 @@ scenario(
   "a multiline paste leaves nothing queued for the shell",
   async () => {
     const output = await runScenario("secret", "s3cret\nLEAK-ONE\nLEAK-TWO\n");
-    // Six bytes read, and the two lines after the terminator are gone.
+    // DEC-255 (a2) clause 3: input still queued after the terminator refuses
+    // the value, and the two lines after the terminator are gone.
+    expectNothingReachedTheShell(output, "REFUSED:secret_value_multiline");
+    expect(output).not.toContain("LEN:");
+  },
+  20_000,
+);
+
+// The accepting half of the refusal above: a one-line value with nothing
+// queued behind it is read whole, so the probe is not refusing everything.
+scenario(
+  "a one-line paste is accepted and leaves nothing queued for the shell",
+  async () => {
+    const output = await runScenario("secret", "s3cret\n");
     expectNothingReachedTheShell(output, "LEN:6");
   },
   20_000,
@@ -200,7 +213,8 @@ scenario(
   "a paste with a tail past the tty queue leaves nothing for the shell (secret)",
   async () => {
     const output = await runScenario("secret", `s3cret\n${LONG_TAIL}\n`);
-    expect(output).toContain("LEN:6");
+    expect(output).toContain("REFUSED:secret_value_multiline");
+    expect(output).not.toContain("LEN:");
     expectNoTailReachedAnything(output);
   },
   20_000,

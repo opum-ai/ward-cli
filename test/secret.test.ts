@@ -46,6 +46,7 @@ import {
 } from "../src/application/secrets.ts";
 import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
+import { inputQueued } from "../src/adapters/terminal-input.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import {
   decodeSecretValue,
@@ -952,6 +953,54 @@ describe("the terminal value adapters", () => {
       "flush",
       "raw:off",
     ]);
+  });
+
+  // DEC-255 (a2) clause 3: a value that ended on its terminator with input still
+  // queued behind it is a multi-line paste. It is refused, and what is queued
+  // is drained and flushed before echo comes back.
+  test("a multi-line paste into the hidden prompt is refused, then flushed before echo returns", () => {
+    const run = (input: Uint8Array, inputPending: () => boolean) =>
+      withInput(input, (fd) => {
+        const order: string[] = [];
+        const values = createTerminalSecretValues({
+          isInteractive: () => true,
+          setRaw: (on) => order.push(on ? "raw:on" : "raw:off"),
+          readHiddenBytes: () => readHiddenValueBytes(fd),
+          flushInput: () => order.push("flush"),
+          inputPending,
+          writePrompt: () => {},
+        });
+        let outcome: string;
+        try {
+          outcome = decode(values.readHidden() ?? new Uint8Array(0));
+        } catch (error) {
+          outcome = `refused:${(error as { code?: string }).code}`;
+        }
+        return { order, outcome };
+      });
+
+    const refused = run(encode("line-one\nline-two\n"), () => true);
+    expect(refused.outcome).toBe("refused:secret_value_multiline");
+    expect(refused.order).toEqual(["raw:on", "flush", "raw:off"]);
+
+    // The accepting half: nothing queued, the same bytes are the value.
+    const accepted = run(encode("line-one\n"), () => false);
+    expect(accepted.outcome).toBe("line-one");
+    expect(accepted.order).toEqual(["raw:on", "flush", "raw:off"]);
+
+    // A queue probe that fails is not a refusal.
+    const failed = run(encode("line-one\n"), () => {
+      throw new Error("poll failed");
+    });
+    expect(failed.outcome).toBe("line-one");
+
+    // An abandoned read is refused on its own terms, not as a paste.
+    const abandoned = run(encode("half\u0003LEFTOVER\n"), () => true);
+    expect(abandoned.outcome).toBe("");
+  });
+
+  test("the queue probe reports nothing queued on a descriptor that is not a terminal", () => {
+    expect(withInput(encode("queued\n"), (fd) => inputQueued(fd))).toBe(false);
   });
 
   test("stdin reads exact bytes and refuses more than the bound", () => {

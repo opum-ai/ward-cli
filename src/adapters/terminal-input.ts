@@ -133,6 +133,22 @@ export function pollInput(
   return { result, revents: ((fds[1] as number) >>> 16) & 0xffff };
 }
 
+// Whether input is still queued on a terminal right now, which after a hidden
+// read has stopped on its terminator means the paste carried more than one line
+// (DEC-255 a2 clause 3). It waits one quiet interval, because the rest of a
+// paste can still be arriving, and counts only a plain readable descriptor: an
+// error, a hang-up or an invalid descriptor is not queued input. A descriptor
+// that is not a terminal has no queue a shell could later read and reports
+// false, and so does a machine where poll did not resolve - the refusal is a
+// best-effort narrowing of the paste window, like the discard it precedes.
+export function inputQueued(descriptor = 0): boolean {
+  if (!isatty(descriptor)) return false;
+  const polled = pollInput(descriptor, QUIET_MS);
+  if (polled === undefined || polled.result <= 0) return false;
+  if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
+  return (polled.revents & POLLIN) !== 0;
+}
+
 // Wait for the terminal to go quiet, flushing whatever arrives meanwhile. It
 // stops when poll reports quiet, when the descriptor is in error or hung up, or
 // at the deadline; a poll that fails (EINTR, say) is simply tried again within
