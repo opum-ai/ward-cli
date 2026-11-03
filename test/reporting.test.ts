@@ -956,7 +956,7 @@ describe("ward doctor", () => {
       {
         name: "legacy approval",
         reason:
-          "this is a legacy approval, written before checkouts had an identity; approve the profile again from that checkout",
+          "a legacy approval, written before checkouts had an identity; it authorises nothing",
         arrange: ({ record }) => {
           delete record.checkoutId;
         },

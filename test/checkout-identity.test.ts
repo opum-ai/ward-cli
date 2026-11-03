@@ -190,14 +190,29 @@ describe("approving replaces a legacy approval, and a legacy record never author
     const other = record("status-check");
     const elsewhere = record("deploy", { inode: "1" });
     const anotherClone = record("deploy", { checkoutId: NONCE_B });
+    // One legacy approval per field the replacement matches on, each differing
+    // from the new record in that field alone: dropping any one comparison in
+    // isReplacedBy would remove it (WCLI-137 N5).
+    const otherProject = record("deploy", {
+      projectId: "44b05c92-8a6e-4f15-9dcb-65ae5d371124",
+    });
+    const otherRoot = record("deploy", { root: "/Users/dev/code/elsewhere" });
+    const otherDevice = record("deploy", { device: "16777233" });
+    const kept = [
+      other,
+      elsewhere,
+      anotherClone,
+      otherProject,
+      otherRoot,
+      otherDevice,
+    ];
     const replaced = withProfileApproval(
-      stateWith(record("deploy"), other, elsewhere, anotherClone),
+      stateWith(record("deploy"), ...kept),
       record("deploy", { checkoutId: NONCE_A }) as never,
     );
-    expect(replaced.profileApprovals).toHaveLength(4);
-    expect(replaced.profileApprovals).toContainEqual(other);
-    expect(replaced.profileApprovals).toContainEqual(elsewhere);
-    expect(replaced.profileApprovals).toContainEqual(anotherClone);
+    expect(replaced.profileApprovals).toHaveLength(kept.length + 1);
+    for (const approval of kept)
+      expect(replaced.profileApprovals).toContainEqual(approval);
   });
 
   test("the removal never grants: with nothing to approve, a legacy record still authorizes nothing", () => {
@@ -440,6 +455,27 @@ describe("the nonce file in the git directory", () => {
       );
     });
 
+    // The pointer's control-character guard, alone: a directory that really
+    // exists under a name holding a CR is refused by the guard and by nothing
+    // else (without it the path would resolve and be followed).
+    test("a control character in the pointer binds nothing even when the path exists", () => {
+      const parent = checkout("control-parent");
+      const named = join(parent, "with\rreturn");
+      mkdirSync(named);
+      const directory = withGitFile("pointer-control", `gitdir: ${named}\n`);
+      expect(lstatSync(named).isDirectory()).toBe(true);
+      expect(locateCheckout(directory).checkoutId).toBeUndefined();
+      expect(
+        codeOf(() => bindCheckoutIdentity(locateCheckout(directory))),
+      ).toBe("checkout_identity_unavailable");
+      expect(() => lstatSync(join(named, "ward"))).toThrow();
+    });
+
+    // A NUL cannot name an existing path, so realpath refuses it on its own and
+    // the NUL in the guard is a second line of defence this case cannot isolate;
+    // likewise a .git file that is a link is stopped by the lstat file check
+    // before the O_NOFOLLOW read. Both are asserted as outcomes, not as the
+    // single guard that did the work.
     test("a NUL in the pointer, and a .git file that is itself a link, bind nothing", () => {
       const real = checkout("nul-real");
       const nul = withGitFile("pointer-nul", `gitdir: ${real}\0x\n`);

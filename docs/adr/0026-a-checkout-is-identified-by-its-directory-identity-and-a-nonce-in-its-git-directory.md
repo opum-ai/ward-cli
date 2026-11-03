@@ -20,7 +20,7 @@ Accepted, 2026-11-03, under **DEC-255 (a2) clause (4)**, **DEC-255 (a6)** and **
 recorded by opum-doc in its tracker (opum-ai/opum-doc#1597 for (a6),
 opum-ai/opum-doc#1601 for (a7)) and carried here from their text as relayed to
 this repository. The record binds, not this
-document's copy of it; the decisions' text is DEC-255 (a2)(4) and (a6) in
+document's copy of it; the decisions' text is DEC-255 (a2)(4), (a6) and (a7) in
 opum-doc. Implemented by WCLI-125. It supersedes the identity part of
 [ADR 0005](0005-project-binding-identity.md), the part that names a binding by
 root, device and inode alone, and it amends
@@ -78,15 +78,15 @@ hosted ext4 runner reproduced it; APFS rarely reuses inode numbers.
   or approval with no `checkoutId` authorizes nothing; the developer registers
   and approves again. A legacy record is removed on unregister or re-approval and
   at no other time (DEC-255 (a7)): `ward unregister`, run in a checkout, also
-  removes a legacy binding at the same (root, device, inode) with that
-  binding's legacy approvals, under the same questions; approving a profile
+  removes a legacy binding of the same project at the same (root, device,
+  inode) with that binding's legacy approvals, under the same questions (not another
+  project's); approving a profile
   removes a legacy approval for the same project, profile and directory. Both are
   removals only, and removing a record grants nothing. No cleanup command is
-  filed. `ward doctor` reports only stale-version approvals; where one of those
-  has no nonce it says it is a legacy approval and to approve again, and it does
-  not report a legacy record that is not stale-version. `checkout_identity_unavailable`
-  is accepted by (a7) as the name of the refusal when the git directory cannot be
-  resolved or written.
+  filed. `ward doctor` reports only stale-version approvals, and names one with no
+  nonce as legacy (register and approve again); it does not report any other
+  legacy record. (a7) accepts `checkout_identity_unavailable` as the refusal
+  name when the git directory cannot be resolved or written.
 - **Downgrade is unsupported.** A vault written by this version carries the key,
   so a 0.1.1 binary refuses it as malformed. The release notes of the next
   release say so in one line.

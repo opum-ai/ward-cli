@@ -421,11 +421,16 @@ function describeStaleApproval(
     return inert("a different directory now stands at that path");
   // An approval with no nonce was written before checkouts had an identity. It
   // is named as such rather than as a different directory: the directory is the
-  // same, and the remedy is to approve again (the new record replaces it).
+  // same. It is not an "inert and unreachable" record in the sense above, since
+  // registering and approving again replaces it, but only if the checkout can
+  // be registered and still declares the profile, which this arm does not check;
+  // the remedy says what to do and does not promise it will work.
   if (record.checkoutId === undefined)
-    return inert(
-      "this is a legacy approval, written before checkouts had an identity; approve the profile again from that checkout",
-    );
+    return {
+      ...fields,
+      clearable: false,
+      remedy: `a legacy approval, written before checkouts had an identity; it authorises nothing. From ${record.root}, register and approve again (ward init, then ward profile approve ${record.profile}), if the profile is still declared there`,
+    };
   if (probed.checkoutId !== record.checkoutId)
     return inert("a different directory now stands at that path");
   const identity = {
