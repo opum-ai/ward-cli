@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createBackupFiles } from "../adapters/backup-file.ts";
 import {
+  bindCheckoutIdentity,
   canonicalDirectory,
   locateCheckout,
   probeCheckout,
@@ -222,6 +223,7 @@ async function initCommand(
     // Canonical, so the check against the (canonical) checkout root compares
     // two names for a location rather than two spellings of one.
     vaultDirectory: canonicalDirectory(directory),
+    bindCheckout: bindCheckoutIdentity,
     register: !input.flags.has("--no-register"),
     targets,
     now: options.now ?? (() => new Date()),

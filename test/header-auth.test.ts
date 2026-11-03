@@ -254,6 +254,7 @@ describe("DEC-248: the stored shape carries the name", () => {
     root: "/Users/dev/code/project",
     device: "16777232",
     inode: "8429931",
+    checkoutId: "0123456789abcdef0123456789abcdef",
   };
   const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
 
@@ -396,6 +397,7 @@ describe("WCLI-98: the request-rewriting names are refused", () => {
       root: "/Users/dev/code/project",
       device: "16777232",
       inode: "8429931",
+      checkoutId: "0123456789abcdef0123456789abcdef",
     };
     const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
     const state = withProfileApproval(
@@ -560,6 +562,7 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       root: "/Users/dev/code/project",
       device: "16777232",
       inode: "8429931",
+      checkoutId: "0123456789abcdef0123456789abcdef",
     };
     const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
     const state = withProfileApproval(
@@ -737,6 +740,7 @@ describe("WCLI-98: the refusal names Ward's canonical spelling", () => {
       root: "/Users/dev/code/project",
       device: "16777232",
       inode: "8429931",
+      checkoutId: "0123456789abcdef0123456789abcdef",
     };
     const projectId = "33b05c92-8a6e-4f15-9dcb-65ae5d371123";
     const state = withProfileApproval(

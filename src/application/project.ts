@@ -107,6 +107,11 @@ export interface InitOptions {
   // Where the user vault lives, so a repository that would contain it is
   // refused instead of being initialized around it (spec §6.1).
   readonly vaultDirectory: string;
+  // Gives the checkout its identity nonce, creating it in the clone's git
+  // directory when there is none (DEC-255 a2 clause 4). Called only once the
+  // registration has been approved, so a declined or skipped registration
+  // writes nothing into the repository's git directory.
+  readonly bindCheckout: (checkout: CheckoutIdentity) => CheckoutIdentity;
   readonly register: boolean;
   readonly targets: readonly AgentTarget[];
   readonly now: () => Date;
@@ -144,8 +149,13 @@ function registerForProject(options: {
   projectId: string;
   checkout: CheckoutIdentity;
   registeredAt: string;
+  bindCheckout: (checkout: CheckoutIdentity) => CheckoutIdentity;
 }): "registered" | "already-registered" {
-  const { store, key, projectId, checkout, registeredAt } = options;
+  const { store, key, projectId, registeredAt } = options;
+  // The nonce is created here, before the binding_conflict check below, so a
+  // conflicting registration can leave a nonce in the git directory with no
+  // binding; it names the clone and grants nothing.
+  const checkout = options.bindCheckout(options.checkout);
   const stored = store.read(key);
   const existing = findBinding(stateOf(stored.plaintext), checkout);
   if (existing !== undefined && existing.projectId !== projectId)
@@ -323,6 +333,7 @@ export async function initProject(options: InitOptions): Promise<InitResult> {
                 projectId: prepared.manifest.projectId,
                 checkout,
                 registeredAt: options.now().toISOString(),
+                bindCheckout: options.bindCheckout,
               })
             : "declined";
       }

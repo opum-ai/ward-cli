@@ -39,6 +39,7 @@ import { runUnregister } from "../src/application/unregister.ts";
 import { runWard } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import {
+  findBinding,
   findProfileApproval,
   parseVaultState,
   serializeVaultState,
@@ -369,6 +370,161 @@ describe("ward unregister", () => {
     );
     expect(errorCode(gone.stderr)).toBe("unregister_requires_terminal");
     expect(JSON.stringify(w.state())).toBe(before);
+  });
+
+  // DEC-255 (a7): a record a 0.1.1 build wrote has no nonce, so it matches
+  // nothing; unregister, run in the checkout, clears it and its approvals
+  // anyway, because removing a record grants nothing and a user must have a
+  // way to clear their own records.
+  const makeFirstLegacy = (w: Awaited<ReturnType<typeof world>>) => {
+    const firstRoot = locateCheckout(w.first).root;
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const strip = <T extends { root: string; checkoutId?: string }>(
+        record: T,
+      ): T => {
+        if (record.root !== firstRoot) return record;
+        const { checkoutId: _dropped, ...rest } = record;
+        return rest as T;
+      };
+      return serializeVaultState({
+        ...current,
+        localBindings: current.localBindings.map(strip),
+        profileApprovals: current.profileApprovals.map(strip),
+      });
+    });
+  };
+
+  test("a legacy binding matches nothing, and unregister clears it with its legacy approvals", async () => {
+    const w = await world();
+    makeFirstLegacy(w);
+    const before = w.state();
+    const identity = locateCheckout(w.first);
+    expect(identity.checkoutId).toBeDefined();
+    // Never matched: the checkout is unregistered as far as authority goes.
+    expect(findBinding(before, identity)).toBeUndefined();
+    const refused = await w.ward(w.first, ["run", PROFILE]);
+    expect(refused.exitCode).toBe(exitCodes.denied);
+    expect(errorCode(refused.stderr)).toBe("project_not_registered");
+    expect(w.transport.sent).toBe(0);
+
+    const { approver, asked } = scripted(["approved", "approved"]);
+    const result = await w.ward(w.first, ["unregister"], approver);
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(JSON.parse(result.stdout).data).toMatchObject({
+      status: "unregistered",
+      binding: "removed",
+      approvals: "removed",
+      approvalsRemoved: 1,
+    });
+    expect(asked.map((question) => question.kind)).toEqual([
+      "binding",
+      "approvals",
+    ]);
+    const after = w.state();
+    expect(after.localBindings.map((binding) => binding.root)).toEqual([
+      locateCheckout(w.second).root,
+    ]);
+    expect(after.profileApprovals.map((approval) => approval.root)).toEqual([
+      locateCheckout(w.second).root,
+    ]);
+    // Still no authority afterwards.
+    expect((await w.ward(w.first, ["run", PROFILE])).exitCode).toBe(
+      exitCodes.denied,
+    );
+  });
+
+  test("declining leaves a legacy binding and its approvals exactly as they were", async () => {
+    const w = await world();
+    makeFirstLegacy(w);
+    const before = JSON.stringify(w.state());
+    const result = await w.ward(
+      w.first,
+      ["unregister"],
+      scripted(["declined"]).approver,
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(JSON.parse(result.stdout).data).toMatchObject({
+      status: "declined",
+    });
+    expect(JSON.stringify(w.state())).toBe(before);
+  });
+
+  test("a legacy binding beside a current one is cleared with it, and the other checkout is untouched", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    // A 0.1.1 record at the same directory, beside this build's.
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.localBindings.find(
+        (binding) => binding.root === identity.root,
+      );
+      if (mine === undefined) throw new Error("fixture has no binding");
+      const { checkoutId: _dropped, ...legacy } = mine;
+      return serializeVaultState({
+        ...current,
+        localBindings: [...current.localBindings, legacy],
+      });
+    });
+    expect(w.state().localBindings).toHaveLength(3);
+    const result = await w.ward(
+      w.first,
+      ["unregister"],
+      scripted(["approved", "approved"]).approver,
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(w.state().localBindings.map((binding) => binding.root)).toEqual([
+      locateCheckout(w.second).root,
+    ]);
+  });
+
+  // The nonce comparisons inside unregister itself (belongsTo and
+  // withoutBinding): another clone's records at the same root, device and inode
+  // but another nonce are not this checkout's, so they are neither counted nor
+  // removed. Dropping either comparison turns this red.
+  test("a record at the same directory identity with another nonce is left alone", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    const other = "d".repeat(32);
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.localBindings.find(
+        (binding) => binding.root === identity.root,
+      );
+      const approval = current.profileApprovals.find(
+        (entry) => entry.root === identity.root,
+      );
+      if (mine === undefined || approval === undefined)
+        throw new Error("fixture has no record");
+      return serializeVaultState({
+        ...current,
+        localBindings: [
+          ...current.localBindings,
+          { ...mine, checkoutId: other },
+        ],
+        profileApprovals: [
+          ...current.profileApprovals,
+          { ...approval, checkoutId: other },
+        ],
+      });
+    });
+    const result = await w.ward(
+      w.first,
+      ["unregister"],
+      scripted(["approved", "approved"]).approver,
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(JSON.parse(result.stdout).data).toMatchObject({
+      binding: "removed",
+      approvalsRemoved: 1,
+    });
+    const after = w.state();
+    expect(
+      after.localBindings.filter((binding) => binding.root === identity.root),
+    ).toEqual([expect.objectContaining({ checkoutId: other })]);
+    expect(
+      after.profileApprovals.filter((entry) => entry.root === identity.root),
+    ).toEqual([expect.objectContaining({ checkoutId: other })]);
   });
 
   test("it needs no manifest", async () => {

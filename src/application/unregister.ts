@@ -23,6 +23,7 @@ import {
   type BindingRecord,
   type CheckoutIdentity,
   findBinding,
+  legacyBindingsAt,
   type ProfileApprovalRecord,
   parseVaultState,
   serializeVaultState,
@@ -45,8 +46,8 @@ export interface UnregisterResult {
   readonly text: string;
 }
 
-// An approval belongs to a binding when it names the same project and all three
-// parts of the same directory identity: "that binding's approvals" (DEC-217
+// An approval belongs to a binding when it names the same project and all of the
+// same directory identity and the same checkout nonce: "that binding's approvals" (DEC-217
 // Q4). Another checkout of the project keeps its own, and so does an approval
 // of a different project recorded at this identity.
 function belongsTo(
@@ -57,7 +58,8 @@ function belongsTo(
     approval.projectId === binding.projectId &&
     approval.root === binding.root &&
     approval.device === binding.device &&
-    approval.inode === binding.inode
+    approval.inode === binding.inode &&
+    approval.checkoutId === binding.checkoutId
   );
 }
 
@@ -72,7 +74,8 @@ function withoutBinding(
       (entry) =>
         entry.root !== binding.root ||
         entry.device !== binding.device ||
-        entry.inode !== binding.inode,
+        entry.inode !== binding.inode ||
+        entry.checkoutId !== binding.checkoutId,
     ),
     profileApprovals: removeApprovals
       ? state.profileApprovals.filter(
@@ -100,10 +103,16 @@ export async function runUnregister(
     } finally {
       snapshot.plaintext.fill(0);
     }
-    const binding = findBinding(state, options.checkout);
+    // The binding this checkout matches, and also any 0.1.1 binding at the
+    // same directory, which matches nothing but can still be cleared here
+    // (DEC-255 a7). Removal only: neither grants anything.
+    const matched = findBinding(state, options.checkout);
+    const legacy = legacyBindingsAt(state, options.checkout);
+    const binding = matched ?? legacy[0];
     if (binding === undefined) throw new WardError("project_not_registered");
+    const removing = matched === undefined ? legacy : [matched, ...legacy];
     const approvals = state.profileApprovals.filter((approval) =>
-      belongsTo(approval, binding),
+      removing.some((entry) => belongsTo(approval, entry)),
     ).length;
 
     const first = options.approver.ask({
@@ -148,10 +157,18 @@ export async function runUnregister(
       // be the one the developer was shown, or nothing is removed.
       const current = parseVaultState(plaintext);
       const present = findBinding(current, options.checkout);
-      if (present === undefined || present.projectId !== binding.projectId)
+      const presentLegacy = legacyBindingsAt(current, options.checkout);
+      const subject = present ?? presentLegacy[0];
+      if (subject === undefined || subject.projectId !== binding.projectId)
         throw new WardError("project_not_registered");
       return serializeVaultState(
-        withoutBinding(current, present, removeApprovals),
+        (present === undefined
+          ? presentLegacy
+          : [present, ...presentLegacy]
+        ).reduce(
+          (next, entry) => withoutBinding(next, entry, removeApprovals),
+          current,
+        ),
       );
     });
     const kept = approvals > 0 && !removeApprovals;

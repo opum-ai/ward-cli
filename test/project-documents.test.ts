@@ -35,6 +35,7 @@ const identity: CheckoutIdentity = {
   root: "/Users/dev/code/project",
   device: "16777232",
   inode: "8429931",
+  checkoutId: "0123456789abcdef0123456789abcdef",
 };
 
 // A complete, valid stored-secret record; each malformed case below breaks
@@ -71,6 +72,7 @@ const approvalRecord = (
   root: identity.root,
   device: identity.device,
   inode: identity.inode,
+  checkoutId: identity.checkoutId as string,
   approvedAt: timestamp,
   expiresAt: "2026-09-29T12:00:00.000Z",
   snapshotVersion: profileSnapshotVersion,
@@ -133,6 +135,7 @@ describe("the vault's state document", () => {
             root: identity.root,
             device: identity.device,
             inode: identity.inode,
+            checkoutId: identity.checkoutId,
             registeredAt: timestamp,
           },
         ],

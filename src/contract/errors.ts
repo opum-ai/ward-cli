@@ -194,6 +194,12 @@ export const errorCatalog = {
       "The current directory is not inside a Git worktree. Ward binds a project to a repository root, and found none here.",
     hint: "Run `ward init` from inside a Git repository whose `.git` entry is a directory or a worktree file.",
   },
+  checkout_identity_unavailable: {
+    type: "denied",
+    message:
+      "Ward could not give this checkout an identity, so it did not register it. The checkout's git directory could not be resolved or written safely.",
+    hint: "Run `ward init` from an ordinary clone or a linked worktree whose git directory is writable and holds no link where Ward keeps its `ward` entry. If <gitdir>/ward/checkout-id is damaged or empty, delete that file and run `ward init` again; Ward does not repair it.",
+  },
   project_manifest_malformed: {
     type: "validation",
     message:
