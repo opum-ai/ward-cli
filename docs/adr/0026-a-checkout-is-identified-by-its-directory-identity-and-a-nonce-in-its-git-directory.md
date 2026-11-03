@@ -16,12 +16,12 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-03, under **DEC-255 (a2) clause (4)**, **DEC-255 (a6)** and **DEC-255 (a7)**,
+Accepted, 2026-11-03, under **DEC-255 (a2) clause (4)**, **(a6)**, **(a7)** and **(a8)**,
 recorded by opum-doc in its tracker (opum-ai/opum-doc#1597 for (a6),
-opum-ai/opum-doc#1601 for (a7)) and carried here from their text as relayed to
-this repository. The record binds, not this
-document's copy of it; the decisions' text is DEC-255 (a2)(4), (a6) and (a7) in
-opum-doc. Implemented by WCLI-125. It supersedes the identity part of
+opum-ai/opum-doc#1601 for (a7), #1605 for (a8), opum-doc c4735e6) and carried
+here from their text as relayed to this repository. The record binds, not this
+document's copy of it; the decisions' text is DEC-255 (a2)(4) and (a6) to (a8) in
+opum-doc. (a8) narrows the (a7) removals to the project the command shows. Implemented by WCLI-125. It supersedes the identity part of
 [ADR 0005](0005-project-binding-identity.md), the part that names a binding by
 root, device and inode alone, and it amends
 [ADR 0023](0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release.md)
