@@ -169,6 +169,30 @@ scenario(
   20_000,
 );
 
+// WCLI-136 (opus follow-up to WCLI-134): raw mode clears ICRNL, so Enter and a
+// paste's line ends reach the reader as carriage returns, which is the path a
+// darwin user most likely takes. The CR refusal throws inside the reader, and
+// the discard that follows still leaves nothing for the shell.
+scenario(
+  "a carriage-return multiline paste is refused and nothing reaches the shell",
+  async () => {
+    const output = await runScenario("secret", "s3cret\rLEAK-ONE\rLEAK-TWO\r");
+    expectNothingReachedTheShell(output, "REFUSED:secret_value_multiline");
+    expect(output).not.toContain("LEN:");
+  },
+  20_000,
+);
+
+// Its accepting control: a value ended by CR then LF is one line.
+scenario(
+  "a CRLF-terminated one-line paste is accepted and leaves nothing queued",
+  async () => {
+    const output = await runScenario("secret", "s3cret\r\n");
+    expectNothingReachedTheShell(output, "LEN:6");
+  },
+  20_000,
+);
+
 // The accepting half of the refusal above: a one-line value with nothing
 // queued behind it is read whole, so the probe is not refusing everything.
 scenario(

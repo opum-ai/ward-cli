@@ -34,6 +34,7 @@ import { locateCheckout } from "../src/adapters/checkout.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
 import {
   createTerminalSecretValues,
+  type HiddenReadScratch,
   readHiddenValueBytes,
   readStdinValueBytes,
 } from "../src/adapters/secret-value.ts";
@@ -1068,6 +1069,39 @@ describe("the terminal value adapters", () => {
     expect(decode(withInput(encode("token\n"), readHiddenValueBytes))).toBe(
       "token",
     );
+  });
+
+  // WCLI-136 (opus follow-up to WCLI-134): the first line of a refused paste is
+  // zeroed on every way out of the reader, the CR refusal and the too-large
+  // refusal included, not only on the path that reaches setSecret's own zeroing.
+  test("a refused read zeroes what it read, and so does a read that returns", () => {
+    const run = (input: string, expected?: string) => {
+      const scratch: HiddenReadScratch = {};
+      let outcome: string | undefined;
+      const code = codeOf(() => {
+        outcome = decode(
+          withInput(encode(input), (fd) => readHiddenValueBytes(fd, scratch)),
+        );
+      });
+      if (code !== undefined) outcome = code;
+      if (expected !== undefined) expect(outcome).toBe(expected);
+      expect(scratch.bytes?.every((byte) => byte === 0)).toBe(true);
+      expect(scratch.buffer && [...scratch.buffer]).toEqual([0]);
+      expect(scratch.next && [...scratch.next]).toEqual([0]);
+      return scratch;
+    };
+    // The CR refusal: the first line and the byte behind the return.
+    const refused = run("s3cretLINE\rLEAK", "secret_value_multiline");
+    expect(refused.bytes?.length).toBe("s3cretLINE".length);
+    // The bound refusal.
+    const over = run(
+      "a".repeat(secretLimits.maxValueBytes + 1),
+      "secret_value_too_large",
+    );
+    expect(over.bytes?.length).toBe(secretLimits.maxValueBytes);
+    // Accepted values and an abandoned read.
+    run("token\r\n", "token");
+    run("ab\u0003", "");
   });
 
   test("the queue probe reports nothing queued on a descriptor that is not a terminal", () => {
