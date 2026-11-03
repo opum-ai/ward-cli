@@ -30,13 +30,15 @@ import { WardError } from "../contract/errors.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { secretLimits } from "../domain/secret.ts";
 import { isConsentAnswer, readAnswerLine } from "./terminal-consent.ts";
-import { flushPendingInput, inputQueued } from "./terminal-input.ts";
+import { flushPendingInput, inputQueued, pollInput } from "./terminal-input.ts";
 
 export interface TerminalSecretParts {
   isInteractive?: () => boolean;
   setRaw?: (on: boolean) => void;
   readHiddenBytes?: () => Uint8Array;
-  flushInput?: () => void;
+  // A result of exactly true means input arrived after the read stopped and
+  // was flushed; anything else means none did.
+  flushInput?: () => unknown;
   inputPending?: () => boolean;
   readStdinBytes?: (maxBytes: number) => Uint8Array;
   readAnswer?: () => string;
@@ -81,6 +83,21 @@ function readOnce(descriptor: number, buffer: Uint8Array): number {
   }
 }
 
+// A value that ended on a carriage return may be followed by its line feed (a
+// value copied from a CRLF file, or a terminal that sends both on Enter), which
+// is part of the terminator and not a second line. It is consumed when it is
+// already there. Any other byte directly behind the return is input queued
+// after the terminator, which is the multi-line paste DEC-255 (a2) clause 3
+// refuses; the byte is not kept.
+function consumeLineFeedAfterReturn(descriptor: number): void {
+  const polled = pollInput(descriptor, 30);
+  if (polled === undefined || polled.result <= 0) return;
+  if ((polled.revents & 0x1) === 0) return;
+  const next = new Uint8Array(1);
+  if (readOnce(descriptor, next) === 0) return;
+  if (next[0] !== 0x0a) throw new WardError("secret_value_multiline");
+}
+
 // The hidden reader, over any readable descriptor so its byte semantics can
 // be tested without a pty. Backspace (0x7f and 0x08) removes the last byte;
 // Enter ends the reading; Ctrl-C abandons it, which lands as empty; Ctrl-D
@@ -97,7 +114,11 @@ export function readHiddenValueBytes(descriptor = 0): Uint8Array {
     const read = readOnce(descriptor, buffer);
     if (read === 0) break;
     const byte = buffer[0] as number;
-    if (byte === 0x0a || byte === 0x0d) break;
+    if (byte === 0x0d) {
+      consumeLineFeedAfterReturn(descriptor);
+      break;
+    }
+    if (byte === 0x0a) break;
     if (byte === 0x03) return new Uint8Array(0);
     if (byte === 0x04) break;
     if (byte === 0x7f || byte === 0x08) {
@@ -169,32 +190,30 @@ export function createTerminalSecretValues(
       if (!available()) return undefined;
       writePrompt("Enter the secret value: ");
       setRaw(true);
+      let value: Uint8Array | undefined;
+      let failure: { readonly error: unknown } | undefined;
+      let queued = false;
+      let arrivedLate = false;
       try {
-        const value = readHiddenBytes();
+        value = readHiddenBytes();
         // A value that ended on its terminator with more input still queued
         // behind it is a multi-line paste (DEC-255 a2 clause 3). It is refused
         // rather than stored as its first line, the same way a value past the
-        // bound is refused rather than truncated; the finally below drains and
-        // flushes what is queued before echo returns. An abandoned or empty
-        // read is refused later on its own terms.
-        if (value.length > 0 && pending())
-          throw new WardError("secret_value_multiline");
-        return value;
+        // bound is refused rather than truncated. An abandoned or empty read is
+        // refused later on its own terms.
+        queued = value.length > 0 && pending();
       } catch (error) {
-        // A reading that refused the value is an answer, not a failure, and
-        // is rethrown: swallowing it would report a too-large value as an
-        // empty one. Everything else — a terminal that cannot be read —
-        // cannot provide a value, and an unreadable answer is not a value.
-        if (error instanceof WardError) throw error;
-        return undefined;
+        failure = { error };
       } finally {
         // Discard anything still queued on the terminal before echo comes
         // back. The bytes after the newline the read stopped on are not part
         // of the value; left in the line discipline, the shell that runs next
         // reads them as its own input. Best-effort, and never in place of
-        // restoring echo.
+        // restoring echo. The discard also reports whether input arrived after
+        // the probe above looked: a paste that trickles in later is still a
+        // paste, and storing its first line would be a silently wrong secret.
         try {
-          flushInput();
+          arrivedLate = flushInput() === true;
         } catch {
           // The flush is best-effort; restoring echo is not.
         }
@@ -208,6 +227,20 @@ export function createTerminalSecretValues(
         }
         writePrompt("\n");
       }
+      if (failure !== undefined) {
+        // A reading that refused the value is an answer, not a failure, and
+        // is rethrown: swallowing it would report a too-large value as an
+        // empty one. Everything else — a terminal that cannot be read —
+        // cannot provide a value, and an unreadable answer is not a value.
+        if (failure.error instanceof WardError) throw failure.error;
+        return undefined;
+      }
+      if (value !== undefined && value.length > 0 && (queued || arrivedLate)) {
+        // The first line of a refused paste may be real secret material.
+        value.fill(0);
+        throw new WardError("secret_value_multiline");
+      }
+      return value;
     },
     readStdin(maxBytes) {
       if (available()) throw new WardError("secret_stdin_terminal");

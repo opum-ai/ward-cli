@@ -46,7 +46,11 @@ function scenario(
 // its read is waiting with echo off, and the harness's own line is written
 // only once the probe is done, so a leftover byte can only be one the flush
 // failed to discard.
-async function runScenario(mode: string, paste: string): Promise<string> {
+async function runScenario(
+  mode: string,
+  paste: string,
+  tail?: { text: string; afterMs: number },
+): Promise<string> {
   // PTY_PROBE_BINARY names a `bun build --compile` of the probe, so the same
   // cases can run against compiled code (WCLI-97 AC4); the default is the source.
   const command = process.env.PTY_PROBE_BINARY
@@ -77,6 +81,10 @@ async function runScenario(mode: string, paste: string): Promise<string> {
       if (phase === "ready" && output.includes("PROBE-READY")) {
         phase = "paste";
         child.stdin.write(paste);
+        // A tail written later than the queue probe's window but within the
+        // drain's, as a slow link or Paste Slowly would deliver it.
+        if (tail !== undefined)
+          setTimeout(() => child.stdin.write(tail.text), tail.afterMs);
       }
       if (phase === "paste" && output.includes("PROBE-DONE")) {
         phase = "done";
@@ -137,6 +145,24 @@ scenario(
     const output = await runScenario("secret", "s3cret\nLEAK-ONE\nLEAK-TWO\n");
     // DEC-255 (a2) clause 3: input still queued after the terminator refuses
     // the value, and the two lines after the terminator are gone.
+    expectNothingReachedTheShell(output, "REFUSED:secret_value_multiline");
+    expect(output).not.toContain("LEN:");
+  },
+  20_000,
+);
+
+// WCLI-134 review finding 1: the first line, then the rest after the queue
+// probe has looked (30 ms) and while the drain is still watching. Ward flushes
+// the tail itself, which is proof of a paste, so it refuses rather than storing
+// the first line. Timing-dependent by nature, so the delay sits in the middle
+// of the window the drain covers rather than at its edge.
+scenario(
+  "a paste whose tail arrives after the probe is still refused, and nothing reaches the shell",
+  async () => {
+    const output = await runScenario("secret", "s3cret\n", {
+      text: "LEAK-ONE\nLEAK-TWO\n",
+      afterMs: 45,
+    });
     expectNothingReachedTheShell(output, "REFUSED:secret_value_multiline");
     expect(output).not.toContain("LEN:");
   },

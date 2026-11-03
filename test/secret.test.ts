@@ -999,6 +999,77 @@ describe("the terminal value adapters", () => {
     expect(abandoned.outcome).toBe("");
   });
 
+  // The probe looks once; the discard that follows keeps looking for up to
+  // 1.5 s. A paste whose tail arrives between the two is flushed by the
+  // discard, and that is itself the evidence it was a paste (WCLI-134, review
+  // finding 1). The refusal follows the flush, still before echo returns, and
+  // the first line is zeroed rather than stored.
+  test("a tail that arrives after the probe, and is flushed by the discard, is still refused", () => {
+    const first = encode("line-one");
+    const order: string[] = [];
+    const values = createTerminalSecretValues({
+      isInteractive: () => true,
+      setRaw: (on) => order.push(on ? "raw:on" : "raw:off"),
+      readHiddenBytes: () => first,
+      inputPending: () => false,
+      flushInput: () => {
+        order.push("flush");
+        return true;
+      },
+      writePrompt: () => {},
+    });
+    expect(codeOf(() => values.readHidden())).toBe("secret_value_multiline");
+    expect(order).toEqual(["raw:on", "flush", "raw:off"]);
+    expect([...first].every((byte) => byte === 0)).toBe(true);
+  });
+
+  test("a discard that flushed nothing after the read leaves a one-line value accepted", () => {
+    for (const flushed of [false, undefined, 1]) {
+      const values = createTerminalSecretValues({
+        isInteractive: () => true,
+        setRaw: () => {},
+        readHiddenBytes: () => encode("line-one"),
+        inputPending: () => false,
+        flushInput: () => flushed,
+        writePrompt: () => {},
+      });
+      expect(decode(values.readHidden() ?? new Uint8Array(0))).toBe("line-one");
+    }
+  });
+
+  test("a probe-detected paste zeroes the first line too", () => {
+    const first = encode("line-one");
+    const values = createTerminalSecretValues({
+      isInteractive: () => true,
+      setRaw: () => {},
+      readHiddenBytes: () => first,
+      inputPending: () => true,
+      flushInput: () => false,
+      writePrompt: () => {},
+    });
+    expect(codeOf(() => values.readHidden())).toBe("secret_value_multiline");
+    expect([...first].every((byte) => byte === 0)).toBe(true);
+  });
+
+  // A value that ended on a carriage return is followed by its own line feed
+  // when it came from a CRLF source: that is the terminator, not a second line
+  // (WCLI-134, review finding 4).
+  test("a CRLF terminator is one terminator, and any other byte after a return is a refused paste", () => {
+    expect(decode(withInput(encode("token\r\n"), readHiddenValueBytes))).toBe(
+      "token",
+    );
+    expect(decode(withInput(encode("token\r"), readHiddenValueBytes))).toBe(
+      "token",
+    );
+    expect(
+      codeOf(() => withInput(encode("token\rX"), readHiddenValueBytes)),
+    ).toBe("secret_value_multiline");
+    // The line feed alone is still just a terminator.
+    expect(decode(withInput(encode("token\n"), readHiddenValueBytes))).toBe(
+      "token",
+    );
+  });
+
   test("the queue probe reports nothing queued on a descriptor that is not a terminal", () => {
     expect(withInput(encode("queued\n"), (fd) => inputQueued(fd))).toBe(false);
   });

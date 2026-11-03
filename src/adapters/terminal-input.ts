@@ -137,16 +137,37 @@ export function pollInput(
 // read has stopped on its terminator means the paste carried more than one line
 // (DEC-255 a2 clause 3). It waits one quiet interval, because the rest of a
 // paste can still be arriving, and counts only a plain readable descriptor: an
-// error, a hang-up or an invalid descriptor is not queued input. A descriptor
+// error, a hang-up or an invalid descriptor is not queued input. A poll that
+// fails (EINTR from a window resize, say) is tried again within a short
+// deadline, as the drain does, rather than read as nothing queued. A descriptor
 // that is not a terminal has no queue a shell could later read and reports
 // false, and so does a machine where poll did not resolve - the refusal is a
-// best-effort narrowing of the paste window, like the discard it precedes.
+// best-effort narrowing of the paste window, like the discard it precedes. What
+// this misses, the drain below reports (flushPendingInput's result).
+const QUEUE_PROBE_BUDGET_MS = 150;
+
+export type QueueProbePorts = {
+  poll: (timeoutMs: number) => { result: number; revents: number } | undefined;
+  now?: () => number;
+};
+
+export function queuedInput(ports: QueueProbePorts): boolean {
+  const now = ports.now ?? (() => performance.now());
+  const deadline = now() + QUEUE_PROBE_BUDGET_MS;
+  while (now() < deadline) {
+    const polled = ports.poll(QUIET_MS);
+    if (polled === undefined) return false;
+    if (polled.result < 0) continue;
+    if (polled.result === 0) return false;
+    if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
+    return (polled.revents & POLLIN) !== 0;
+  }
+  return false;
+}
+
 export function inputQueued(descriptor = 0): boolean {
   if (!isatty(descriptor)) return false;
-  const polled = pollInput(descriptor, QUIET_MS);
-  if (polled === undefined || polled.result <= 0) return false;
-  if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
-  return (polled.revents & POLLIN) !== 0;
+  return queuedInput({ poll: (timeoutMs) => pollInput(descriptor, timeoutMs) });
 }
 
 // Wait for the terminal to go quiet, flushing whatever arrives meanwhile. It
@@ -162,44 +183,56 @@ export type DrainPorts = {
   now?: () => number;
 };
 
-export function drainPending(ports: DrainPorts): void {
+// Returns whether it flushed anything after poll reported input: that is input
+// that arrived after the read stopped, which a hidden read treats as a paste it
+// must refuse (DEC-255 a2 clause 3). The caller's own flush before the drain is
+// not counted, because it discards what was already queued without saying so.
+export function drainPending(ports: DrainPorts): boolean {
   const now = ports.now ?? (() => performance.now());
   const deadline = now() + DRAIN_BUDGET_MS;
+  let flushed = false;
   while (now() < deadline) {
     const polled = ports.poll(QUIET_MS);
-    if (polled === undefined) return;
+    if (polled === undefined) return flushed;
     if (polled.result < 0) continue;
-    if (polled.result === 0) return;
-    if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return;
-    if (!(polled.revents & POLLIN)) return;
+    if (polled.result === 0) return flushed;
+    if (polled.revents & (POLLERR | POLLHUP | POLLNVAL)) return flushed;
+    if (!(polled.revents & POLLIN)) return flushed;
     ports.flush();
+    flushed = true;
   }
+  return flushed;
 }
 
-function drain(found: Resolved, descriptor: number): void {
-  if (found.poll === undefined) return;
-  drainPending({
+function drain(found: Resolved, descriptor: number): boolean {
+  if (found.poll === undefined) return false;
+  return drainPending({
     poll: (timeoutMs) => pollInput(descriptor, timeoutMs),
     flush: () => found.tcflush(descriptor, TCIFLUSH),
   });
 }
 
-export function flushPendingInput(descriptor = 0): void {
-  if (!isatty(descriptor)) return;
+// Returns whether the drain flushed input that arrived after this call began
+// (see drainPending); false when nothing arrived, when there is no terminal and
+// when the discard could not run.
+export function flushPendingInput(descriptor = 0): boolean {
+  if (!isatty(descriptor)) return false;
   const found = resolve();
   if (found === undefined) {
     warnOnce();
-    return;
+    return false;
   }
   // A flush with no drain leaks a paste past the tty queue (measured), so the
   // missing drain is said once, like a missing libc.
   if (found.poll === undefined) warnOnce();
   try {
     found.tcflush(descriptor, TCIFLUSH);
-    drain(found, descriptor);
+    const arrived = drain(found, descriptor);
     found.tcflush(descriptor, TCIFLUSH);
+    return arrived;
   } catch {
     // Nothing more can be done here, and the reading is what the caller
     // asked for.
+    return false;
   }
 }

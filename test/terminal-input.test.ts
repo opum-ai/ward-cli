@@ -18,6 +18,7 @@ import { expect, test } from "bun:test";
 import {
   drainPending,
   pollInput,
+  queuedInput,
   terminalInputSupport,
 } from "../src/adapters/terminal-input.ts";
 
@@ -104,4 +105,75 @@ test("a terminal that never goes quiet is released at the cap", () => {
   const result = drained([]);
   expect(result.polls).toBeGreaterThan(0);
   expect(result.polls).toBeLessThan(2_000);
+});
+
+// WCLI-134 (DEC-255 a2 clause 3): the drain says whether it flushed input that
+// arrived after poll reported it, which is how a paste that trickled in later
+// than the queue probe's window is still caught. The caller's own first flush is
+// not the drain's and is not counted.
+test("the drain reports a flush after input, and nothing when the terminal was quiet", () => {
+  let clock = 0;
+  const run = (answers: Array<{ result: number; revents: number }>) => {
+    let polls = 0;
+    return drainPending({
+      poll: () => answers[polls++] ?? { result: 0, revents: 0 },
+      flush: () => {},
+      now: () => clock++,
+    });
+  };
+  expect(run([{ result: 0, revents: 0 }])).toBe(false);
+  expect(
+    run([
+      { result: 1, revents: 1 },
+      { result: 0, revents: 0 },
+    ]),
+  ).toBe(true);
+  expect(run([{ result: 1, revents: 0x11 }])).toBe(false);
+  expect(
+    run([
+      { result: -1, revents: 0 },
+      { result: 0, revents: 0 },
+    ]),
+  ).toBe(false);
+});
+
+function probed(
+  answers: Array<{ result: number; revents: number } | undefined>,
+) {
+  let polls = 0;
+  let clock = 0;
+  const queued = queuedInput({
+    poll: () => answers[polls++] ?? { result: 0, revents: 0 },
+    now: () => clock++ * 10,
+  });
+  return { queued, polls };
+}
+
+test("the queue probe reads POLLIN as queued, quiet or an error bit as not, and retries a failed poll", () => {
+  expect(probed([{ result: 1, revents: 1 }])).toEqual({
+    queued: true,
+    polls: 1,
+  });
+  expect(probed([{ result: 0, revents: 0 }])).toEqual({
+    queued: false,
+    polls: 1,
+  });
+  expect(probed([{ result: 1, revents: 0x11 }]).queued).toBe(false);
+  expect(probed([{ result: 1, revents: 0 }]).queued).toBe(false);
+  expect(probed([undefined]).queued).toBe(false);
+  // EINTR on the first attempt is not "nothing queued".
+  expect(
+    probed([
+      { result: -1, revents: 0 },
+      { result: 1, revents: 1 },
+    ]),
+  ).toEqual({ queued: true, polls: 2 });
+});
+
+test("a probe whose poll keeps failing gives up at its deadline instead of hanging", () => {
+  const result = probed(
+    Array.from({ length: 100 }, () => ({ result: -1, revents: 0 })),
+  );
+  expect(result.queued).toBe(false);
+  expect(result.polls).toBeLessThan(100);
 });
