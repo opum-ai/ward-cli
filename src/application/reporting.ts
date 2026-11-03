@@ -72,6 +72,12 @@ export interface ProbedCheckout {
   readonly inode: string;
   // The nonce in that checkout's git directory, when it has one.
   readonly checkoutId?: string;
+  // Whether `ward init` could plausibly give that checkout an identity, judged
+  // without writing. False when its git directory does not resolve or is not
+  // writable by this account, its nonce file is invalid, or a link or file
+  // stands where the `ward` directory belongs: init throws
+  // checkout_identity_unavailable there. Absent means it could.
+  readonly registrable?: boolean;
   // The project manifest's text, or undefined when there is none to read.
   readonly manifest: string | undefined;
 }
@@ -311,18 +317,23 @@ export interface StaleApprovalReport {
   readonly checkout: string;
   readonly snapshotVersion: number;
   // Whether re-approving this profile from that checkout would replace this
-  // record. False means inert: it authorises nothing, and nothing this build
-  // offers can reach it (DEC-246 a3 Q2).
+  // record. False means inert: it authorises nothing. Usually nothing this
+  // build offers can reach it (DEC-246 a3 Q2); the one exception is a legacy
+  // record at an unregistered checkout `ward init` can register, which
+  // registerHint below words.
   readonly clearable: boolean;
   // The step that clears this record, or why there is none. Written out
   // rather than left for the caller to compose from the fields above: the
   // clearing step only works from the checkout the record names, and a reader
   // assembling its own command has no way to know that from the fields alone.
   readonly remedy: string;
-  // Present and true on a record written before checkouts had an identity and
-  // left inert because its checkout is not registered; the report words that
-  // case from this field, not from the remedy text.
-  readonly legacy?: boolean;
+  // Present and true only on a record written before checkouts had an identity,
+  // left inert because its checkout is not registered, at a checkout `ward init`
+  // can register: the report then adds the register-and-approve-again hint. It
+  // is absent everywhere else, including a legacy record at a checkout init
+  // cannot register, which reads as inert and unreachable. The report words the
+  // hint from this field, not from the remedy text.
+  readonly registerHint?: boolean;
 }
 
 export interface StatusReport {
@@ -471,13 +482,20 @@ function describeStaleApproval(
   } catch {
     return inert("that checkout's declaration of this profile cannot be read");
   }
-  if (legacy && binding === undefined)
+  if (legacy && binding === undefined) {
+    // Registering is offered only where `ward init` can run: at a checkout
+    // whose identity cannot be bound it throws, and no step would work.
+    if (probed.registrable === false)
+      return inert(
+        "a legacy approval, written before checkouts had an identity, at a checkout Ward cannot register because its git directory or identity file is unusable",
+      );
     return {
       ...fields,
       clearable: false,
-      legacy: true,
+      registerHint: true,
       remedy: `a legacy approval, written before checkouts had an identity; it authorises nothing and stays inert. To replace it, register and approve again from ${record.root} (ward init, then ward profile approve ${record.profile}); registering gives that checkout access to the project's secrets`,
     };
+  }
   return {
     ...fields,
     clearable: true,
@@ -500,7 +518,7 @@ function staleApprovalLines(
           `    - ${escapeForDisplay(entry.profile)} at ${escapeForDisplay(entry.checkout)}, snapshot version ${entry.snapshotVersion}: ${
             entry.clearable
               ? `re-approve in a trusted terminal with ward profile approve ${escapeForDisplay(entry.profile)}, run from that checkout`
-              : entry.legacy === true
+              : entry.registerHint === true
                 ? `inert, a legacy approval that authorises nothing; to replace it, register and approve again from that checkout (ward init, then ward profile approve ${escapeForDisplay(entry.profile)}), which gives it access to the project's secrets`
                 : `inert and unreachable — ${escapeForDisplay(entry.remedy.replace(/^inert and unreachable: /, ""))}`
           }`,
