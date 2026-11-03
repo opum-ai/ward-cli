@@ -2,17 +2,18 @@
 //
 // Registration is how a checkout gains a project's secrets; this is the other
 // half, the developer's way to take it back. It is interactive and narrow: it
-// removes the binding for the directory it is run in — matched by path, device
-// and inode, exactly as a binding is matched everywhere — and never another
-// root's binding, whatever project it names. Its approvals are matched the same
-// way plus the project. Removing the binding is one
-// confirmation. Removing that binding's profile approvals is a second one,
+// removes the binding for the directory it is run in — matched by path, device,
+// inode and the checkout nonce, exactly as a binding is matched everywhere, plus
+// a 0.1.1 binding of the same project at that directory, which has no nonce and
+// matches nothing (DEC-255 a7) — and never another root's binding, whatever
+// project it names. Its approvals are matched the same way plus the project.
+// Removing the binding is one confirmation. Removing that binding's profile approvals is a second one,
 // asked only when there are some, and declining it keeps them.
 //
 // What declining leaves behind is stated rather than hidden: an approval is
-// bound to a directory's identity, so registering the same directory again
-// revives an approval that was kept. A developer who wants the directory to
-// start clean answers yes to both.
+// bound to a clone's identity, so registering the same clone again revives an
+// approval this version wrote and kept, and never one an earlier version wrote.
+// A developer who wants the directory to start clean answers yes to both.
 //
 // Nothing here reads a value, and it needs no manifest: the binding is the
 // authority being withdrawn, and a checkout whose manifest was deleted or
@@ -72,6 +73,7 @@ function withoutBinding(
     ...state,
     localBindings: state.localBindings.filter(
       (entry) =>
+        entry.projectId !== binding.projectId ||
         entry.root !== binding.root ||
         entry.device !== binding.device ||
         entry.inode !== binding.inode ||
@@ -83,6 +85,40 @@ function withoutBinding(
         )
       : state.profileApprovals,
   };
+}
+
+// What unregister removes and shows: the binding this checkout matches (or, if
+// it has none, the first legacy one), every legacy binding of that same project
+// at this directory, and the approvals belonging to them. The fingerprint names
+// each of those records, so a set that changed between the question and the
+// write is detected.
+function removalSet(state: VaultState, checkout: CheckoutIdentity) {
+  const matched = findBinding(state, checkout);
+  const legacy = legacyBindingsAt(state, checkout);
+  const binding = matched ?? legacy[0];
+  if (binding === undefined) return undefined;
+  const removing = [
+    ...(matched === undefined ? [] : [matched]),
+    ...legacy.filter((entry) => entry.projectId === binding.projectId),
+  ];
+  const owned = state.profileApprovals.filter((approval) =>
+    removing.some((entry) => belongsTo(approval, entry)),
+  );
+  const fingerprint = JSON.stringify([
+    removing.map((entry) => [
+      entry.projectId,
+      entry.root,
+      entry.device,
+      entry.inode,
+      entry.checkoutId ?? null,
+    ]),
+    owned.map((approval) => [
+      approval.profile,
+      approval.checkoutId ?? null,
+      approval.approvedAt,
+    ]),
+  ]);
+  return { binding, removing, approvals: owned.length, fingerprint };
 }
 
 export async function runUnregister(
@@ -103,17 +139,14 @@ export async function runUnregister(
     } finally {
       snapshot.plaintext.fill(0);
     }
-    // The binding this checkout matches, and also any 0.1.1 binding at the
-    // same directory, which matches nothing but can still be cleared here
-    // (DEC-255 a7). Removal only: neither grants anything.
-    const matched = findBinding(state, options.checkout);
-    const legacy = legacyBindingsAt(state, options.checkout);
-    const binding = matched ?? legacy[0];
-    if (binding === undefined) throw new WardError("project_not_registered");
-    const removing = matched === undefined ? legacy : [matched, ...legacy];
-    const approvals = state.profileApprovals.filter((approval) =>
-      removing.some((entry) => belongsTo(approval, entry)),
-    ).length;
+    // The binding this checkout matches, and also any 0.1.1 binding of the same
+    // project at the same directory, which matches nothing but can still be
+    // cleared here (DEC-255 a7). Removal only: neither grants anything. A legacy
+    // binding of another project at this directory is not touched and not
+    // counted: the developer is shown one project, and only that one goes.
+    const shown = removalSet(state, options.checkout);
+    if (shown === undefined) throw new WardError("project_not_registered");
+    const { binding, approvals } = shown;
 
     const first = options.approver.ask({
       kind: "binding",
@@ -152,20 +185,24 @@ export async function runUnregister(
       removeApprovals = second === "approved";
     }
 
+    let removedApprovals = 0;
     options.store.mutate(key, (plaintext) => {
-      // The decision, repeated inside the transaction: the binding must still
-      // be the one the developer was shown, or nothing is removed.
+      // The decision, repeated inside the transaction: what is removed must be
+      // exactly what the developer was shown, bindings and approvals both, or
+      // nothing is removed. A binding or approval that appeared since is not
+      // consent given. (The refusal reuses project_not_registered, the code a
+      // vanished binding already raises here.)
       const current = parseVaultState(plaintext);
-      const present = findBinding(current, options.checkout);
-      const presentLegacy = legacyBindingsAt(current, options.checkout);
-      const subject = present ?? presentLegacy[0];
-      if (subject === undefined || subject.projectId !== binding.projectId)
+      const present = removalSet(current, options.checkout);
+      if (
+        present === undefined ||
+        present.binding.projectId !== binding.projectId ||
+        present.fingerprint !== shown.fingerprint
+      )
         throw new WardError("project_not_registered");
+      removedApprovals = removeApprovals ? present.approvals : 0;
       return serializeVaultState(
-        (present === undefined
-          ? presentLegacy
-          : [present, ...presentLegacy]
-        ).reduce(
+        present.removing.reduce(
           (next, entry) => withoutBinding(next, entry, removeApprovals),
           current,
         ),
@@ -180,7 +217,7 @@ export async function runUnregister(
         binding: "removed",
         approvals:
           approvals === 0 ? "none" : removeApprovals ? "removed" : "kept",
-        approvalsRemoved: removeApprovals ? approvals : 0,
+        approvalsRemoved: removedApprovals,
       },
       text: [
         "Checkout unregistered.",
@@ -192,8 +229,9 @@ export async function runUnregister(
         ...(kept
           ? [
               "",
-              "Its profile approvals were kept. Registering this same directory",
-              "again makes them live until they expire or are revoked.",
+              "Its profile approvals were kept. Registering this same clone again",
+              "makes the ones this version wrote live until they expire or are",
+              "revoked; an approval written by an earlier version never does.",
             ]
           : []),
         "Unregistering revokes nothing at a credential's provider.",

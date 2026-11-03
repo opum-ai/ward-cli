@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { locateCheckout } from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
+import { createTerminalUnregisterApprover } from "../src/adapters/terminal-consent.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type {
   ProfileAnswer,
@@ -247,7 +248,10 @@ describe("ward unregister", () => {
       approver: scripted(["approved", "declined"]).approver,
     });
     expect(kept.text).toContain("Its profile approvals were kept.");
-    expect(kept.text).toContain("Registering this same directory");
+    expect(kept.text).toContain("Registering this same clone again");
+    expect(kept.text).toContain(
+      "an approval written by an earlier version never does",
+    );
   });
 
   test("declining the first question changes nothing and never asks the second", async () => {
@@ -525,6 +529,170 @@ describe("ward unregister", () => {
     expect(
       after.profileApprovals.filter((entry) => entry.root === identity.root),
     ).toEqual([expect.objectContaining({ checkoutId: other })]);
+  });
+
+  // WCLI-137 (N2): a legacy binding of another project at this directory is not
+  // shown, counted or removed; unregister takes one project's records.
+  test("a legacy binding and approval of another project at this directory are left alone", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    const other = "99999999-9999-4999-8999-999999999999";
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.localBindings.find(
+        (binding) => binding.root === identity.root,
+      );
+      const approval = current.profileApprovals.find(
+        (entry) => entry.root === identity.root,
+      );
+      const project = current.projects[0];
+      if (mine === undefined || approval === undefined || project === undefined)
+        throw new Error("fixture has no record");
+      const { checkoutId: _binding, ...legacyBinding } = mine;
+      const { checkoutId: _approval, ...legacyApproval } = approval;
+      return serializeVaultState({
+        ...current,
+        projects: [...current.projects, { ...project, id: other }],
+        localBindings: [
+          ...current.localBindings,
+          { ...legacyBinding, projectId: other },
+        ],
+        profileApprovals: [
+          ...current.profileApprovals,
+          { ...legacyApproval, projectId: other },
+        ],
+      });
+    });
+    const { approver, asked } = scripted(["approved", "approved"]);
+    const result = await w.ward(w.first, ["unregister"], approver);
+    expect(result.exitCode).toBe(exitCodes.success);
+    // Shown and counted: this project's one approval, not the other project's.
+    expect(asked.map((question) => question.approvals)).toEqual([1, 1]);
+    expect(asked.every((question) => question.projectId !== other)).toBe(true);
+    expect(JSON.parse(result.stdout).data).toMatchObject({
+      approvalsRemoved: 1,
+    });
+    const after = w.state();
+    expect(
+      after.localBindings
+        .filter((binding) => binding.root === identity.root)
+        .map((binding) => binding.projectId),
+    ).toEqual([other]);
+    expect(
+      after.profileApprovals
+        .filter((entry) => entry.root === identity.root)
+        .map((entry) => entry.projectId),
+    ).toEqual([other]);
+  });
+
+  // WCLI-137 (opus L2): two legacy bindings of different projects at one
+  // directory identity. Unregistering one removes that one only: the other is
+  // neither shown nor counted, so it is not removed either (DEC-255 a8).
+  test("two legacy bindings at one directory identity: only the shown project's is removed", async () => {
+    const w = await world();
+    makeFirstLegacy(w);
+    const identity = locateCheckout(w.first);
+    const other = "88888888-8888-4888-8888-888888888888";
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.localBindings.find(
+        (binding) => binding.root === identity.root,
+      );
+      const project = current.projects[0];
+      if (mine === undefined || project === undefined)
+        throw new Error("fixture has no record");
+      return serializeVaultState({
+        ...current,
+        projects: [...current.projects, { ...project, id: other }],
+        localBindings: [
+          ...current.localBindings,
+          { ...mine, projectId: other },
+        ],
+      });
+    });
+    const shown = w
+      .state()
+      .localBindings.find((binding) => binding.root === identity.root);
+    const { approver, asked } = scripted(["approved", "approved"]);
+    const result = await w.ward(w.first, ["unregister"], approver);
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(asked[0]?.projectId).toBe(shown?.projectId);
+    expect(
+      w
+        .state()
+        .localBindings.filter((binding) => binding.root === identity.root)
+        .map((binding) => binding.projectId),
+    ).toEqual([other]);
+  });
+
+  // WCLI-137 (N3): a record that appears between the question and the write was
+  // never shown, so the removal is refused and nothing is removed.
+  test("a binding that appears between the question and the write is not removed unseen", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    const racing = {
+      header: () => w.store.header(),
+      create: w.store.create.bind(w.store),
+      read: w.store.read.bind(w.store),
+      mutate: (
+        key: Uint8Array,
+        change: Parameters<typeof w.store.mutate>[1],
+      ) => {
+        // A second Ward process registers a legacy binding of the same project
+        // at this directory after the developer has answered.
+        w.store.mutate(w.key(), (plaintext) => {
+          const current = parseVaultState(plaintext);
+          const mine = current.localBindings.find(
+            (binding) => binding.root === identity.root,
+          );
+          if (mine === undefined) throw new Error("fixture has no binding");
+          const { checkoutId: _dropped, ...legacy } = mine;
+          return serializeVaultState({
+            ...current,
+            localBindings: [...current.localBindings, legacy],
+          });
+        });
+        return w.store.mutate(key, change);
+      },
+    };
+    const before = w.state().profileApprovals.length;
+    await expect(
+      runUnregister({
+        checkout: identity,
+        store: racing,
+        keyProvider: w.keyProvider,
+        approver: scripted(["approved", "approved"]).approver,
+      }),
+    ).rejects.toMatchObject({ code: "project_not_registered" });
+    const after = w.state();
+    expect(after.profileApprovals).toHaveLength(before);
+    expect(
+      after.localBindings.filter((binding) => binding.root === identity.root),
+    ).toHaveLength(2);
+  });
+
+  // WCLI-137 (N1): the question the developer answers must not promise that a
+  // kept approval from an earlier version comes back.
+  test("the second question says only this version's approvals revive", () => {
+    let written = "";
+    const approver = createTerminalUnregisterApprover({
+      isInteractive: () => true,
+      writePrompt: (text: string) => {
+        written += text;
+      },
+      readAnswer: () => "n",
+    });
+    approver.ask({
+      kind: "approvals",
+      projectId: "p",
+      root: "/work/repo",
+      approvals: 2,
+    });
+    expect(written).toContain("registering this same clone again");
+    expect(written).toContain(
+      "an approval written by an earlier version never does",
+    );
+    expect(written).not.toContain("this same directory");
   });
 
   test("it needs no manifest", async () => {

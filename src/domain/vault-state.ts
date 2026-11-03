@@ -83,9 +83,10 @@ export interface BindingRecord {
 
 // The developer's approval of one HTTPS profile, for one binding (spec
 // §9.2, docs/adr/0003). It carries the binding's whole identity — project,
-// root, device and inode — because an approval is authority for a checkout
-// and not for a repository: a clone at the same path, or the same project
-// opened somewhere else, is a different binding and needs its own approval.
+// root, device, inode and the checkout nonce — because an approval is authority
+// for a checkout and not for a repository: a clone at the same path, or the same
+// project opened somewhere else, is a different binding and needs its own
+// approval. A record without a nonce is a 0.1.1 record and authorizes nothing.
 //
 // The snapshot is the normalized operation and never a value. It is
 // re-normalized when a document is parsed, so a stored snapshot that this
@@ -1163,10 +1164,11 @@ export function withRevokedGrant(
   };
 }
 
-// The approval for one profile in one binding. All four parts of the
-// identity are matched — project, root, device, inode — so an approval can
-// never be reached from another project, another checkout, or a directory
-// that replaced the one it was made in.
+// The approval for one profile in one binding. The project is matched, and the
+// checkout identity through sameCheckout (root, device, inode and the nonce, all
+// present and equal), so an approval can never be reached from another project,
+// another checkout, a directory that replaced the one it was made in, or a
+// clone that merely reuses its inode.
 function isApprovalFor(
   approval: {
     readonly profile: string;

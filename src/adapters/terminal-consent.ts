@@ -337,8 +337,9 @@ function unregisterPrompt(question: UnregisterQuestion): string {
     "",
     `  checkout: ${escapeForDisplay(question.root)}`,
     "",
-    "Remove them too? If you keep them, registering this same directory",
-    "again makes them live until they expire or are revoked.",
+    "Remove them too? If you keep them, registering this same clone again",
+    "makes the ones this version wrote live until they expire or are revoked;",
+    "an approval written by an earlier version never does.",
     "Answer y to remove the approvals, anything else to keep them. [y/N] ",
   ].join("\n");
 }

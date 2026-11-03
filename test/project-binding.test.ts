@@ -450,6 +450,18 @@ describe("T10: no checkout inherits a binding", () => {
         );
       },
     );
+    // The old clone's approval is live for the old clone (a positive control for
+    // the matching below), and the re-clone, which has no nonce yet, matches
+    // nothing. (Whether it shares the old inode depends on the filesystem; the
+    // nonce-only check at the end of this case is what holds on every one.)
+    expect(
+      findProfileApproval(
+        h.state() as VaultState,
+        { ...before, checkoutId: staleNonce },
+        registered.projectId,
+        "deploy",
+      ),
+    ).toBeDefined();
     expect(
       findProfileApproval(
         h.state() as VaultState,
@@ -468,10 +480,14 @@ describe("T10: no checkout inherits a binding", () => {
       locateCheckout(checkout).checkoutId,
     );
     expect(locateCheckout(checkout).checkoutId).not.toBe(before.checkoutId);
+    // Whatever inode the filesystem handed out: the old directory identity with
+    // the new clone's nonce is not the old clone, so it inherits no approval. This
+    // goes red if the nonce stops being compared, which the real re-clone above
+    // cannot show on a filesystem that gives the new directory a new inode.
     expect(
       findProfileApproval(
         h.state() as VaultState,
-        locateCheckout(checkout),
+        { ...before, checkoutId: locateCheckout(checkout).checkoutId },
         registered.projectId,
         "deploy",
       ),

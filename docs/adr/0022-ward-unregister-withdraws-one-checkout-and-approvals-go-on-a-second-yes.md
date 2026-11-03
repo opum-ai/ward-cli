@@ -52,9 +52,8 @@ path, device and inode, so it is not reachable from the new location and
 
 ## Consequences
 
-Kept approvals are bound to a directory's identity, so registering the same
-directory again makes them live until they expire or are revoked. The report
-says so, and a developer who wants a clean start answers yes to both questions.
+Kept approvals are bound to a clone's identity (ADR 0026): re-registering the
+same clone revives this version's, never an earlier one's. The report says so, and a developer who wants a clean start answers yes to both questions.
 This follows DEC-217 as written; whether declining the second question should
 instead leave approvals inert on re-registration is a point put to review.
 Unregistering does not touch secrets, grants or the audit history, and revokes
