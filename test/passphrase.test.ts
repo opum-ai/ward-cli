@@ -24,6 +24,7 @@ import { join } from "node:path";
 import {
   createTerminalPassphrase,
   maxPassphraseBytes,
+  type PassphraseReadScratch,
   readPassphraseBytes,
 } from "../src/adapters/passphrase.ts";
 import { WardError } from "../src/contract/errors.ts";
@@ -193,6 +194,37 @@ describe("the byte reader the terminal path uses", () => {
       closeSync(descriptor);
     }
   }
+
+  test("the reader zeroes what it read on every way out", () => {
+    const run = (input: number[], expected: string, length: number) => {
+      const path = join(root, `case-${++cases}`);
+      writeFileSync(path, Buffer.from(input));
+      const descriptor = openSync(path, "r");
+      const scratch: PassphraseReadScratch = {};
+      let outcome: string;
+      try {
+        outcome = new TextDecoder().decode(
+          readPassphraseBytes(descriptor, scratch),
+        );
+      } catch (error) {
+        outcome = (error as { code?: string }).code ?? "unknown";
+      } finally {
+        closeSync(descriptor);
+      }
+      expect(outcome).toBe(expected);
+      // An every() over an empty array is vacuously true: assert the length.
+      expect(scratch.bytes?.length).toBe(length);
+      expect(scratch.bytes?.every((byte) => byte === 0)).toBe(true);
+      expect(scratch.buffer && [...scratch.buffer]).toEqual([0]);
+    };
+    run([...bytes("hunter2"), 0x0a], "hunter2", 7);
+    run([...bytes("half"), 0x03], "backup_passphrase_rejected", 4);
+    run(
+      new Array(maxPassphraseBytes + 1).fill(0x61),
+      "backup_passphrase_too_large",
+      maxPassphraseBytes,
+    );
+  });
 
   test("a line ending ends the reading and is not part of it", () => {
     expect(

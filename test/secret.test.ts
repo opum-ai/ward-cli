@@ -35,6 +35,7 @@ import { createProjectFiles } from "../src/adapters/project-files.ts";
 import {
   createTerminalSecretValues,
   type HiddenReadScratch,
+  type StdinReadScratch,
   readHiddenValueBytes,
   readStdinValueBytes,
 } from "../src/adapters/secret-value.ts";
@@ -1075,7 +1076,7 @@ describe("the terminal value adapters", () => {
   // zeroed on every way out of the reader, the CR refusal and the too-large
   // refusal included, not only on the path that reaches setSecret's own zeroing.
   test("a refused read zeroes what it read, and so does a read that returns", () => {
-    const run = (input: string, expected?: string) => {
+    const run = (input: string, expected: string, length: number) => {
       const scratch: HiddenReadScratch = {};
       let outcome: string | undefined;
       const code = codeOf(() => {
@@ -1084,24 +1085,47 @@ describe("the terminal value adapters", () => {
         );
       });
       if (code !== undefined) outcome = code;
-      if (expected !== undefined) expect(outcome).toBe(expected);
+      expect(outcome).toBe(expected);
+      // An every() over an empty array is vacuously true, so the length the
+      // read held is asserted on every case: zeroing nothing would pass it.
+      expect(scratch.bytes?.length).toBe(length);
       expect(scratch.bytes?.every((byte) => byte === 0)).toBe(true);
       expect(scratch.buffer && [...scratch.buffer]).toEqual([0]);
       expect(scratch.next && [...scratch.next]).toEqual([0]);
       return scratch;
     };
     // The CR refusal: the first line and the byte behind the return.
-    const refused = run("s3cretLINE\rLEAK", "secret_value_multiline");
-    expect(refused.bytes?.length).toBe("s3cretLINE".length);
+    run("s3cretLINE\rLEAK", "secret_value_multiline", "s3cretLINE".length);
     // The bound refusal.
-    const over = run(
+    run(
       "a".repeat(secretLimits.maxValueBytes + 1),
       "secret_value_too_large",
+      secretLimits.maxValueBytes,
     );
-    expect(over.bytes?.length).toBe(secretLimits.maxValueBytes);
     // Accepted values and an abandoned read.
-    run("token\r\n", "token");
-    run("ab\u0003", "");
+    run("token\r\n", "token", "token".length);
+    run("ab\u0003", "", "ab".length);
+  });
+
+  test("a stdin read zeroes its chunk buffers and byte list on every way out", () => {
+    const run = (input: Uint8Array, max: number, expected: string) => {
+      const scratch: StdinReadScratch = { buffers: [] };
+      let outcome: string | undefined;
+      const code = codeOf(() => {
+        outcome = decode(
+          withInput(input, (fd) => readStdinValueBytes(max, fd, scratch)),
+        );
+      });
+      if (code !== undefined) outcome = code;
+      expect(outcome).toBe(expected);
+      expect(scratch.bytes?.length).toBe(input.length);
+      expect(scratch.buffers.length).toBeGreaterThan(0);
+      expect(scratch.bytes?.every((byte) => byte === 0)).toBe(true);
+      for (const buffer of scratch.buffers)
+        expect(buffer.every((byte) => byte === 0)).toBe(true);
+    };
+    run(encode("s3cret-value"), 1024, "s3cret-value");
+    run(encode("a".repeat(9)), 8, "secret_value_too_large");
   });
 
   test("the queue probe reports nothing queued on a descriptor that is not a terminal", () => {

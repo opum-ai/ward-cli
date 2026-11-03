@@ -76,7 +76,7 @@ function defaultWritePrompt(text: string): void {
 
 // A descriptor read that is retried across the transient errors a
 // non-blocking standard input can report before its first byte arrives.
-function readOnce(descriptor: number, buffer: Uint8Array): number {
+export function readOnce(descriptor: number, buffer: Uint8Array): number {
   for (;;) {
     try {
       return readSync(descriptor, buffer, 0, buffer.length, null);
@@ -124,8 +124,10 @@ export interface HiddenReadScratch {
 // value would be a silently wrong secret. Bytes past the refusal are left
 // unread, exactly as the stdin path leaves them. Whatever the way out (a
 // value, an abandoned read, or a refusal that throws), the bytes read so far
-// and the one-byte buffers are zeroed before it leaves; only the returned copy
-// survives, and its owner zeroes it.
+// and the one-byte buffers are zeroed before it leaves, so far as fill(0) can
+// reach: the bytes still held, not one already removed by a backspace pop or
+// left in an old backing store. Only the returned copy survives, and its owner
+// zeroes it.
 export function readHiddenValueBytes(
   descriptor = 0,
   scratch: HiddenReadScratch = {},
@@ -169,22 +171,38 @@ export function readHiddenValueBytes(
 // truncating — the read never takes more than one byte past the bound, so
 // the refusal happens within one byte of it and the rest of the stream is
 // left unread.
+export interface StdinReadScratch {
+  bytes?: number[];
+  buffers: Uint8Array[];
+}
+
+// Every chunk buffer and the byte list are zeroed on every way out, the
+// refusal included; only the returned copy survives, and its owner zeroes it.
 export function readStdinValueBytes(
   maxBytes: number,
   descriptor = 0,
+  scratch: StdinReadScratch = { buffers: [] },
 ): Uint8Array {
   const bytes: number[] = [];
-  for (;;) {
-    const size = Math.min(64 * 1024, maxBytes - bytes.length + 1);
-    const buffer = new Uint8Array(size);
-    const read = readOnce(descriptor, buffer);
-    if (read === 0) break;
-    for (let index = 0; index < read; index++) {
-      bytes.push(buffer[index] as number);
+  scratch.bytes = bytes;
+  try {
+    for (;;) {
+      const size = Math.min(64 * 1024, maxBytes - bytes.length + 1);
+      const buffer = new Uint8Array(size);
+      scratch.buffers.push(buffer);
+      const read = readOnce(descriptor, buffer);
+      if (read === 0) break;
+      for (let index = 0; index < read; index++) {
+        bytes.push(buffer[index] as number);
+      }
+      if (bytes.length > maxBytes)
+        throw new WardError("secret_value_too_large");
     }
-    if (bytes.length > maxBytes) throw new WardError("secret_value_too_large");
+    return new Uint8Array(bytes);
+  } finally {
+    bytes.fill(0);
+    for (const buffer of scratch.buffers) buffer.fill(0);
   }
-  return new Uint8Array(bytes);
 }
 
 export function createTerminalSecretValues(

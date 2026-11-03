@@ -25,11 +25,11 @@ import {
   closeSync,
   constants as fileConstants,
   openSync,
-  readSync,
   writeSync,
 } from "node:fs";
 import type { PassphraseSource } from "../application/backup.ts";
 import { WardError } from "../contract/errors.ts";
+import { readOnce } from "./secret-value.ts";
 import { flushPendingInput } from "./terminal-input.ts";
 
 export interface TerminalPassphraseParts {
@@ -58,28 +58,50 @@ function defaultSetRaw(on: boolean): void {
 // terminator, an edit or an end-of-input fails the read as too large. A
 // silently shortened passphrase would let the confirm step compare two
 // identically truncated values and accept one the user never chose.
-export function readPassphraseBytes(descriptor = 0): Uint8Array {
+// What a read keeps while it runs, handed to the caller only so a test can see
+// that both were zeroed on every way out.
+export interface PassphraseReadScratch {
+  bytes?: number[];
+  buffer?: Uint8Array;
+}
+
+// Whatever the way out (a passphrase, an abandoned read, or a refusal that
+// throws), the bytes read so far and the one-byte buffer are zeroed before it
+// leaves; only the returned copy survives, and its owner zeroes it. The read
+// retries the transient errors a non-blocking descriptor reports, as the secret
+// reader does.
+export function readPassphraseBytes(
+  descriptor = 0,
+  scratch: PassphraseReadScratch = {},
+): Uint8Array {
   const bytes: number[] = [];
   const buffer = new Uint8Array(1);
-  for (;;) {
-    const read = readSync(descriptor, buffer, 0, 1, null);
-    if (read === 0) break;
-    const byte = buffer[0] as number;
-    if (byte === 0x0a || byte === 0x0d) break;
-    // Ctrl-C is the user cancelling, and cancelling is not submitting: the
-    // reading is abandoned whether or not anything was typed. Ctrl-D is the
-    // end of input, which submits what was typed — nothing, if nothing was.
-    if (byte === 0x03) throw new WardError("backup_passphrase_rejected");
-    if (byte === 0x04) break;
-    if (byte === 0x7f || byte === 0x08) {
-      bytes.pop();
-      continue;
+  scratch.bytes = bytes;
+  scratch.buffer = buffer;
+  try {
+    for (;;) {
+      const read = readOnce(descriptor, buffer);
+      if (read === 0) break;
+      const byte = buffer[0] as number;
+      if (byte === 0x0a || byte === 0x0d) break;
+      // Ctrl-C is the user cancelling, and cancelling is not submitting: the
+      // reading is abandoned whether or not anything was typed. Ctrl-D is the
+      // end of input, which submits what was typed — nothing, if nothing was.
+      if (byte === 0x03) throw new WardError("backup_passphrase_rejected");
+      if (byte === 0x04) break;
+      if (byte === 0x7f || byte === 0x08) {
+        bytes.pop();
+        continue;
+      }
+      if (bytes.length === maxPassphraseBytes)
+        throw new WardError("backup_passphrase_too_large");
+      bytes.push(byte);
     }
-    if (bytes.length === maxPassphraseBytes)
-      throw new WardError("backup_passphrase_too_large");
-    bytes.push(byte);
+    return new Uint8Array(bytes);
+  } finally {
+    bytes.fill(0);
+    buffer.fill(0);
   }
-  return new Uint8Array(bytes);
 }
 
 function defaultWritePrompt(text: string): void {
