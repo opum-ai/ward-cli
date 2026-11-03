@@ -90,13 +90,15 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
    Projects, secrets and bindings that hold no approval are read as before.
 
    Only a record whose checkout still exists and still declares the profile
-   needs you: re-approve it and it is replaced. A record whose checkout is gone,
+   needs you: re-approve it. A record whose checkout is gone,
    or whose profile is no longer declared, is named as inert and unreachable
-   without failing `ward doctor`, so a deleted worktree cannot pin the exit code
-   at 6. 0.1.1 has no command to remove it; it stays in the vault authorising
-   nothing, and a later release is expected to add one. Only this project's
+   without failing `ward doctor`. 0.1.1 has no command to remove it; it stays
+   in the vault authorising nothing, and a later release is expected to add one. Only this project's
    records are named; `ward doctor` counts other projects' records, and running
    Ward there names them.
+
+   A legacy approval at an unregistered checkout is inert: `ward profile
+   approve` there is refused.
 
 ### Upgrade
 

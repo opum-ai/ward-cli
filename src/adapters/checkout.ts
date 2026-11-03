@@ -248,6 +248,31 @@ export function locateCheckout(startDirectory: string): CheckoutIdentity {
 //
 // The manifest goes through the same port every other read of it uses, so a
 // link leaving the checkout is refused here exactly as it is elsewhere.
+// Whether bindCheckoutIdentity could give this checkout an identity: its git
+// directory resolves, and it either holds a valid nonce already or has no
+// `ward` entry in the way (no directory, or a real one with no file in it). A
+// pruned linked-worktree gitdir, an invalid nonce file and a link or file where
+// the `ward` directory belongs all make `ward init` throw
+// checkout_identity_unavailable, so a report must not tell the developer to run
+// it there.
+function identityBindable(root: string): boolean {
+  const gitDirectory = gitDirectoryOf(root);
+  if (gitDirectory === undefined) return false;
+  if (readCheckoutId(gitDirectory) !== undefined) return true;
+  const { directory, file } = checkoutIdPath(gitDirectory);
+  try {
+    if (!lstatSync(directory).isDirectory()) return false;
+  } catch (error) {
+    return errnoCode(error) === "ENOENT";
+  }
+  try {
+    lstatSync(file);
+    return false;
+  } catch (error) {
+    return errnoCode(error) === "ENOENT";
+  }
+}
+
 export function probeCheckout(root: string): ProbedCheckout | undefined {
   let identity: CheckoutIdentity;
   try {
@@ -268,6 +293,7 @@ export function probeCheckout(root: string): ProbedCheckout | undefined {
     ...(identity.checkoutId === undefined
       ? {}
       : { checkoutId: identity.checkoutId }),
+    registrable: identityBindable(identity.root),
     manifest,
   };
 }

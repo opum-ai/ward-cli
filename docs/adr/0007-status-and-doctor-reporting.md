@@ -91,9 +91,8 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   `reapprove_required`, only for a record whose checkout still resolves to the
   same root, device and inode, and whose profile its manifest still declares —
   that is, one where running the re-approve step there would actually replace
-  it. Every other record is reported as inert and unreachable under the
-  project scope above, and the check passes with the code `inert` rather than
-  exiting 6 forever over a step nothing can perform. A record of another
+  it. Every other record is reported as inert (legacy arms: ADR 0026), and
+  the check passes with the code `inert` rather than exiting 6 forever over a step nothing can perform. A record of another
   project alone gives `other_projects`; no stale records at all gives
   `current`. Removing an inert record is a later task, not this release.
 - **The instruction check judges the blocks that exist.** A block whose bytes

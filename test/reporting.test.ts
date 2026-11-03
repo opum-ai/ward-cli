@@ -249,6 +249,7 @@ interface StaleApprovalData {
   snapshotVersion: number;
   clearable: boolean;
   remedy: string;
+  registerHint?: boolean;
 }
 
 interface StatusData {
@@ -1148,9 +1149,44 @@ describe("ward doctor", () => {
       expect(text.stdout).not.toContain("inert and unreachable");
     });
 
+    // WCLI-140 (NIT-b): the whole remedy on a registered legacy record. The
+    // doctor fails, the named `ward profile approve` replaces the record, and
+    // the doctor then passes.
+    test("is replaced by ward profile approve, after which the doctor passes", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-end-to-end");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const identity = locateCheckout(checkout);
+      const projectId = declareProfile(checkout, "deploy");
+      seedApprovals(h, [legacyRecord(projectId, identity)]);
+
+      const before = await doctorOf(h, checkout);
+      expect(before.result.exitCode).toBe(exitCodes.validation);
+      expect(checkFor(before.data, "stale_approvals")).toMatchObject({
+        status: "fail",
+        code: "reapprove_required",
+      });
+
+      const approved = await runWard(
+        ["profile", "approve", "deploy", "--json"],
+        h.options(checkout, {
+          profileApprover: { available: () => true, ask: () => "approved" },
+        }),
+      );
+      expect(approved.exitCode).toBe(exitCodes.success);
+
+      const after = await doctorOf(h, checkout);
+      expect(after.result.exitCode).toBe(exitCodes.success);
+      expect(checkFor(after.data, "stale_approvals")).toMatchObject({
+        status: "pass",
+        code: "current",
+      });
+    });
+
     // The unregistered cases: the record is untouched residue, so the doctor
     // passes and does not ask for a registration that would grant access
-    // (DEC-255 a6). The hint is worded from the `legacy` field and is not framed
+    // (DEC-255 a6). The hint is worded from the `registerHint` field and is not framed
     // as unreachable. Each variant is a different way for the checkout to hold
     // no current binding; each failed the doctor at b60ba1c.
     const expectInertLegacy = async (
@@ -1165,7 +1201,7 @@ describe("ward doctor", () => {
       expect(stale.staleApprovals).toEqual([
         expect.objectContaining({
           clearable: false,
-          legacy: true,
+          registerHint: true,
           remedy: expect.stringContaining(
             `register and approve again from ${found.root} (ward init, then ward profile approve deploy)`,
           ),
@@ -1215,7 +1251,24 @@ describe("ward doctor", () => {
     });
 
     // M2: a checkout whose identity cannot be bound is one `ward init` cannot
-    // register, so no step the doctor could name would work.
+    // register (it throws checkout_identity_unavailable), so the doctor names
+    // no register step there: the record reads as inert and unreachable, with
+    // no registerHint.
+    const expectInertUnregistrable = async (
+      h: ReturnType<typeof harness>,
+      checkout: string,
+    ) => {
+      const doctor = await doctorOf(h, checkout);
+      expect(doctor.result.exitCode).toBe(exitCodes.success);
+      const stale = checkFor(doctor.data, "stale_approvals");
+      expect(stale).toMatchObject({ status: "pass", code: "inert" });
+      const entry = stale.staleApprovals?.[0];
+      expect(entry).toMatchObject({ clearable: false });
+      expect(entry).not.toHaveProperty("registerHint");
+      const text = await runWard(["doctor"], h.options(checkout));
+      expect(text.stdout).not.toContain("ward init");
+      expect(text.stdout).toContain("inert and unreachable");
+    };
     test("is inert when the checkout's git directory was pruned", async () => {
       const h = harness();
       const checkout = worktree("doctor-legacy-pruned");
@@ -1231,7 +1284,7 @@ describe("ward doctor", () => {
       });
       const found = locateCheckout(sibling);
       seedState(h, { approvals: [legacyRecord(projectId, found)] });
-      await expectInertLegacy(h, checkout, found);
+      await expectInertUnregistrable(h, checkout);
     });
 
     test("is inert when the checkout's nonce file is invalid", async () => {
@@ -1247,7 +1300,7 @@ describe("ward doctor", () => {
         "garbage\n",
       );
       seedState(h, { approvals: [legacyRecord(projectId, found)] });
-      await expectInertLegacy(h, checkout, found);
+      await expectInertUnregistrable(h, checkout);
     });
 
     test("is inert when the checkout's current binding is another project's", async () => {
