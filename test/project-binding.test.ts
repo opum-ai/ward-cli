@@ -82,11 +82,13 @@ function worktree(
   const directory = join(root, `${name}-${++cases}`);
   mkdirSync(directory);
   if (git === "directory") mkdirSync(join(directory, ".git"));
-  else
-    writeFileSync(
-      join(directory, ".git"),
-      `gitdir: ${directory}/.git/worktrees/x\n`,
-    );
+  else {
+    // A linked worktree's git directory exists, elsewhere: the pointer Ward
+    // follows must resolve to a real directory (DEC-255 a6 Q2).
+    const gitDirectory = `${directory}-gitdir`;
+    mkdirSync(gitDirectory);
+    writeFileSync(join(directory, ".git"), `gitdir: ${gitDirectory}\n`);
+  }
   return directory;
 }
 
@@ -377,6 +379,44 @@ describe("T10: no checkout inherits a binding", () => {
     expect(after.inode).not.toBe(before.inode);
     expect(h.resolve(checkout).projectId).toBe(registered.projectId);
     expect(h.resolve(checkout).binding).toBeUndefined();
+  });
+
+  // WCLI-125 (DEC-255 a2 clause 4): the old directory is deleted, not moved
+  // aside, so a filesystem that reuses a freed inode (the hosted ext4 runner
+  // does; APFS rarely does) hands the new directory the old inode. Whether or
+  // not it does here, the re-clone carries no nonce in its fresh git directory,
+  // so it inherits neither the binding nor, once registered again, a binding
+  // for the old clone.
+  test("an rm -rf and re-clone at the same path is a new checkout, inode reused or not", async () => {
+    const h = harness();
+    const checkout = worktree("recloned");
+    await h.setUp(checkout);
+    const registered = json((await h.init(checkout)).stdout).data;
+    const manifest = readFileSync(manifestPath(checkout));
+    const before = locateCheckout(checkout);
+    expect(before.checkoutId).toMatch(/^[0-9a-f]{32}$/);
+    expect(h.resolve(checkout).binding?.projectId).toBe(registered.projectId);
+
+    rmSync(checkout, { recursive: true, force: true });
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    mkdirSync(join(checkout, ".ward"));
+    writeFileSync(manifestPath(checkout), manifest);
+    const after = locateCheckout(checkout);
+
+    expect(after.root).toBe(before.root);
+    expect(after.checkoutId).toBeUndefined();
+    expect(h.resolve(checkout).projectId).toBe(registered.projectId);
+    expect(h.resolve(checkout).binding).toBeUndefined();
+
+    // Registered explicitly, it is a binding of its own beside the old one.
+    h.approver.answer = "approved";
+    const again = await h.init(checkout);
+    expect(json(again.stdout).data.registration).toBe("registered");
+    expect(h.state()?.localBindings).toHaveLength(2);
+    expect(h.resolve(checkout).binding?.checkoutId).toBe(
+      locateCheckout(checkout).checkoutId,
+    );
+    expect(locateCheckout(checkout).checkoutId).not.toBe(before.checkoutId);
   });
 
   test("re-registering the same checkout asks nothing and writes nothing", async () => {

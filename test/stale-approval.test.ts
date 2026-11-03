@@ -25,7 +25,8 @@ const root = "/Users/dev/code/project";
 const device = "16777232";
 const inode = "8429931";
 const profile = "release-deploy";
-const checkout = { root, device, inode };
+const checkoutId = "0123456789abcdef0123456789abcdef";
+const checkout = { root, device, inode, checkoutId };
 
 // The snapshot is written in the shape a document carries (headers as a map,
 // which is what the reader normalizes). For the stale record it is
@@ -48,6 +49,7 @@ function approval(overrides: Record<string, unknown> = {}) {
     root,
     device,
     inode,
+    checkoutId,
     approvedAt: "2026-09-29T00:00:00.000Z",
     expiresAt: "2026-09-30T00:00:00.000Z",
     snapshotVersion: 1,
@@ -75,6 +77,7 @@ const binding = {
   root,
   device,
   inode,
+  checkoutId,
   registeredAt: "2026-09-29T00:00:00.000Z",
 };
 
@@ -128,6 +131,7 @@ describe("DEC-246 (a2): a version-mismatched approval", () => {
       root,
       device,
       inode,
+      checkoutId,
       approvedAt: "2026-10-26T00:00:00.000Z",
       expiresAt: "2026-10-27T00:00:00.000Z",
       snapshotVersion: profileSnapshotVersion,

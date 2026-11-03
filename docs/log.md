@@ -56,6 +56,7 @@
 - 2026-10-31T08:10:44-05:00 68c648db0be9621853a8c33521e5606d0494cfaf chore(WCLI-117): round-3 nits - proxy-* rule in ADR 0024, case-only rename test, comment widths and timestamps (#219)
 - 2026-11-02T13:07:16-06:00 0a3585ec122fbb5c5a6b51ca0ee4e6310227e543 docs(WCLI-100): ADR 0025, the approval prompt keeps y/N because its answer line shows the whole host (DEC-255 (3))
 - 2026-11-02T13:21:15-06:00 23391c36183a1cd56496df0197aa448a78df933a docs(WCLI-100): record the habitual-y residual in ADR 0025 and tighten its wording
+- 2026-11-02T14:10:36-06:00 ca3167942016db09302fa87f64048596121021af docs(WCLI-100): ADR 0025, the approval prompt keeps y/N because its answer line shows the whole host (DEC-255 (3)) (#248)
 
 ## docs/runbooks
 
@@ -68,3 +69,4 @@
 - 2026-11-01T10:51:46-06:00 4b391839ec5e9347ba52128bea460f8911e60d73 fix(WCLI-96): drop the runner line from the Release notes, mark the byte comparison superseded (#232)
 - 2026-11-01T11:00:04-06:00 10704636be1f9a3ce6b640ca6120df9c79f10bc9 docs(WCLI-110, WCLI-113): install and security docs for the public flip (#235)
 - 2026-11-01T11:08:23-06:00 ae586d6611814a673505d8aa2832dfc1b5af7bfb docs(WCLI-130): pre-flip wording, a public README, an idempotent supersede step and -R on the verify script (#242)
+- 2026-11-02T13:28:20-06:00 3e73ac8f121d960c42f2f3d046eaf9258ed6d5f5 feat(WCLI-123): build, ad-hoc sign and strictly verify the darwin asset on macos-15 in the tag run (#246)

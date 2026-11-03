@@ -1,7 +1,8 @@
 // Resolves the canonical Git worktree root of a directory, and that
 // directory's own identity (spec §7.1).
 //
-// The walk is deliberately dumb: from the canonical starting directory,
+// The walk itself is deliberately dumb (the one bounded exception is the
+// checkout nonce below, ADR 0026): from the canonical starting directory,
 // upward, the first directory holding a `.git` entry is the root. No Git
 // command runs, and nothing in the repository is read — not `.git`'s
 // contents, not a remote, not a config value — because a repository's own
@@ -9,12 +10,22 @@
 // worktree, a submodule) and a `.git` directory (an ordinary checkout) both
 // mark a boundary, and both end the walk, which is what keeps a nested
 // repository from reaching its parent's authority.
-import { lstatSync, realpathSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants as fileConstants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { ProbedCheckout } from "../application/reporting.ts";
 import { createProjectFiles } from "./project-files.ts";
 import { WardError } from "../contract/errors.ts";
-import type { CheckoutIdentity } from "../domain/vault-state.ts";
+import { type CheckoutIdentity, isCheckoutId } from "../domain/vault-state.ts";
 
 function errnoCode(error: unknown): unknown {
   return typeof error === "object" && error !== null
@@ -49,6 +60,141 @@ export function canonicalDirectory(directory: string): string {
   }
 }
 
+// The checkout nonce (DEC-255 a2 clause 4, a6 Q2; ADR 0026): a random id kept
+// in the clone's own git directory at ward/checkout-id, never in a tracked
+// file. (root, device, inode) alone cannot tell a deleted clone from a new one
+// at the same path on a filesystem that reuses a freed inode; a fresh clone has
+// a fresh git directory, and so no nonce, until it is registered.
+//
+// This is the one named, bounded exception to the rule above that nothing in
+// `.git` is read. Ward looks at the `.git` entry its own walk found and nowhere
+// else, and never at the GIT_DIR environment variable. An ordinary checkout's
+// entry is the git directory. A linked worktree's or a submodule's is a file
+// holding one `gitdir: <path>` line, which is read as at most 4 KiB, a relative
+// path resolved against the directory holding the file (git writes relative
+// paths for submodules), canonicalised with realpath and required to be an
+// existing directory. Nothing else in the repository is read.
+const GITDIR_FILE_MAX_BYTES = 4096;
+const CHECKOUT_ID_FILE_MAX_BYTES = 64;
+
+// One bounded read of a regular file opened without following a link; the
+// file may be one byte over the bound to prove it is over.
+function readBoundedFile(path: string, maxBytes: number): string | undefined {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(
+      path,
+      fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW,
+    );
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const read = readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (read > maxBytes) return undefined;
+    return buffer.toString("utf8", 0, read);
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function gitDirectoryOf(root: string): string | undefined {
+  const entry = join(root, ".git");
+  try {
+    const stats = lstatSync(entry);
+    if (stats.isDirectory()) return entry;
+    if (!stats.isFile()) return undefined;
+    const text = readBoundedFile(entry, GITDIR_FILE_MAX_BYTES);
+    if (text === undefined) return undefined;
+    const line = text.endsWith("\r\n")
+      ? text.slice(0, -2)
+      : text.endsWith("\n")
+        ? text.slice(0, -1)
+        : text;
+    if (!line.startsWith("gitdir: ") || /[\r\n\0]/.test(line)) return undefined;
+    const pointed = line.slice("gitdir: ".length);
+    if (pointed.length === 0) return undefined;
+    const target = realpathSync(
+      isAbsolute(pointed) ? pointed : resolve(root, pointed),
+    );
+    return lstatSync(target).isDirectory() ? target : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function checkoutIdPath(gitDirectory: string): {
+  directory: string;
+  file: string;
+} {
+  const directory = join(gitDirectory, "ward");
+  return { directory, file: join(directory, "checkout-id") };
+}
+
+function readCheckoutId(gitDirectory: string): string | undefined {
+  const { directory, file } = checkoutIdPath(gitDirectory);
+  try {
+    if (!lstatSync(directory).isDirectory()) return undefined;
+    if (!lstatSync(file).isFile()) return undefined;
+  } catch {
+    return undefined;
+  }
+  const text = readBoundedFile(file, CHECKOUT_ID_FILE_MAX_BYTES);
+  if (text === undefined) return undefined;
+  const id = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return isCheckoutId(id) ? id : undefined;
+}
+
+// The checkout's identity nonce, creating it on first use: exclusive create,
+// mode 0600, refusing a link at the `ward` directory and at the file, so a
+// repository cannot make Ward write through a link it planted. An existing
+// valid nonce is kept, since it already names this clone. Called only after a
+// registration is approved.
+export function bindCheckoutIdentity(
+  identity: CheckoutIdentity,
+): CheckoutIdentity {
+  const gitDirectory = gitDirectoryOf(identity.root);
+  if (gitDirectory === undefined)
+    throw new WardError("checkout_identity_unavailable");
+  let id = readCheckoutId(gitDirectory);
+  if (id === undefined) {
+    const { directory, file } = checkoutIdPath(gitDirectory);
+    try {
+      try {
+        mkdirSync(directory, { mode: 0o700 });
+      } catch (error) {
+        if (errnoCode(error) !== "EEXIST") throw error;
+      }
+      if (!lstatSync(directory).isDirectory())
+        throw new WardError("checkout_identity_unavailable");
+      const fresh = randomBytes(16).toString("hex");
+      let descriptor: number | undefined;
+      try {
+        descriptor = openSync(
+          file,
+          fileConstants.O_WRONLY |
+            fileConstants.O_CREAT |
+            fileConstants.O_EXCL |
+            fileConstants.O_NOFOLLOW,
+          0o600,
+        );
+        writeSync(descriptor, `${fresh}\n`);
+        id = fresh;
+      } catch (error) {
+        // A concurrent registration may have created it first; take theirs.
+        if (errnoCode(error) !== "EEXIST") throw error;
+        id = readCheckoutId(gitDirectory);
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+      }
+    } catch (error) {
+      if (error instanceof WardError) throw error;
+      throw new WardError("checkout_identity_unavailable");
+    }
+  }
+  if (id === undefined) throw new WardError("checkout_identity_unavailable");
+  return { ...identity, checkoutId: id };
+}
+
 export function locateCheckout(startDirectory: string): CheckoutIdentity {
   let current: string;
   try {
@@ -59,10 +205,14 @@ export function locateCheckout(startDirectory: string): CheckoutIdentity {
   while (true) {
     if (hasGitEntry(current)) {
       const stats = lstatSync(current, { bigint: true });
+      const gitDirectory = gitDirectoryOf(current);
+      const checkoutId =
+        gitDirectory === undefined ? undefined : readCheckoutId(gitDirectory);
       return {
         root: current,
         device: stats.dev.toString(),
         inode: stats.ino.toString(),
+        ...(checkoutId === undefined ? {} : { checkoutId }),
       };
     }
     const parent = dirname(current);
@@ -106,6 +256,9 @@ export function probeCheckout(root: string): ProbedCheckout | undefined {
     root: identity.root,
     device: identity.device,
     inode: identity.inode,
+    ...(identity.checkoutId === undefined
+      ? {}
+      : { checkoutId: identity.checkoutId }),
     manifest,
   };
 }

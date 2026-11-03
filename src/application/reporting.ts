@@ -70,6 +70,8 @@ export interface ProbedCheckout {
   readonly root: string;
   readonly device: string;
   readonly inode: string;
+  // The nonce in that checkout's git directory, when it has one.
+  readonly checkoutId?: string;
   // The project manifest's text, or undefined when there is none to read.
   readonly manifest: string | undefined;
 }
@@ -414,13 +416,17 @@ function describeStaleApproval(
   if (
     probed.root !== record.root ||
     probed.device !== record.device ||
-    probed.inode !== record.inode
+    probed.inode !== record.inode ||
+    probed.checkoutId !== record.checkoutId
   )
     return inert("a different directory now stands at that path");
   const identity = {
     root: record.root,
     device: record.device,
     inode: record.inode,
+    ...(record.checkoutId === undefined
+      ? {}
+      : { checkoutId: record.checkoutId }),
   };
   const binding = findBinding(state, identity);
   if (binding === undefined)

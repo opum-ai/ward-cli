@@ -29,7 +29,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { locateCheckout, probeCheckout } from "../src/adapters/checkout.ts";
+import {
+  bindCheckoutIdentity,
+  locateCheckout,
+  probeCheckout,
+} from "../src/adapters/checkout.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
@@ -108,6 +112,7 @@ function approvalRecord(options: {
   root: string;
   device: string;
   inode: string;
+  checkoutId?: string;
   snapshotVersion?: number;
 }): Record<string, unknown> {
   return {
@@ -116,6 +121,9 @@ function approvalRecord(options: {
     root: options.root,
     device: options.device,
     inode: options.inode,
+    ...(options.checkoutId === undefined
+      ? {}
+      : { checkoutId: options.checkoutId }),
     approvedAt: "2026-09-29T00:00:00.000Z",
     expiresAt: "2026-09-30T00:00:00.000Z",
     snapshotVersion: options.snapshotVersion ?? profileSnapshotVersion + 1,
@@ -171,6 +179,7 @@ function bindingRecord(identity: {
   root: string;
   device: string;
   inode: string;
+  checkoutId?: string;
 }): Record<string, unknown> {
   return { ...identity, registeredAt: "2026-09-29T00:00:00.000Z" };
 }
@@ -718,6 +727,7 @@ describe("ward doctor", () => {
         root: identity.root,
         device: identity.device,
         inode: identity.inode,
+        checkoutId: identity.checkoutId,
       }),
     ]);
 
@@ -794,6 +804,7 @@ describe("ward doctor", () => {
         root: hostileRoot,
         device: identity.device,
         inode: identity.inode,
+        checkoutId: identity.checkoutId,
       }),
     ]);
 
@@ -827,6 +838,7 @@ describe("ward doctor", () => {
         root: identity.root,
         device: identity.device,
         inode: identity.inode,
+        checkoutId: identity.checkoutId,
       }),
       approvalRecord({
         profile: sentinelProfile,
@@ -834,6 +846,7 @@ describe("ward doctor", () => {
         root: sentinelRoot,
         device: identity.device,
         inode: identity.inode,
+        checkoutId: identity.checkoutId,
       }),
     ]);
 
@@ -891,6 +904,7 @@ describe("ward doctor", () => {
         root: gone,
         device: identity.device,
         inode: identity.inode,
+        checkoutId: identity.checkoutId,
       }),
     ]);
 
@@ -1027,8 +1041,9 @@ describe("ward doctor", () => {
             root: sibling,
             device: identity.device,
             inode: identity.inode,
+            checkoutId: identity.checkoutId,
           }
-        : locateCheckout(sibling);
+        : bindCheckoutIdentity(locateCheckout(sibling));
       if (!lastArm)
         writeManifestAt(sibling, {
           schemaVersion: 1,
@@ -1042,6 +1057,7 @@ describe("ward doctor", () => {
         root: siblingIdentity.root,
         device: siblingIdentity.device,
         inode: siblingIdentity.inode,
+        checkoutId: siblingIdentity.checkoutId,
       });
       const bindings: unknown[] = [
         bindingRecord({ projectId, ...siblingIdentity }),
@@ -1096,6 +1112,7 @@ describe("ward doctor", () => {
           root: join(identity.root, "elsewhere"),
           device: identity.device,
           inode: identity.inode,
+          checkoutId: identity.checkoutId,
         }),
       ],
     });
@@ -1133,6 +1150,7 @@ describe("ward doctor", () => {
           root: identity.root,
           device: identity.device,
           inode: identity.inode,
+          checkoutId: identity.checkoutId,
         }),
       ],
     });

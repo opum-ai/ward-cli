@@ -45,8 +45,8 @@ export interface UnregisterResult {
   readonly text: string;
 }
 
-// An approval belongs to a binding when it names the same project and all three
-// parts of the same directory identity: "that binding's approvals" (DEC-217
+// An approval belongs to a binding when it names the same project and all of the
+// same directory identity and the same checkout nonce: "that binding's approvals" (DEC-217
 // Q4). Another checkout of the project keeps its own, and so does an approval
 // of a different project recorded at this identity.
 function belongsTo(
@@ -57,7 +57,8 @@ function belongsTo(
     approval.projectId === binding.projectId &&
     approval.root === binding.root &&
     approval.device === binding.device &&
-    approval.inode === binding.inode
+    approval.inode === binding.inode &&
+    approval.checkoutId === binding.checkoutId
   );
 }
 
@@ -72,7 +73,8 @@ function withoutBinding(
       (entry) =>
         entry.root !== binding.root ||
         entry.device !== binding.device ||
-        entry.inode !== binding.inode,
+        entry.inode !== binding.inode ||
+        entry.checkoutId !== binding.checkoutId,
     ),
     profileApprovals: removeApprovals
       ? state.profileApprovals.filter(

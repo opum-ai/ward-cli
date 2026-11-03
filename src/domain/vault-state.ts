@@ -65,11 +65,19 @@ export interface ProjectRecord {
 // re-created at the same path is a new directory, and §7.1 requires a new
 // clone to be handled explicitly rather than silently added to an existing
 // binding.
+//
+// `checkoutId` is the per-checkout nonce that lives in the clone's own git
+// directory (DEC-255 a2 clause 4, ADR 0026). A binding matches a checkout only
+// when the nonce agrees as well, because an inode a filesystem has freed can be
+// handed to a clone made at the same path. It is optional on the record and
+// nothing else is (DEC-255 a6 Q1): a record written before it existed has none,
+// parses, and matches nothing, so the developer registers and approves again.
 export interface BindingRecord {
   readonly projectId: string;
   readonly root: string;
   readonly device: string;
   readonly inode: string;
+  readonly checkoutId?: string;
   readonly registeredAt: string;
 }
 
@@ -91,6 +99,7 @@ export interface ProfileApprovalRecord {
   readonly root: string;
   readonly device: string;
   readonly inode: string;
+  readonly checkoutId?: string;
   readonly approvedAt: string;
   // When the approval stops admitting runs (DEC-217 Q5). Always after
   // `approvedAt`, and judged at admission against the clock, never at read.
@@ -119,6 +128,7 @@ export interface StaleProfileApprovalRecord {
   readonly root: string;
   readonly device: string;
   readonly inode: string;
+  readonly checkoutId?: string;
   readonly snapshotVersion: number;
   readonly stored: Readonly<Record<string, unknown>>;
 }
@@ -245,6 +255,30 @@ export interface CheckoutIdentity {
   readonly root: string;
   readonly device: string;
   readonly inode: string;
+  // The nonce read from the clone's git directory, or absent when it has none
+  // yet. An identity without one matches no binding and no approval.
+  readonly checkoutId?: string;
+}
+
+// Whether a stored record names this checkout: the same directory identity AND
+// the same nonce, both present. A record or a checkout without a nonce is
+// unbound, which is what makes a freed inode handed to a new clone harmless.
+export function sameCheckout(
+  record: {
+    readonly root: string;
+    readonly device: string;
+    readonly inode: string;
+    readonly checkoutId?: string;
+  },
+  checkout: CheckoutIdentity,
+): boolean {
+  return (
+    record.root === checkout.root &&
+    record.device === checkout.device &&
+    record.inode === checkout.inode &&
+    record.checkoutId !== undefined &&
+    record.checkoutId === checkout.checkoutId
+  );
 }
 
 export function emptyVaultState(): VaultState {
@@ -302,6 +336,30 @@ function isCounter(value: unknown): value is string {
   return typeof value === "string" && counterPattern.test(value);
 }
 
+// The nonce Ward writes: 16 random bytes as lowercase hex.
+const checkoutIdPattern = /^[0-9a-f]{32}$/;
+
+export function isCheckoutId(value: unknown): value is string {
+  return typeof value === "string" && checkoutIdPattern.test(value);
+}
+
+// The key set a record must carry, exactly, with the one optional key
+// `checkoutId` admitted in its sorted place (DEC-255 a6 Q1, ADR 0026). Any
+// other missing or unknown key is still a damaged document.
+function expectedKeys(
+  base: readonly string[],
+  value: Record<string, unknown>,
+): readonly string[] {
+  if (!Object.hasOwn(value, "checkoutId")) return base;
+  return [...base, "checkoutId"].sort();
+}
+
+function ownCheckoutId(value: Record<string, unknown>): string | undefined {
+  if (!Object.hasOwn(value, "checkoutId")) return undefined;
+  if (!isCheckoutId(value.checkoutId)) malformed();
+  return value.checkoutId;
+}
+
 function ownProject(value: unknown): ProjectRecord {
   if (!isRecord(value)) malformed();
   const keys = Object.keys(value).sort();
@@ -313,7 +371,10 @@ function ownProject(value: unknown): ProjectRecord {
 
 function ownBinding(value: unknown): BindingRecord {
   if (!isRecord(value)) malformed();
-  const expected = ["device", "inode", "projectId", "registeredAt", "root"];
+  const expected = expectedKeys(
+    ["device", "inode", "projectId", "registeredAt", "root"],
+    value,
+  );
   const keys = Object.keys(value).sort();
   if (keys.length !== expected.length) malformed();
   for (const [index, key] of expected.entries())
@@ -322,11 +383,13 @@ function ownBinding(value: unknown): BindingRecord {
   if (!isCanonicalAbsolutePath(value.root)) malformed();
   if (!isCounter(value.device) || !isCounter(value.inode)) malformed();
   if (!isTimestamp(value.registeredAt)) malformed();
+  const checkoutId = ownCheckoutId(value);
   return {
     projectId: value.projectId,
     root: value.root,
     device: value.device,
     inode: value.inode,
+    ...(checkoutId === undefined ? {} : { checkoutId }),
     registeredAt: value.registeredAt,
   };
 }
@@ -401,17 +464,20 @@ type ParsedProfileApproval =
 
 function ownProfileApproval(value: unknown): ParsedProfileApproval {
   if (!isRecord(value)) malformed();
-  const expected = [
-    "approvedAt",
-    "device",
-    "expiresAt",
-    "inode",
-    "profile",
-    "projectId",
-    "root",
-    "snapshot",
-    "snapshotVersion",
-  ];
+  const expected = expectedKeys(
+    [
+      "approvedAt",
+      "device",
+      "expiresAt",
+      "inode",
+      "profile",
+      "projectId",
+      "root",
+      "snapshot",
+      "snapshotVersion",
+    ],
+    value,
+  );
   const keys = Object.keys(value).sort();
   if (keys.length !== expected.length) malformed();
   for (const [index, key] of expected.entries())
@@ -436,6 +502,7 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
     value.snapshotVersion < 1
   )
     malformed();
+  const checkoutId = ownCheckoutId(value);
   if (value.snapshotVersion !== profileSnapshotVersion) {
     // A record carrying no snapshot at all is damaged rather than merely from
     // another build; anything else here is that build's to interpret, not
@@ -448,6 +515,7 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
         root: value.root,
         device: value.device,
         inode: value.inode,
+        ...(checkoutId === undefined ? {} : { checkoutId }),
         snapshotVersion: value.snapshotVersion,
         stored: value,
       },
@@ -474,6 +542,7 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
       root: value.root,
       device: value.device,
       inode: value.inode,
+      ...(checkoutId === undefined ? {} : { checkoutId }),
       approvedAt: value.approvedAt,
       expiresAt: value.expiresAt,
       snapshotVersion: value.snapshotVersion,
@@ -731,11 +800,13 @@ export function serializeVaultState(state: VaultState): Uint8Array {
     formatVersion: vaultStateFormatVersion,
     projects: state.projects.map(({ id, createdAt }) => ({ id, createdAt })),
     localBindings: state.localBindings.map(
-      ({ projectId, root, device, inode, registeredAt }) => ({
+      ({ projectId, root, device, inode, checkoutId, registeredAt }) => ({
         projectId,
         root,
         device,
         inode,
+        // Omitted, never written as null, when a record has none (DEC-255 a6).
+        ...(checkoutId === undefined ? {} : { checkoutId }),
         registeredAt,
       }),
     ),
@@ -758,6 +829,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
           root,
           device,
           inode,
+          checkoutId,
           approvedAt,
           expiresAt,
           snapshotVersion,
@@ -768,6 +840,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
           root,
           device,
           inode,
+          ...(checkoutId === undefined ? {} : { checkoutId }),
           approvedAt,
           expiresAt,
           snapshotVersion,
@@ -866,12 +939,7 @@ export function findBinding(
   state: VaultState,
   checkout: CheckoutIdentity,
 ): BindingRecord | undefined {
-  return state.localBindings.find(
-    (binding) =>
-      binding.root === checkout.root &&
-      binding.device === checkout.device &&
-      binding.inode === checkout.inode,
-  );
+  return state.localBindings.find((binding) => sameCheckout(binding, checkout));
 }
 
 // Registers a checkout for a project and records the project itself if this
@@ -899,6 +967,9 @@ export function registerCheckout(options: {
         root: checkout.root,
         device: checkout.device,
         inode: checkout.inode,
+        ...(checkout.checkoutId === undefined
+          ? {}
+          : { checkoutId: checkout.checkoutId }),
         registeredAt,
       },
     ],
@@ -1085,6 +1156,7 @@ function isApprovalFor(
     readonly root: string;
     readonly device: string;
     readonly inode: string;
+    readonly checkoutId?: string;
   },
   checkout: CheckoutIdentity,
   projectId: string,
@@ -1093,9 +1165,7 @@ function isApprovalFor(
   return (
     approval.profile === profile &&
     approval.projectId === projectId &&
-    approval.root === checkout.root &&
-    approval.device === checkout.device &&
-    approval.inode === checkout.inode
+    sameCheckout(approval, checkout)
   );
 }
 
@@ -1132,6 +1202,9 @@ export function withProfileApproval(
     root: record.root,
     device: record.device,
     inode: record.inode,
+    ...(record.checkoutId === undefined
+      ? {}
+      : { checkoutId: record.checkoutId }),
   };
   return {
     ...state,
