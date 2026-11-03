@@ -471,6 +471,22 @@ describe("the nonce file in the git directory", () => {
       expect(() => lstatSync(join(named, "ward"))).toThrow();
     });
 
+    // The same guard on a line feed inside the path: "gitdir: <dir with LF>\n"
+    // is two lines to the guard, and a directory that really has that name is
+    // refused by it and by nothing else.
+    test("a line feed inside the pointer path binds nothing even when the path exists", () => {
+      const parent = checkout("linefeed-parent");
+      const named = join(parent, "with\nfeed");
+      mkdirSync(named);
+      const directory = withGitFile("pointer-linefeed", `gitdir: ${named}\n`);
+      expect(lstatSync(named).isDirectory()).toBe(true);
+      expect(locateCheckout(directory).checkoutId).toBeUndefined();
+      expect(
+        codeOf(() => bindCheckoutIdentity(locateCheckout(directory))),
+      ).toBe("checkout_identity_unavailable");
+      expect(() => lstatSync(join(named, "ward"))).toThrow();
+    });
+
     // A NUL cannot name an existing path, so realpath refuses it on its own and
     // the NUL in the guard is a second line of defence this case cannot isolate;
     // likewise a .git file that is a link is stopped by the lstat file check

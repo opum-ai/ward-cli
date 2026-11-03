@@ -451,8 +451,9 @@ describe("T10: no checkout inherits a binding", () => {
       },
     );
     // The old clone's approval is live for the old clone (a positive control for
-    // the matching below), and a checkout with the old directory identity and no
-    // nonce matches nothing.
+    // the matching below), and the re-clone, which has no nonce yet, matches
+    // nothing. (Whether it shares the old inode depends on the filesystem; the
+    // nonce-only check at the end of this case is what holds on every one.)
     expect(
       findProfileApproval(
         h.state() as VaultState,

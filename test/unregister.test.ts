@@ -585,6 +585,46 @@ describe("ward unregister", () => {
     ).toEqual([other]);
   });
 
+  // WCLI-137 (opus L2): two legacy bindings of different projects at one
+  // directory identity. Unregistering one removes that one only: the other is
+  // neither shown nor counted, so it is not removed either (DEC-255 a8).
+  test("two legacy bindings at one directory identity: only the shown project's is removed", async () => {
+    const w = await world();
+    makeFirstLegacy(w);
+    const identity = locateCheckout(w.first);
+    const other = "88888888-8888-4888-8888-888888888888";
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.localBindings.find(
+        (binding) => binding.root === identity.root,
+      );
+      const project = current.projects[0];
+      if (mine === undefined || project === undefined)
+        throw new Error("fixture has no record");
+      return serializeVaultState({
+        ...current,
+        projects: [...current.projects, { ...project, id: other }],
+        localBindings: [
+          ...current.localBindings,
+          { ...mine, projectId: other },
+        ],
+      });
+    });
+    const shown = w
+      .state()
+      .localBindings.find((binding) => binding.root === identity.root);
+    const { approver, asked } = scripted(["approved", "approved"]);
+    const result = await w.ward(w.first, ["unregister"], approver);
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(asked[0]?.projectId).toBe(shown?.projectId);
+    expect(
+      w
+        .state()
+        .localBindings.filter((binding) => binding.root === identity.root)
+        .map((binding) => binding.projectId),
+    ).toEqual([other]);
+  });
+
   // WCLI-137 (N3): a record that appears between the question and the write was
   // never shown, so the removal is refused and nothing is removed.
   test("a binding that appears between the question and the write is not removed unseen", async () => {

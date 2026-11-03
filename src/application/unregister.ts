@@ -73,6 +73,7 @@ function withoutBinding(
     ...state,
     localBindings: state.localBindings.filter(
       (entry) =>
+        entry.projectId !== binding.projectId ||
         entry.root !== binding.root ||
         entry.device !== binding.device ||
         entry.inode !== binding.inode ||

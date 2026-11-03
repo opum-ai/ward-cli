@@ -954,14 +954,6 @@ describe("ward doctor", () => {
         },
       },
       {
-        name: "legacy approval",
-        reason:
-          "a legacy approval, written before checkouts had an identity; it authorises nothing",
-        arrange: ({ record }) => {
-          delete record.checkoutId;
-        },
-      },
-      {
         name: "no binding",
         reason: "that checkout is no longer registered",
         arrange: ({ bindings }) => {
@@ -1106,6 +1098,108 @@ describe("ward doctor", () => {
         text: expect.stringContaining(arm.reason),
       });
     }
+  });
+
+  // WCLI-137 (N4): a stale approval with no nonce (a legacy one) is judged like
+  // any other stale record against the checkout as it stands: clearable when
+  // approving, or registering and then approving, can replace it, inert only
+  // when nothing can. Each case asserts the remedy clause itself.
+  describe("a legacy stale approval", () => {
+    const legacyRecord = (
+      projectId: string,
+      identity: { root: string; device: string; inode: string },
+    ) => {
+      const record = approvalRecord({
+        profile: "deploy",
+        projectId,
+        ...identity,
+      });
+      delete record.checkoutId;
+      return record;
+    };
+
+    test("is clearable by approving again when its checkout is registered", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-registered");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const identity = locateCheckout(checkout);
+      const projectId = declareProfile(checkout, "deploy");
+      seedApprovals(h, [legacyRecord(projectId, identity)]);
+
+      const doctor = await doctorOf(h, checkout);
+      expect(checkFor(doctor.data, "stale_approvals")).toMatchObject({
+        status: "fail",
+        code: "reapprove_required",
+      });
+      expect(checkFor(doctor.data, "stale_approvals").staleApprovals).toEqual([
+        expect.objectContaining({
+          clearable: true,
+          remedy: `from ${identity.root}, run ward profile approve deploy`,
+        }),
+      ]);
+      const text = await runWard(["doctor"], h.options(checkout));
+      expect(text.stdout).toContain(
+        "re-approve in a trusted terminal with ward profile approve deploy",
+      );
+      expect(text.stdout).not.toContain("inert and unreachable");
+    });
+
+    test("says to register and then approve when its checkout is not registered", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-unregistered");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const sibling = siblingCheckout();
+      writeManifestAt(sibling, {
+        schemaVersion: 1,
+        projectId,
+        profiles: { deploy: profileDeclaration() },
+      });
+      const found = locateCheckout(sibling);
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+
+      const doctor = await doctorOf(h, checkout);
+      expect(checkFor(doctor.data, "stale_approvals")).toMatchObject({
+        status: "fail",
+        code: "reapprove_required",
+      });
+      expect(checkFor(doctor.data, "stale_approvals").staleApprovals).toEqual([
+        expect.objectContaining({
+          clearable: true,
+          remedy: `register and approve again: from ${found.root}, run ward init, then ward profile approve deploy`,
+        }),
+      ]);
+      const text = await runWard(["doctor"], h.options(checkout));
+      expect(text.stdout).toContain(
+        "register this checkout and approve again in a trusted terminal: ward init, then ward profile approve deploy",
+      );
+    });
+
+    test("is inert only when its checkout no longer declares the profile", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-undeclared");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const sibling = siblingCheckout();
+      writeManifestAt(sibling, { schemaVersion: 1, projectId, profiles: {} });
+      seedState(h, {
+        approvals: [legacyRecord(projectId, locateCheckout(sibling))],
+      });
+
+      const doctor = await doctorOf(h, checkout);
+      expect(doctor.result.exitCode).toBe(exitCodes.success);
+      expect(checkFor(doctor.data, "stale_approvals")).toMatchObject({
+        status: "pass",
+        code: "inert",
+      });
+      const text = await runWard(["doctor"], h.options(checkout));
+      expect(text.stdout).toContain(
+        "that checkout no longer declares this profile",
+      );
+    });
   });
 
   // Finding 3 (rv331b), the two whole-report shapes: only other projects'

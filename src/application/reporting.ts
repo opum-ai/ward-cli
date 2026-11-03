@@ -419,32 +419,30 @@ function describeStaleApproval(
     probed.inode !== record.inode
   )
     return inert("a different directory now stands at that path");
-  // An approval with no nonce was written before checkouts had an identity. It
-  // is named as such rather than as a different directory: the directory is the
-  // same. It is not an "inert and unreachable" record in the sense above, since
-  // registering and approving again replaces it, but only if the checkout can
-  // be registered and still declares the profile, which this arm does not check;
-  // the remedy says what to do and does not promise it will work.
-  if (record.checkoutId === undefined)
-    return {
-      ...fields,
-      clearable: false,
-      remedy: `a legacy approval, written before checkouts had an identity; it authorises nothing. From ${record.root}, register and approve again (ward init, then ward profile approve ${record.profile}), if the profile is still declared there`,
-    };
-  if (probed.checkoutId !== record.checkoutId)
+  const legacy = record.checkoutId === undefined;
+  if (!legacy && probed.checkoutId !== record.checkoutId)
     return inert("a different directory now stands at that path");
+  // An approval with no nonce was written before checkouts had an identity and
+  // authorises nothing. It is judged like any other stale record, against the
+  // checkout as it stands now: the binding is looked up under the checkout's
+  // CURRENT nonce, since the record has none, and approving again replaces it.
+  // Only a record whose checkout is gone, is registered to another project or no
+  // longer declares the profile is inert; otherwise it is clearable, by
+  // approving (registered) or by registering and then approving (not).
   const identity = {
     root: record.root,
     device: record.device,
     inode: record.inode,
-    ...(record.checkoutId === undefined
-      ? {}
+    ...(legacy
+      ? probed.checkoutId === undefined
+        ? {}
+        : { checkoutId: probed.checkoutId }
       : { checkoutId: record.checkoutId }),
   };
   const binding = findBinding(state, identity);
-  if (binding === undefined)
+  if (binding === undefined && !legacy)
     return inert("that checkout is no longer registered");
-  if (binding.projectId !== record.projectId)
+  if (binding !== undefined && binding.projectId !== record.projectId)
     return inert("that checkout is registered to another project");
   if (probed.manifest === undefined)
     return inert("that checkout has no project manifest");
@@ -463,6 +461,15 @@ function describeStaleApproval(
   } catch {
     return inert("that checkout's declaration of this profile cannot be read");
   }
+  if (legacy)
+    return {
+      ...fields,
+      clearable: true,
+      remedy:
+        binding === undefined
+          ? `register and approve again: from ${record.root}, run ward init, then ward profile approve ${record.profile}`
+          : `from ${record.root}, run ward profile approve ${record.profile}`,
+    };
   return {
     ...fields,
     clearable: true,
@@ -484,7 +491,9 @@ function staleApprovalLines(
         (entry) =>
           `    - ${escapeForDisplay(entry.profile)} at ${escapeForDisplay(entry.checkout)}, snapshot version ${entry.snapshotVersion}: ${
             entry.clearable
-              ? `re-approve in a trusted terminal with ward profile approve ${escapeForDisplay(entry.profile)}, run from that checkout`
+              ? entry.remedy.startsWith("register and approve again")
+                ? `register this checkout and approve again in a trusted terminal: ward init, then ward profile approve ${escapeForDisplay(entry.profile)}, run from that checkout`
+                : `re-approve in a trusted terminal with ward profile approve ${escapeForDisplay(entry.profile)}, run from that checkout`
               : `inert and unreachable — ${escapeForDisplay(entry.remedy.replace(/^inert and unreachable: /, ""))}`
           }`,
       ),
