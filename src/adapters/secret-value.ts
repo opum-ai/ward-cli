@@ -74,16 +74,46 @@ function defaultWritePrompt(text: string): void {
   }
 }
 
+// The seams a descriptor read takes, so a test can make it report the
+// transient errors a real non-blocking descriptor does.
+export interface ReadPorts {
+  read?: (descriptor: number, buffer: Uint8Array) => number;
+  // Called before an EAGAIN is retried: the descriptor has nothing to read yet.
+  wait?: (descriptor: number) => void;
+}
+
+function defaultRead(descriptor: number, buffer: Uint8Array): number {
+  return readSync(descriptor, buffer, 0, buffer.length, null);
+}
+
+// Waits until the descriptor is readable, or a quiet interval passes, so a
+// retry does not spin. Where poll did not resolve it sleeps the interval.
+function defaultWait(descriptor: number): void {
+  if (pollInput(descriptor, QUIET_MS) !== undefined) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, QUIET_MS);
+}
+
 // A descriptor read that is retried across the transient errors a
-// non-blocking standard input can report before its first byte arrives.
-export function readOnce(descriptor: number, buffer: Uint8Array): number {
+// non-blocking standard input can report before its first byte arrives. EINTR
+// is retried at once; EAGAIN waits for readability first, because a
+// non-blocking terminal reports it for as long as the person has not typed.
+export function readOnce(
+  descriptor: number,
+  buffer: Uint8Array,
+  ports: ReadPorts = {},
+): number {
+  const read = ports.read ?? defaultRead;
+  const wait = ports.wait ?? defaultWait;
   for (;;) {
     try {
-      return readSync(descriptor, buffer, 0, buffer.length, null);
+      return read(descriptor, buffer);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "EAGAIN" || code === "EWOULDBLOCK" || code === "EINTR")
+      if (code === "EINTR") continue;
+      if (code === "EAGAIN" || code === "EWOULDBLOCK") {
+        wait(descriptor);
         continue;
+      }
       throw error;
     }
   }
@@ -109,7 +139,9 @@ function consumeLineFeedAfterReturn(
 // What a read keeps while it runs, handed to the caller only so a test can see
 // that every one of them was zeroed on every way out.
 export interface HiddenReadScratch {
-  bytes?: number[];
+  // The fixed array the bytes are held in, and the most it ever held.
+  held?: Uint8Array;
+  peak?: number;
   buffer?: Uint8Array;
   next?: Uint8Array;
 }
@@ -124,18 +156,20 @@ export interface HiddenReadScratch {
 // value would be a silently wrong secret. Bytes past the refusal are left
 // unread, exactly as the stdin path leaves them. Whatever the way out (a
 // value, an abandoned read, or a refusal that throws), the bytes read so far
-// and the one-byte buffers are zeroed before it leaves, so far as fill(0) can
-// reach: the bytes still held, not one already removed by a backspace pop or
-// left in an old backing store. Only the returned copy survives, and its owner
-// zeroes it.
+// and the one-byte buffers are zeroed before it leaves. The bytes live in one
+// fixed array and a backspace zeroes the slot it frees, so no typed byte
+// outlives the read in a place fill(0) cannot reach. Only the returned copy
+// survives, and its owner zeroes it.
 export function readHiddenValueBytes(
   descriptor = 0,
   scratch: HiddenReadScratch = {},
 ): Uint8Array {
-  const bytes: number[] = [];
+  const held = new Uint8Array(secretLimits.maxValueBytes);
+  let count = 0;
   const buffer = new Uint8Array(1);
   const next = new Uint8Array(1);
-  scratch.bytes = bytes;
+  scratch.held = held;
+  scratch.peak = 0;
   scratch.buffer = buffer;
   scratch.next = next;
   try {
@@ -151,16 +185,16 @@ export function readHiddenValueBytes(
       if (byte === 0x03) return new Uint8Array(0);
       if (byte === 0x04) break;
       if (byte === 0x7f || byte === 0x08) {
-        bytes.pop();
+        if (count > 0) held[--count] = 0;
         continue;
       }
-      if (bytes.length === secretLimits.maxValueBytes)
-        throw new WardError("secret_value_too_large");
-      bytes.push(byte);
+      if (count === held.length) throw new WardError("secret_value_too_large");
+      held[count++] = byte;
+      scratch.peak = Math.max(scratch.peak, count);
     }
-    return new Uint8Array(bytes);
+    return held.slice(0, count);
   } finally {
-    bytes.fill(0);
+    held.fill(0);
     buffer.fill(0);
     next.fill(0);
   }
@@ -171,37 +205,33 @@ export function readHiddenValueBytes(
 // truncating — the read never takes more than one byte past the bound, so
 // the refusal happens within one byte of it and the rest of the stream is
 // left unread.
+//
+// The bytes are read into one array, sized to the bound and one byte more,
+// and that array is zeroed on every way out, the refusal included; no second
+// copy is kept. Only the returned copy survives, and its owner zeroes it.
 export interface StdinReadScratch {
-  bytes?: number[];
-  buffers: Uint8Array[];
+  buffer?: Uint8Array;
 }
 
-// Every chunk buffer and the byte list are zeroed on every way out, the
-// refusal included; only the returned copy survives, and its owner zeroes it.
 export function readStdinValueBytes(
   maxBytes: number,
   descriptor = 0,
-  scratch: StdinReadScratch = { buffers: [] },
+  scratch: StdinReadScratch = {},
+  ports: ReadPorts = {},
 ): Uint8Array {
-  const bytes: number[] = [];
-  scratch.bytes = bytes;
+  const buffer = new Uint8Array(maxBytes + 1);
+  scratch.buffer = buffer;
+  let length = 0;
   try {
     for (;;) {
-      const size = Math.min(64 * 1024, maxBytes - bytes.length + 1);
-      const buffer = new Uint8Array(size);
-      scratch.buffers.push(buffer);
-      const read = readOnce(descriptor, buffer);
+      const read = readOnce(descriptor, buffer.subarray(length), ports);
       if (read === 0) break;
-      for (let index = 0; index < read; index++) {
-        bytes.push(buffer[index] as number);
-      }
-      if (bytes.length > maxBytes)
-        throw new WardError("secret_value_too_large");
+      length += read;
+      if (length > maxBytes) throw new WardError("secret_value_too_large");
     }
-    return new Uint8Array(bytes);
+    return buffer.slice(0, length);
   } finally {
-    bytes.fill(0);
-    for (const buffer of scratch.buffers) buffer.fill(0);
+    buffer.fill(0);
   }
 }
 
@@ -275,7 +305,11 @@ export function createTerminalSecretValues(
           // Nothing more can be done here, and the reading itself is what
           // the caller asked for.
         }
-        writePrompt("\n");
+        try {
+          writePrompt("\n");
+        } catch {
+          // A prompt that cannot be written must not drop the value read.
+        }
       }
       if (failure !== undefined) {
         // A reading that refused the value is an answer, not a failure, and
