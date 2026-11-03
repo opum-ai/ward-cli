@@ -217,6 +217,34 @@ describe("approving replaces a legacy approval, and a legacy record never author
   });
 });
 
+describe("two clones at one identical directory identity", () => {
+  test("both bindings are kept through serialize and parse, and each matches only its own nonce", () => {
+    const once = registerCheckout({
+      state: emptyVaultState(),
+      projectId,
+      checkout: { ...base, checkoutId: NONCE_A },
+      registeredAt: timestamp,
+    });
+    const twice = registerCheckout({
+      state: once,
+      projectId,
+      checkout: { ...base, checkoutId: NONCE_B },
+      registeredAt: timestamp,
+    });
+    const reread = parseVaultState(serializeVaultState(twice));
+    expect(reread.localBindings.map((binding) => binding.checkoutId)).toEqual([
+      NONCE_A,
+      NONCE_B,
+    ]);
+    expect(findBinding(reread, { ...base, checkoutId: NONCE_A })).toBe(
+      reread.localBindings[0],
+    );
+    expect(findBinding(reread, { ...base, checkoutId: NONCE_B })).toBe(
+      reread.localBindings[1],
+    );
+  });
+});
+
 describe("the stored record", () => {
   const document = (binding: Record<string, unknown>) =>
     encoder.encode(
@@ -376,6 +404,55 @@ describe("the nonce file in the git directory", () => {
           codeOf(() => bindCheckoutIdentity(locateCheckout(directory))),
         ).toBe("checkout_identity_unavailable");
       }
+    });
+
+    test("a CRLF line end, no trailing newline, a ../ pointer and a symlinked gitdir are all followed", () => {
+      const real = checkout("pointer-real");
+      const lineEnds: Array<[string, (name: string) => string]> = [
+        ["crlf", () => `gitdir: ${real}\r\n`],
+        ["no-newline", () => `gitdir: ${real}`],
+      ];
+      for (const [name, content] of lineEnds) {
+        const directory = withGitFile(`pointer-${name}`, content(name));
+        const bound = bindCheckoutIdentity(locateCheckout(directory));
+        expect(locateCheckout(directory).checkoutId).toBe(bound.checkoutId);
+      }
+      // A ../ pointer resolves against the directory holding the .git file.
+      const parent = checkout("pointer-parent");
+      mkdirSync(join(parent, "gitdirs", "g"), { recursive: true });
+      mkdirSync(join(parent, "tree"));
+      writeFileSync(join(parent, "tree", ".git"), "gitdir: ../gitdirs/g\n");
+      const viaDots = bindCheckoutIdentity(
+        locateCheckout(join(parent, "tree")),
+      );
+      expect(readFileSync(idFile(join(parent, "gitdirs", "g")), "utf8")).toBe(
+        `${viaDots.checkoutId}\n`,
+      );
+      // A pointer at a symlink to a directory is followed to the directory.
+      const target = checkout("pointer-link-target");
+      const link = join(root, `pointer-link-${++cases}`);
+      symlinkSync(target, link);
+      const viaLink = bindCheckoutIdentity(
+        locateCheckout(withGitFile("pointer-symlinked", `gitdir: ${link}\n`)),
+      );
+      expect(readFileSync(idFile(target), "utf8")).toBe(
+        `${viaLink.checkoutId}\n`,
+      );
+    });
+
+    test("a NUL in the pointer, and a .git file that is itself a link, bind nothing", () => {
+      const real = checkout("nul-real");
+      const nul = withGitFile("pointer-nul", `gitdir: ${real}\0x\n`);
+      expect(codeOf(() => bindCheckoutIdentity(locateCheckout(nul)))).toBe(
+        "checkout_identity_unavailable",
+      );
+      const holder = checkout("git-file-link");
+      const file = join(root, `git-file-target-${++cases}`);
+      writeFileSync(file, `gitdir: ${real}\n`);
+      symlinkSync(file, join(holder, ".git"));
+      expect(codeOf(() => bindCheckoutIdentity(locateCheckout(holder)))).toBe(
+        "checkout_identity_unavailable",
+      );
     });
 
     test("the GIT_DIR environment variable is never read", () => {

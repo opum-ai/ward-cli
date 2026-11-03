@@ -478,6 +478,55 @@ describe("ward unregister", () => {
     ]);
   });
 
+  // The nonce comparisons inside unregister itself (belongsTo and
+  // withoutBinding): another clone's records at the same root, device and inode
+  // but another nonce are not this checkout's, so they are neither counted nor
+  // removed. Dropping either comparison turns this red.
+  test("a record at the same directory identity with another nonce is left alone", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    const other = "d".repeat(32);
+    w.store.mutate(w.key(), (plaintext) => {
+      const current = parseVaultState(plaintext);
+      const mine = current.localBindings.find(
+        (binding) => binding.root === identity.root,
+      );
+      const approval = current.profileApprovals.find(
+        (entry) => entry.root === identity.root,
+      );
+      if (mine === undefined || approval === undefined)
+        throw new Error("fixture has no record");
+      return serializeVaultState({
+        ...current,
+        localBindings: [
+          ...current.localBindings,
+          { ...mine, checkoutId: other },
+        ],
+        profileApprovals: [
+          ...current.profileApprovals,
+          { ...approval, checkoutId: other },
+        ],
+      });
+    });
+    const result = await w.ward(
+      w.first,
+      ["unregister"],
+      scripted(["approved", "approved"]).approver,
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(JSON.parse(result.stdout).data).toMatchObject({
+      binding: "removed",
+      approvalsRemoved: 1,
+    });
+    const after = w.state();
+    expect(
+      after.localBindings.filter((binding) => binding.root === identity.root),
+    ).toEqual([expect.objectContaining({ checkoutId: other })]);
+    expect(
+      after.profileApprovals.filter((entry) => entry.root === identity.root),
+    ).toEqual([expect.objectContaining({ checkoutId: other })]);
+  });
+
   test("it needs no manifest", async () => {
     const w = await world();
     rmSync(join(w.first, ".ward", "project.json"));

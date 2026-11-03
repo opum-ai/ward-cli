@@ -152,6 +152,9 @@ function registerForProject(options: {
   bindCheckout: (checkout: CheckoutIdentity) => CheckoutIdentity;
 }): "registered" | "already-registered" {
   const { store, key, projectId, registeredAt } = options;
+  // The nonce is created here, before the binding_conflict check below, so a
+  // conflicting registration can leave a nonce in the git directory with no
+  // binding; it names the clone and grants nothing.
   const checkout = options.bindCheckout(options.checkout);
   const stored = store.read(key);
   const existing = findBinding(stateOf(stored.plaintext), checkout);

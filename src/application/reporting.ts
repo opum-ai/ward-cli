@@ -416,9 +416,17 @@ function describeStaleApproval(
   if (
     probed.root !== record.root ||
     probed.device !== record.device ||
-    probed.inode !== record.inode ||
-    probed.checkoutId !== record.checkoutId
+    probed.inode !== record.inode
   )
+    return inert("a different directory now stands at that path");
+  // An approval with no nonce was written before checkouts had an identity. It
+  // is named as such rather than as a different directory: the directory is the
+  // same, and the remedy is to approve again (the new record replaces it).
+  if (record.checkoutId === undefined)
+    return inert(
+      "this is a legacy approval, written before checkouts had an identity; approve the profile again from that checkout",
+    );
+  if (probed.checkoutId !== record.checkoutId)
     return inert("a different directory now stands at that path");
   const identity = {
     root: record.root,

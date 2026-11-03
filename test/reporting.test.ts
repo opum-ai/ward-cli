@@ -947,6 +947,21 @@ describe("ward doctor", () => {
         },
       },
       {
+        name: "nonce mismatch",
+        reason: "a different directory now stands at that path",
+        arrange: ({ record }) => {
+          record.checkoutId = "c".repeat(32);
+        },
+      },
+      {
+        name: "legacy approval",
+        reason:
+          "this is a legacy approval, written before checkouts had an identity; approve the profile again from that checkout",
+        arrange: ({ record }) => {
+          delete record.checkoutId;
+        },
+      },
+      {
         name: "no binding",
         reason: "that checkout is no longer registered",
         arrange: ({ bindings }) => {

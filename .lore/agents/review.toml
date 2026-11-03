@@ -11,6 +11,7 @@ sources = [
   "adr/0003-profile-approval-authority",
   "adr/0004-committed-platform-target",
   "index",
+  "adr/0005-project-binding-identity#decision",
   "adr/0006-backup-container-and-restore-authority",
   "adr/0007-status-and-doctor-reporting",
   "adr/0009-hand-rolled-status-only-https-transport",

@@ -76,15 +76,17 @@ hosted ext4 runner reproduced it; APFS rarely reuses inode numbers.
   T26 (DEC-255 (a7)).
 - **Existing 0.1.1 vaults still open, and their records never match.** A binding
   or approval with no `checkoutId` authorizes nothing; the developer registers
-  and approves again. Records nobody touches stay in the vault as inert clutter,
-  and no doctor or cleanup command is filed. Two removals keep a user able to
-  clear their own records (DEC-255 (a7)): `ward unregister`, run in a checkout,
-  also removes a legacy binding at the same (root, device, inode) with that
-  binding's legacy approvals, under the same questions; and approving a profile
-  also removes a legacy approval for the same profile and directory, so the new
-  record replaces it. Both are removals only, and removing a record grants
-  nothing. `checkout_identity_unavailable` is accepted by (a7) as the name of
-  the refusal when the git directory cannot be resolved or written.
+  and approves again. A legacy record is removed on unregister or re-approval and
+  at no other time (DEC-255 (a7)): `ward unregister`, run in a checkout, also
+  removes a legacy binding at the same (root, device, inode) with that
+  binding's legacy approvals, under the same questions; approving a profile
+  removes a legacy approval for the same project, profile and directory. Both are
+  removals only, and removing a record grants nothing. No cleanup command is
+  filed. `ward doctor` reports only stale-version approvals; where one of those
+  has no nonce it says it is a legacy approval and to approve again, and it does
+  not report a legacy record that is not stale-version. `checkout_identity_unavailable`
+  is accepted by (a7) as the name of the refusal when the git directory cannot be
+  resolved or written.
 - **Downgrade is unsupported.** A vault written by this version carries the key,
   so a 0.1.1 binary refuses it as malformed. The release notes of the next
   release say so in one line.
@@ -92,6 +94,14 @@ hosted ext4 runner reproduced it; APFS rarely reuses inode numbers.
   copy; a `cp -r` of a checkout copies it, but the copy has another root and
   inode, so it still matches nothing. This guards against an inherited binding,
   not against a hostile local account (ADR 0002).
+- **Residual: a link swapped under the write.** Node has no `openat`, so the
+  `ward` directory is checked with `O_DIRECTORY|O_NOFOLLOW` and the file is then
+  created by name; a process under the same account that swaps the directory for
+  a link between the two can redirect a create that writes only a random nonce
+  (outside ADR 0002).
+- **Residual: a surviving git directory.** A submodule's or linked worktree's git
+  directory survives an `rm -rf` of its working tree, so restoring the tree from
+  it keeps the nonce; that is still "the clone's git dir" and complies.
 - **Revisit** if the nonce proves unwritable on a supported platform
   (Linux T26 is the first measurement) or a way appears to carry it across a
   re-clone; either would be a new decision.

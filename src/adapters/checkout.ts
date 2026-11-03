@@ -164,8 +164,17 @@ export function bindCheckoutIdentity(
       } catch (error) {
         if (errnoCode(error) !== "EEXIST") throw error;
       }
-      if (!lstatSync(directory).isDirectory())
-        throw new WardError("checkout_identity_unavailable");
+      // Opened as a directory without following a link, so a link planted at
+      // the `ward` entry fails here (ELOOP or ENOTDIR). Node has no openat, so
+      // the file below is still created by name; ADR 0026 names that residual.
+      closeSync(
+        openSync(
+          directory,
+          fileConstants.O_RDONLY |
+            fileConstants.O_DIRECTORY |
+            fileConstants.O_NOFOLLOW,
+        ),
+      );
       const fresh = randomBytes(16).toString("hex");
       let descriptor: number | undefined;
       try {

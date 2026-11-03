@@ -948,8 +948,9 @@ export function legacyBindingsAt(
   );
 }
 
-// The binding for a specific directory, whatever project it names. A miss
-// means this checkout is not registered, and a hit for another project means
+// The binding for a specific directory, whatever project it names. A match
+// needs the same directory identity and the same present nonce (sameCheckout).
+// A miss means this checkout is not registered under its current identity, and a hit for another project means
 // the path was registered under a different manifest: both are answered by
 // the caller, and neither falls back to another path or project.
 export function findBinding(
