@@ -83,9 +83,10 @@ hosted ext4 runner reproduced it; APFS rarely reuses inode numbers.
   project's); approving a profile
   removes a legacy approval for the same project, profile and directory. Both are
   removals only, and removing a record grants nothing. No cleanup command is
-  filed. `ward doctor` reports only stale-version approvals, and names one with no
-  nonce as legacy (register and approve again); it does not report any other
-  legacy record. (a7) accepts `checkout_identity_unavailable` as the refusal
+  filed. `ward doctor` reports only stale-version approvals. A legacy one at a
+  registered checkout is clearable like any other; at an unregistered one it is
+  inert, with a hint to register and approve again. No other legacy record is
+  reported. (a7) accepts `checkout_identity_unavailable` as the refusal
   name when the git directory cannot be resolved or written.
 - **Downgrade is unsupported.** A vault written by this version carries the key,
   so a 0.1.1 binary refuses it as malformed. The release notes of the next

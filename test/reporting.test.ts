@@ -1100,10 +1100,13 @@ describe("ward doctor", () => {
     }
   });
 
-  // WCLI-137 (N4): a stale approval with no nonce (a legacy one) is judged like
-  // any other stale record against the checkout as it stands: clearable when
-  // approving, or registering and then approving, can replace it, inert only
-  // when nothing can. Each case asserts the remedy clause itself.
+  // WCLI-137 (N4, opus rounds 1 and 2): a stale approval with no nonce (a legacy
+  // one) is judged like any other stale record against the checkout as it stands.
+  // It is clearable, and fails the doctor, only when its checkout is registered
+  // under the nonce it holds now, so that plain `ward profile approve` replaces
+  // it. Everywhere else it is inert and the doctor passes: asking for a
+  // registration would grant access nobody asked for (DEC-255 a6), or name a step
+  // that cannot run. Each case asserts the remedy clause itself.
   describe("a legacy stale approval", () => {
     const legacyRecord = (
       projectId: string,
@@ -1145,13 +1148,82 @@ describe("ward doctor", () => {
       expect(text.stdout).not.toContain("inert and unreachable");
     });
 
-    test("says to register and then approve when its checkout is not registered", async () => {
+    // The unregistered cases: the record is untouched residue, so the doctor
+    // passes and does not ask for a registration that would grant access
+    // (DEC-255 a6). The hint is worded from the `legacy` field and is not framed
+    // as unreachable. Each variant is a different way for the checkout to hold
+    // no current binding; each failed the doctor at b60ba1c.
+    const expectInertLegacy = async (
+      h: ReturnType<typeof harness>,
+      checkout: string,
+      found: { root: string },
+    ) => {
+      const doctor = await doctorOf(h, checkout);
+      expect(doctor.result.exitCode).toBe(exitCodes.success);
+      const stale = checkFor(doctor.data, "stale_approvals");
+      expect(stale).toMatchObject({ status: "pass", code: "inert" });
+      expect(stale.staleApprovals).toEqual([
+        expect.objectContaining({
+          clearable: false,
+          legacy: true,
+          remedy: expect.stringContaining(
+            `register and approve again from ${found.root} (ward init, then ward profile approve deploy)`,
+          ),
+        }),
+      ]);
+      const text = await runWard(["doctor"], h.options(checkout));
+      expect(text.stdout).toContain(
+        "register and approve again from that checkout (ward init, then ward profile approve deploy)",
+      );
+      expect(text.stdout).not.toContain("inert and unreachable");
+    };
+    const unregisteredSibling = (projectId: string, bare: boolean) => {
+      const sibling = siblingCheckout();
+      writeManifestAt(sibling, {
+        schemaVersion: 1,
+        projectId,
+        profiles: { deploy: profileDeclaration() },
+      });
+      if (!bare) bindCheckoutIdentity(locateCheckout(sibling));
+      return locateCheckout(sibling);
+    };
+
+    test("is inert, with a hint, when its checkout holds no nonce", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-no-nonce");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const found = unregisteredSibling(projectId, true);
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      await expectInertLegacy(h, checkout, found);
+    });
+
+    // M1: the user unregistered that checkout on purpose. Its nonce file
+    // survives, its binding is gone, and the stale record stays: the doctor must
+    // not demand the registration the user withdrew.
+    test("is inert after a deliberate unregister that left the nonce behind", async () => {
       const h = harness();
       const checkout = worktree("doctor-legacy-unregistered");
       await h.setUp(checkout);
       await h.init(checkout, ["--claude"]);
       const projectId = declareProfile(checkout, "deploy");
-      const sibling = siblingCheckout();
+      const found = unregisteredSibling(projectId, false);
+      expect(found.checkoutId).toBeDefined();
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      await expectInertLegacy(h, checkout, found);
+    });
+
+    // M2: a checkout whose identity cannot be bound is one `ward init` cannot
+    // register, so no step the doctor could name would work.
+    test("is inert when the checkout's git directory was pruned", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-pruned");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const sibling = siblingCheckout(false);
+      writeFileSync(join(sibling, ".git"), `gitdir: ${sibling}-pruned\n`);
       writeManifestAt(sibling, {
         schemaVersion: 1,
         projectId,
@@ -1159,21 +1231,45 @@ describe("ward doctor", () => {
       });
       const found = locateCheckout(sibling);
       seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      await expectInertLegacy(h, checkout, found);
+    });
 
-      const doctor = await doctorOf(h, checkout);
-      expect(checkFor(doctor.data, "stale_approvals")).toMatchObject({
-        status: "fail",
-        code: "reapprove_required",
+    test("is inert when the checkout's nonce file is invalid", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-bad-nonce");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const found = unregisteredSibling(projectId, true);
+      mkdirSync(join(found.root, ".git", "ward"), { recursive: true });
+      writeFileSync(
+        join(found.root, ".git", "ward", "checkout-id"),
+        "garbage\n",
+      );
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      await expectInertLegacy(h, checkout, found);
+    });
+
+    test("is inert when the checkout's current binding is another project's", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-other-binding");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const found = unregisteredSibling(projectId, false);
+      seedState(h, {
+        approvals: [legacyRecord(projectId, found)],
+        bindings: [bindingRecord({ projectId: randomUUID(), ...found })],
       });
-      expect(checkFor(doctor.data, "stale_approvals").staleApprovals).toEqual([
-        expect.objectContaining({
-          clearable: true,
-          remedy: `register and approve again: from ${found.root}, run ward init, then ward profile approve deploy`,
-        }),
-      ]);
+      const doctor = await doctorOf(h, checkout);
+      expect(doctor.result.exitCode).toBe(exitCodes.success);
+      expect(checkFor(doctor.data, "stale_approvals")).toMatchObject({
+        status: "pass",
+        code: "inert",
+      });
       const text = await runWard(["doctor"], h.options(checkout));
       expect(text.stdout).toContain(
-        "register this checkout and approve again in a trusted terminal: ward init, then ward profile approve deploy",
+        "that checkout is registered to another project",
       );
     });
 
