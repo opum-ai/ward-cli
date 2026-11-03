@@ -24,6 +24,7 @@ import { join } from "node:path";
 import {
   createTerminalPassphrase,
   maxPassphraseBytes,
+  type PassphraseReadScratch,
   readPassphraseBytes,
 } from "../src/adapters/passphrase.ts";
 import { WardError } from "../src/contract/errors.ts";
@@ -193,6 +194,83 @@ describe("the byte reader the terminal path uses", () => {
       closeSync(descriptor);
     }
   }
+
+  test("the reader zeroes what it read on every way out", () => {
+    const run = (input: number[], expected: string, peak: number) => {
+      const path = join(root, `case-${++cases}`);
+      writeFileSync(path, Buffer.from(input));
+      const descriptor = openSync(path, "r");
+      const scratch: PassphraseReadScratch = {};
+      let outcome: string;
+      try {
+        outcome = new TextDecoder().decode(
+          readPassphraseBytes(descriptor, scratch),
+        );
+      } catch (error) {
+        outcome = (error as { code?: string }).code ?? "unknown";
+      } finally {
+        closeSync(descriptor);
+      }
+      expect(outcome).toBe(expected);
+      // An every() over an empty array is vacuously true: assert the length.
+      expect(scratch.peak).toBe(peak);
+      expect(scratch.held?.length).toBe(maxPassphraseBytes);
+      expect(scratch.held?.every((byte) => byte === 0)).toBe(true);
+      expect(scratch.buffer && [...scratch.buffer]).toEqual([0]);
+    };
+    run([...bytes("hunter2"), 0x0a], "hunter2", 7);
+    run([...bytes("half"), 0x03], "backup_passphrase_rejected", 4);
+    // End of input submits what was typed, and a backspace frees a zeroed slot.
+    run([...bytes("partial"), 0x04], "partial", 7);
+    run([...bytes("abc"), 0x7f, 0x7f, ...bytes("d"), 0x0a], "ad", 3);
+    run(
+      new Array(maxPassphraseBytes + 1).fill(0x61),
+      "backup_passphrase_too_large",
+      maxPassphraseBytes,
+    );
+  });
+
+  test("the reader retries EAGAIN after waiting and EINTR at once, and zeroes on the way out", () => {
+    const script: (string | number)[] = [
+      "EAGAIN",
+      "EINTR",
+      0x61,
+      "EAGAIN",
+      0x0a,
+    ];
+    const waits: number[] = [];
+    const scratch: PassphraseReadScratch = {};
+    const out = readPassphraseBytes(5, scratch, {
+      read: (_descriptor, buffer) => {
+        const step = script.shift();
+        if (typeof step === "string")
+          throw Object.assign(new Error(step), { code: step });
+        buffer[0] = step as number;
+        return 1;
+      },
+      wait: (descriptor) => waits.push(descriptor),
+    });
+    expect(new TextDecoder().decode(out)).toBe("a");
+    expect(waits).toEqual([5, 5]);
+    expect(scratch.held?.every((byte) => byte === 0)).toBe(true);
+  });
+
+  test("a prompt that cannot be written does not drop the passphrase read", () => {
+    const written: string[] = [];
+    const source = createTerminalPassphrase({
+      isInteractive: () => true,
+      setRaw: () => {},
+      readBytes: () => new TextEncoder().encode("hunter2"),
+      flushInput: () => {},
+      writePrompt: (text) => {
+        written.push(text);
+        if (text === "\n") throw new Error("EPIPE");
+      },
+    });
+    const out = source.read({ confirm: false });
+    expect(out && new TextDecoder().decode(out)).toBe("hunter2");
+    expect(written).toContain("\n");
+  });
 
   test("a line ending ends the reading and is not part of it", () => {
     expect(

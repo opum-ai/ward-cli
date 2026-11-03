@@ -35,7 +35,9 @@ import { createProjectFiles } from "../src/adapters/project-files.ts";
 import {
   createTerminalSecretValues,
   type HiddenReadScratch,
+  type StdinReadScratch,
   readHiddenValueBytes,
+  readOnce,
   readStdinValueBytes,
 } from "../src/adapters/secret-value.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
@@ -1075,7 +1077,7 @@ describe("the terminal value adapters", () => {
   // zeroed on every way out of the reader, the CR refusal and the too-large
   // refusal included, not only on the path that reaches setSecret's own zeroing.
   test("a refused read zeroes what it read, and so does a read that returns", () => {
-    const run = (input: string, expected?: string) => {
+    const run = (input: string, expected: string, peak: number) => {
       const scratch: HiddenReadScratch = {};
       let outcome: string | undefined;
       const code = codeOf(() => {
@@ -1084,24 +1086,93 @@ describe("the terminal value adapters", () => {
         );
       });
       if (code !== undefined) outcome = code;
-      if (expected !== undefined) expect(outcome).toBe(expected);
-      expect(scratch.bytes?.every((byte) => byte === 0)).toBe(true);
+      expect(outcome).toBe(expected);
+      // An every() over an empty array is vacuously true, so the length the
+      // read held is asserted on every case: zeroing nothing would pass it.
+      expect(scratch.peak).toBe(peak);
+      expect(scratch.held?.length).toBe(secretLimits.maxValueBytes);
+      expect(scratch.held?.every((byte) => byte === 0)).toBe(true);
       expect(scratch.buffer && [...scratch.buffer]).toEqual([0]);
       expect(scratch.next && [...scratch.next]).toEqual([0]);
       return scratch;
     };
     // The CR refusal: the first line and the byte behind the return.
-    const refused = run("s3cretLINE\rLEAK", "secret_value_multiline");
-    expect(refused.bytes?.length).toBe("s3cretLINE".length);
+    run("s3cretLINE\rLEAK", "secret_value_multiline", "s3cretLINE".length);
     // The bound refusal.
-    const over = run(
+    run(
       "a".repeat(secretLimits.maxValueBytes + 1),
       "secret_value_too_large",
+      secretLimits.maxValueBytes,
     );
-    expect(over.bytes?.length).toBe(secretLimits.maxValueBytes);
     // Accepted values and an abandoned read.
-    run("token\r\n", "token");
-    run("ab\u0003", "");
+    run("token\r\n", "token", "token".length);
+    run("ab\u0003", "", "ab".length);
+    // A backspace frees its slot zeroed, and the peak is what was held.
+    run("abc\u007f\u007fd\n", "ad", 3);
+  });
+
+  test("a stdin read holds one buffer and zeroes it on every way out", () => {
+    const run = (input: Uint8Array, max: number, expected: string) => {
+      const scratch: StdinReadScratch = {};
+      let outcome: string | undefined;
+      const code = codeOf(() => {
+        outcome = decode(
+          withInput(input, (fd) => readStdinValueBytes(max, fd, scratch)),
+        );
+      });
+      if (code !== undefined) outcome = code;
+      expect(outcome).toBe(expected);
+      // One allocation, sized to the bound and one byte more, however many
+      // reads the stream takes: nothing else holds the bytes.
+      expect(scratch.buffer?.length).toBe(max + 1);
+      expect(scratch.buffer?.every((byte) => byte === 0)).toBe(true);
+    };
+    run(encode("s3cret-value"), 1024, "s3cret-value");
+    run(encode("a".repeat(9)), 8, "secret_value_too_large");
+  });
+
+  test("a stdin read of one byte at a time still fills the one buffer", () => {
+    const scratch: StdinReadScratch = {};
+    const source = encode("slow-producer");
+    let offset = 0;
+    const out = readStdinValueBytes(64, 0, scratch, {
+      read: (_descriptor, buffer) => {
+        if (offset >= source.length) return 0;
+        buffer[0] = source[offset++] as number;
+        return 1;
+      },
+    });
+    expect(decode(out)).toBe("slow-producer");
+    expect(scratch.buffer?.length).toBe(65);
+    expect(scratch.buffer?.every((byte) => byte === 0)).toBe(true);
+  });
+
+  test("a read that reports EAGAIN waits before it retries, and EINTR retries at once", () => {
+    const scripted = ["EAGAIN", "EINTR", "EWOULDBLOCK"];
+    const waits: number[] = [];
+    const buffer = new Uint8Array(4);
+    const read = readOnce(7, buffer, {
+      read: (_descriptor, target) => {
+        const code = scripted.shift();
+        if (code !== undefined) throw Object.assign(new Error(code), { code });
+        target[0] = 0x41;
+        return 1;
+      },
+      wait: (descriptor) => waits.push(descriptor),
+    });
+    expect(read).toBe(1);
+    // EAGAIN and EWOULDBLOCK each waited on the descriptor; EINTR did not.
+    expect(waits).toEqual([7, 7]);
+    // Any other error is not retried.
+    expect(() =>
+      readOnce(7, buffer, {
+        read: () => {
+          throw Object.assign(new Error("EBADF"), { code: "EBADF" });
+        },
+        wait: () => waits.push(-1),
+      }),
+    ).toThrow("EBADF");
+    expect(waits).toEqual([7, 7]);
   });
 
   test("the queue probe reports nothing queued on a descriptor that is not a terminal", () => {

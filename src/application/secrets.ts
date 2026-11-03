@@ -57,7 +57,7 @@ export interface SecretValueSource {
   // limit is refused as too large rather than truncated.
   readHidden(): Uint8Array | undefined;
   // Standard input to EOF as exact bytes, terminator included: --stdin does
-  // nothing to the bytes it is given. Refuses an interactive terminal as the
+  // nothing to the bytes it is given. The caller owns the buffer and zeroes it. Refuses an interactive terminal as the
   // source, and refuses more than maxBytes rather than truncating.
   readStdin(maxBytes: number): Uint8Array;
   // The replacement question, answered y/yes to consent. False when it

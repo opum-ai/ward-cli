@@ -25,11 +25,11 @@ import {
   closeSync,
   constants as fileConstants,
   openSync,
-  readSync,
   writeSync,
 } from "node:fs";
 import type { PassphraseSource } from "../application/backup.ts";
 import { WardError } from "../contract/errors.ts";
+import { readOnce, type ReadPorts } from "./secret-value.ts";
 import { flushPendingInput } from "./terminal-input.ts";
 
 export interface TerminalPassphraseParts {
@@ -58,28 +58,58 @@ function defaultSetRaw(on: boolean): void {
 // terminator, an edit or an end-of-input fails the read as too large. A
 // silently shortened passphrase would let the confirm step compare two
 // identically truncated values and accept one the user never chose.
-export function readPassphraseBytes(descriptor = 0): Uint8Array {
-  const bytes: number[] = [];
+// What a read keeps while it runs, handed to the caller only so a test can see
+// that both were zeroed on every way out.
+export interface PassphraseReadScratch {
+  // The fixed array the bytes are held in, and the most it ever held.
+  held?: Uint8Array;
+  peak?: number;
+  buffer?: Uint8Array;
+}
+
+// Whatever the way out (a passphrase, an abandoned read, or a refusal that
+// throws), the bytes read and the one-byte buffer are zeroed before it leaves.
+// The bytes live in one fixed array and a backspace zeroes the slot it frees,
+// so no typed byte outlives the read in a place fill(0) cannot reach. Only the
+// returned copy survives, and its owner zeroes it. The read retries the
+// transient errors a non-blocking descriptor reports, as the secret reader
+// does.
+export function readPassphraseBytes(
+  descriptor = 0,
+  scratch: PassphraseReadScratch = {},
+  ports: ReadPorts = {},
+): Uint8Array {
+  const held = new Uint8Array(maxPassphraseBytes);
+  let count = 0;
   const buffer = new Uint8Array(1);
-  for (;;) {
-    const read = readSync(descriptor, buffer, 0, 1, null);
-    if (read === 0) break;
-    const byte = buffer[0] as number;
-    if (byte === 0x0a || byte === 0x0d) break;
-    // Ctrl-C is the user cancelling, and cancelling is not submitting: the
-    // reading is abandoned whether or not anything was typed. Ctrl-D is the
-    // end of input, which submits what was typed — nothing, if nothing was.
-    if (byte === 0x03) throw new WardError("backup_passphrase_rejected");
-    if (byte === 0x04) break;
-    if (byte === 0x7f || byte === 0x08) {
-      bytes.pop();
-      continue;
+  scratch.held = held;
+  scratch.peak = 0;
+  scratch.buffer = buffer;
+  try {
+    for (;;) {
+      const read = readOnce(descriptor, buffer, ports);
+      if (read === 0) break;
+      const byte = buffer[0] as number;
+      if (byte === 0x0a || byte === 0x0d) break;
+      // Ctrl-C is the user cancelling, and cancelling is not submitting: the
+      // reading is abandoned whether or not anything was typed. Ctrl-D is the
+      // end of input, which submits what was typed — nothing, if nothing was.
+      if (byte === 0x03) throw new WardError("backup_passphrase_rejected");
+      if (byte === 0x04) break;
+      if (byte === 0x7f || byte === 0x08) {
+        if (count > 0) held[--count] = 0;
+        continue;
+      }
+      if (count === held.length)
+        throw new WardError("backup_passphrase_too_large");
+      held[count++] = byte;
+      scratch.peak = Math.max(scratch.peak, count);
     }
-    if (bytes.length === maxPassphraseBytes)
-      throw new WardError("backup_passphrase_too_large");
-    bytes.push(byte);
+    return held.slice(0, count);
+  } finally {
+    held.fill(0);
+    buffer.fill(0);
   }
-  return new Uint8Array(bytes);
 }
 
 function defaultWritePrompt(text: string): void {
@@ -116,7 +146,7 @@ export function createTerminalPassphrase(
     }
   };
 
-  const readOnce = (prompt: string): Uint8Array => {
+  const readPrompted = (prompt: string): Uint8Array => {
     writePrompt(prompt);
     setRaw(true);
     try {
@@ -139,7 +169,11 @@ export function createTerminalPassphrase(
         // Nothing more can be done here, and the reading itself is what the
         // caller asked for.
       }
-      writePrompt("\n");
+      try {
+        writePrompt("\n");
+      } catch {
+        // A prompt that cannot be written must not drop the passphrase read.
+      }
     }
   };
 
@@ -149,11 +183,11 @@ export function createTerminalPassphrase(
       if (!available()) return undefined;
       let first: Uint8Array | undefined;
       try {
-        first = readOnce("Enter a passphrase for this backup: ");
+        first = readPrompted("Enter a passphrase for this backup: ");
         if (first.length === 0)
           throw new WardError("backup_passphrase_rejected");
         if (!confirm) return first;
-        const second = readOnce("Enter it again to confirm: ");
+        const second = readPrompted("Enter it again to confirm: ");
         try {
           if (second.length !== first.length)
             throw new WardError("backup_passphrase_rejected");
