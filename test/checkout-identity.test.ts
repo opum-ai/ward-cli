@@ -132,6 +132,91 @@ describe("the nonce joins every match", () => {
   });
 });
 
+// DEC-255 (a7): approving also removes a legacy approval for the same profile at
+// the same directory, so the new record replaces it. A removal only: the legacy
+// record never matched for authorization, before or after.
+describe("approving replaces a legacy approval, and a legacy record never authorizes", () => {
+  const snapshot = normalizeProfile({
+    adapter: "http",
+    method: "GET",
+    url: "https://api.example.invalid/a",
+    auth: { type: "bearer", secret: "example.token" },
+    headers: {},
+    requestBody: "none",
+    output: "status",
+  });
+  const record = (
+    profile: string,
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    profile,
+    projectId,
+    ...base,
+    approvedAt: timestamp,
+    expiresAt: "2026-11-04T00:00:00.000Z",
+    snapshotVersion: profileSnapshotVersion,
+    snapshot,
+    ...overrides,
+  });
+  const current = { ...base, checkoutId: NONCE_A };
+  const stateWith = (...approvals: ReturnType<typeof record>[]) => ({
+    ...emptyVaultState(),
+    profileApprovals: approvals,
+  });
+
+  test("a legacy approval matches no checkout, with or without a nonce", () => {
+    const state = stateWith(record("deploy"));
+    expect(
+      findProfileApproval(state, current, projectId, "deploy"),
+    ).toBeUndefined();
+    expect(
+      findProfileApproval(state, base, projectId, "deploy"),
+    ).toBeUndefined();
+  });
+
+  test("approving removes the legacy approval for the same profile and directory", () => {
+    const replaced = withProfileApproval(
+      stateWith(record("deploy")),
+      record("deploy", { checkoutId: NONCE_A }) as never,
+    );
+    expect(replaced.profileApprovals).toHaveLength(1);
+    expect(replaced.profileApprovals[0]?.checkoutId).toBe(NONCE_A);
+    expect(
+      findProfileApproval(replaced, current, projectId, "deploy"),
+    ).toBeDefined();
+  });
+
+  test("it removes only that: other profiles, other directories and another clone's approval stay", () => {
+    const other = record("status-check");
+    const elsewhere = record("deploy", { inode: "1" });
+    const anotherClone = record("deploy", { checkoutId: NONCE_B });
+    const replaced = withProfileApproval(
+      stateWith(record("deploy"), other, elsewhere, anotherClone),
+      record("deploy", { checkoutId: NONCE_A }) as never,
+    );
+    expect(replaced.profileApprovals).toHaveLength(4);
+    expect(replaced.profileApprovals).toContainEqual(other);
+    expect(replaced.profileApprovals).toContainEqual(elsewhere);
+    expect(replaced.profileApprovals).toContainEqual(anotherClone);
+  });
+
+  test("the removal never grants: with nothing to approve, a legacy record still authorizes nothing", () => {
+    const state = stateWith(record("deploy"), record("status-check"));
+    for (const profile of ["deploy", "status-check"])
+      expect(
+        findProfileApproval(state, current, projectId, profile),
+      ).toBeUndefined();
+    // Approving one profile leaves the other legacy record inert, not live.
+    const replaced = withProfileApproval(
+      state,
+      record("deploy", { checkoutId: NONCE_A }) as never,
+    );
+    expect(
+      findProfileApproval(replaced, current, projectId, "status-check"),
+    ).toBeUndefined();
+  });
+});
+
 describe("the stored record", () => {
   const document = (binding: Record<string, unknown>) =>
     encoder.encode(

@@ -931,6 +931,23 @@ export function serializeVaultState(state: VaultState): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(document));
 }
 
+// The bindings a 0.1.1 build wrote at this directory: the same root, device and
+// inode and no nonce. They never match for authorization (see sameCheckout);
+// this exists so unregister can clear them, because a record nobody can remove
+// leaves its owner without a way to clear their own records (DEC-255 a7).
+export function legacyBindingsAt(
+  state: VaultState,
+  checkout: CheckoutIdentity,
+): readonly BindingRecord[] {
+  return state.localBindings.filter(
+    (binding) =>
+      binding.checkoutId === undefined &&
+      binding.root === checkout.root &&
+      binding.device === checkout.device &&
+      binding.inode === checkout.inode,
+  );
+}
+
 // The binding for a specific directory, whatever project it names. A miss
 // means this checkout is not registered, and a hit for another project means
 // the path was registered under a different manifest: both are answered by
@@ -1169,6 +1186,36 @@ function isApprovalFor(
   );
 }
 
+// Whether a stored approval is the one a new approval replaces: the same
+// approval (isApprovalFor), or a legacy one for the same profile and project at
+// the same root, device and inode, which has no nonce. This is a removal only
+// (DEC-255 a7): dropping a record grants nothing, and a legacy record never
+// matches for authorization either way. Without it a user approving again would
+// leave the old record beside the new one with no way to clear it.
+function isReplacedBy(
+  approval: {
+    readonly profile: string;
+    readonly projectId: string;
+    readonly root: string;
+    readonly device: string;
+    readonly inode: string;
+    readonly checkoutId?: string;
+  },
+  checkout: CheckoutIdentity,
+  projectId: string,
+  profile: string,
+): boolean {
+  if (isApprovalFor(approval, checkout, projectId, profile)) return true;
+  return (
+    approval.checkoutId === undefined &&
+    approval.profile === profile &&
+    approval.projectId === projectId &&
+    approval.root === checkout.root &&
+    approval.device === checkout.device &&
+    approval.inode === checkout.inode
+  );
+}
+
 // Whether an approval has run out at `now`. The boundary instant is expired:
 // an approval admits runs strictly before `expiresAt`.
 export function approvalExpired(
@@ -1211,13 +1258,13 @@ export function withProfileApproval(
     profileApprovals: [
       ...state.profileApprovals.filter(
         (approval) =>
-          !isApprovalFor(approval, checkout, record.projectId, record.profile),
+          !isReplacedBy(approval, checkout, record.projectId, record.profile),
       ),
       record,
     ],
     staleProfileApprovals: state.staleProfileApprovals.filter(
       (approval) =>
-        !isApprovalFor(approval, checkout, record.projectId, record.profile),
+        !isReplacedBy(approval, checkout, record.projectId, record.profile),
     ),
   };
 }

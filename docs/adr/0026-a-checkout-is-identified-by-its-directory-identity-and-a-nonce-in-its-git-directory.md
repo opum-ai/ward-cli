@@ -16,9 +16,10 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-03, under **DEC-255 (a2) clause (4)** and **DEC-255 (a6)**,
-recorded by opum-doc in its tracker (opum-ai/opum-doc#1597 for (a6)) and carried
-here from their text as relayed to this repository. The record binds, not this
+Accepted, 2026-11-03, under **DEC-255 (a2) clause (4)**, **DEC-255 (a6)** and **DEC-255 (a7)**,
+recorded by opum-doc in its tracker (opum-ai/opum-doc#1597 for (a6),
+opum-ai/opum-doc#1601 for (a7)) and carried here from their text as relayed to
+this repository. The record binds, not this
 document's copy of it; the decisions' text is DEC-255 (a2)(4) and (a6) in
 opum-doc. Implemented by WCLI-125. It supersedes the identity part of
 [ADR 0005](0005-project-binding-identity.md), the part that names a binding by
@@ -69,13 +70,21 @@ hosted ext4 runner reproduced it; APFS rarely reuses inode numbers.
 
 - **A re-clone is a new checkout whatever the filesystem does.** The tests do
   not depend on inode reuse: they pin an identical (root, device, inode) with a
-  different nonce, and an `rm -rf` and re-clone at the same path.
-- **Existing 0.1.1 vaults still open, and their bindings and approvals go
-  inert.** Each developer registers and approves again. An inert record stays in
-  the vault, held whole, until the checkout is unregistered or re-approved with
-  the same identity; `ward doctor` names a stale approval it cannot match. A
-  legacy binding cannot be unregistered from the checkout, because it matches
-  nothing there.
+  different nonce, and an `rm -rf` and re-clone at the same path. On APFS the
+  re-clone gets a new inode, so that end-to-end case cannot prove reuse there;
+  the domain cases carry the guarantee and real reuse is first measured on Linux
+  T26 (DEC-255 (a7)).
+- **Existing 0.1.1 vaults still open, and their records never match.** A binding
+  or approval with no `checkoutId` authorizes nothing; the developer registers
+  and approves again. Records nobody touches stay in the vault as inert clutter,
+  and no doctor or cleanup command is filed. Two removals keep a user able to
+  clear their own records (DEC-255 (a7)): `ward unregister`, run in a checkout,
+  also removes a legacy binding at the same (root, device, inode) with that
+  binding's legacy approvals, under the same questions; and approving a profile
+  also removes a legacy approval for the same profile and directory, so the new
+  record replaces it. Both are removals only, and removing a record grants
+  nothing. `checkout_identity_unavailable` is accepted by (a7) as the name of
+  the refusal when the git directory cannot be resolved or written.
 - **Downgrade is unsupported.** A vault written by this version carries the key,
   so a 0.1.1 binary refuses it as malformed. The release notes of the next
   release say so in one line.

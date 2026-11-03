@@ -57,6 +57,7 @@
 - 2026-11-02T13:07:16-06:00 0a3585ec122fbb5c5a6b51ca0ee4e6310227e543 docs(WCLI-100): ADR 0025, the approval prompt keeps y/N because its answer line shows the whole host (DEC-255 (3))
 - 2026-11-02T13:21:15-06:00 23391c36183a1cd56496df0197aa448a78df933a docs(WCLI-100): record the habitual-y residual in ADR 0025 and tighten its wording
 - 2026-11-02T14:10:36-06:00 ca3167942016db09302fa87f64048596121021af docs(WCLI-100): ADR 0025, the approval prompt keeps y/N because its answer line shows the whole host (DEC-255 (3)) (#248)
+- 2026-11-03T08:11:57-06:00 06dad7ae341ef669a98a34c373e5fdae14f4db06 feat(WCLI-125): a checkout is its directory identity and a nonce in its git directory (DEC-255 a2 (4), a6; ADR 0026)
 
 ## docs/runbooks
 
