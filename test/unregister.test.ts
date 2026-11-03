@@ -40,6 +40,11 @@ import { runUnregister } from "../src/application/unregister.ts";
 import { runWard } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import {
+  errorCatalog,
+  errorEnvelope,
+  WardError,
+} from "../src/contract/errors.ts";
+import {
   findBinding,
   findProfileApproval,
   parseVaultState,
@@ -627,6 +632,19 @@ describe("ward unregister", () => {
 
   // WCLI-137 (N3): a record that appears between the question and the write was
   // never shown, so the removal is refused and nothing is removed.
+  // DEC-255 (a9): a changed removal set has its own retryable conflict code,
+  // with the ruled wording, and project_not_registered stays for no binding.
+  test("binding_changed is a conflict with the ruled message and hint", () => {
+    expect(errorCatalog.binding_changed.type).toBe("conflict");
+    expect(errorEnvelope(new WardError("binding_changed"))).toMatchObject({
+      error_type: "conflict",
+      code: "binding_changed",
+      message:
+        "This checkout's registration changed while the command was running, so Ward removed nothing.",
+      hint: "Run `ward unregister` again to see what is registered now.",
+    });
+  });
+
   test("a binding that appears between the question and the write is not removed unseen", async () => {
     const w = await world();
     const identity = locateCheckout(w.first);
@@ -663,7 +681,7 @@ describe("ward unregister", () => {
         keyProvider: w.keyProvider,
         approver: scripted(["approved", "approved"]).approver,
       }),
-    ).rejects.toMatchObject({ code: "project_not_registered" });
+    ).rejects.toMatchObject({ code: "binding_changed" });
     const after = w.state();
     expect(after.profileApprovals).toHaveLength(before);
     expect(
@@ -743,8 +761,47 @@ describe("ward unregister", () => {
         keyProvider: w.keyProvider,
         approver: scripted(["approved", "approved"]).approver,
       }),
-    ).rejects.toMatchObject({ code: "project_not_registered" });
+    ).rejects.toMatchObject({ code: "binding_changed" });
     expect(w.state().profileApprovals).toHaveLength(2);
+  });
+
+  // DEC-255 (a9): the set can change while the binding stays. A second Ward
+  // process withdraws this checkout's approval after the developer answered, so
+  // what would be removed is no longer what was shown. Nothing is removed.
+  test("an approval that changes between the question and the write is refused as binding_changed", async () => {
+    const w = await world();
+    const identity = locateCheckout(w.first);
+    const racing = {
+      header: () => w.store.header(),
+      create: w.store.create.bind(w.store),
+      read: w.store.read.bind(w.store),
+      mutate: (
+        key: Uint8Array,
+        change: Parameters<typeof w.store.mutate>[1],
+      ) => {
+        w.store.mutate(w.key(), (plaintext) => {
+          const current = parseVaultState(plaintext);
+          return serializeVaultState({
+            ...current,
+            profileApprovals: current.profileApprovals.slice(1),
+          });
+        });
+        return w.store.mutate(key, change);
+      },
+    };
+    await expect(
+      runUnregister({
+        checkout: identity,
+        store: racing,
+        keyProvider: w.keyProvider,
+        approver: scripted(["approved", "approved"]).approver,
+      }),
+    ).rejects.toMatchObject({ code: "binding_changed" });
+    const after = w.state();
+    expect(after.profileApprovals).toHaveLength(1);
+    expect(
+      after.localBindings.filter((binding) => binding.root === identity.root),
+    ).toHaveLength(1);
   });
 
   // DEC-246 (a2) clause 3: a version-mismatched approval is authority the

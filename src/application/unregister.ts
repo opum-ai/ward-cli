@@ -190,8 +190,8 @@ export async function runUnregister(
       // The decision, repeated inside the transaction: what is removed must be
       // exactly what the developer was shown, bindings and approvals both, or
       // nothing is removed. A binding or approval that appeared since is not
-      // consent given. (The refusal reuses project_not_registered, the code a
-      // vanished binding already raises here.)
+      // consent given. The refusal is binding_changed (DEC-255 a9), not
+      // project_not_registered, which is for a checkout with no binding at all.
       const current = parseVaultState(plaintext);
       const present = removalSet(current, options.checkout);
       if (
@@ -199,7 +199,7 @@ export async function runUnregister(
         present.binding.projectId !== binding.projectId ||
         present.fingerprint !== shown.fingerprint
       )
-        throw new WardError("project_not_registered");
+        throw new WardError("binding_changed");
       removedApprovals = removeApprovals ? present.approvals : 0;
       return serializeVaultState(
         present.removing.reduce(

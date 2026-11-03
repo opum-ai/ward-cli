@@ -44,9 +44,8 @@ path, device and inode, so it is not reachable from the new location and
 3. **Removing the binding is one confirmation; removing that binding's profile
    approvals is a second.** The second is asked only when the checkout has
    approvals. Declining it removes the binding and keeps the approvals.
-4. **The binding is re-checked inside the write transaction**, so a binding
-   removed by a second Ward process between the read and the write is not acted
-   on.
+4. **The set is re-checked inside the write transaction**: if it differs from
+   the one shown, `binding_changed` (DEC-255 a9) is raised and nothing is removed.
 5. **It needs no manifest.** The binding is the authority being withdrawn, and a
    checkout whose manifest was deleted is one a developer may want to unregister.
 
