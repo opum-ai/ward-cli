@@ -44,7 +44,7 @@ const TCIFLUSH = process.platform === "darwin" ? 1 : 0;
 
 // <poll.h>: the event bit and the three revents that mean the descriptor is not
 // simply readable. The values are the same on darwin and Linux.
-const POLLIN = 0x1;
+export const POLLIN = 0x1;
 const POLLERR = 0x8;
 const POLLHUP = 0x10;
 const POLLNVAL = 0x20;
@@ -52,7 +52,7 @@ const POLLNVAL = 0x20;
 // How long the terminal must stay silent before the drain believes the paste
 // is over, and the most it will wait in total so a terminal that never goes
 // quiet cannot hold the command.
-const QUIET_MS = 30;
+export const QUIET_MS = 30;
 const DRAIN_BUDGET_MS = 1_500;
 
 // nfds_t is unsigned int on darwin and unsigned long on glibc.

@@ -30,7 +30,13 @@ import { WardError } from "../contract/errors.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { secretLimits } from "../domain/secret.ts";
 import { isConsentAnswer, readAnswerLine } from "./terminal-consent.ts";
-import { flushPendingInput, inputQueued, pollInput } from "./terminal-input.ts";
+import {
+  flushPendingInput,
+  inputQueued,
+  pollInput,
+  POLLIN,
+  QUIET_MS,
+} from "./terminal-input.ts";
 
 export interface TerminalSecretParts {
   isInteractive?: () => boolean;
@@ -88,14 +94,24 @@ function readOnce(descriptor: number, buffer: Uint8Array): number {
 // is part of the terminator and not a second line. It is consumed when it is
 // already there. Any other byte directly behind the return is input queued
 // after the terminator, which is the multi-line paste DEC-255 (a2) clause 3
-// refuses; the byte is not kept.
-function consumeLineFeedAfterReturn(descriptor: number): void {
-  const polled = pollInput(descriptor, 30);
+// refuses; the byte is not kept. The caller owns `next` and zeroes it.
+function consumeLineFeedAfterReturn(
+  descriptor: number,
+  next: Uint8Array,
+): void {
+  const polled = pollInput(descriptor, QUIET_MS);
   if (polled === undefined || polled.result <= 0) return;
-  if ((polled.revents & 0x1) === 0) return;
-  const next = new Uint8Array(1);
+  if ((polled.revents & POLLIN) === 0) return;
   if (readOnce(descriptor, next) === 0) return;
   if (next[0] !== 0x0a) throw new WardError("secret_value_multiline");
+}
+
+// What a read keeps while it runs, handed to the caller only so a test can see
+// that every one of them was zeroed on every way out.
+export interface HiddenReadScratch {
+  bytes?: number[];
+  buffer?: Uint8Array;
+  next?: Uint8Array;
 }
 
 // The hidden reader, over any readable descriptor so its byte semantics can
@@ -106,30 +122,46 @@ function consumeLineFeedAfterReturn(descriptor: number): void {
 // limit is accepted, and the next byte that is not a terminator, an edit or
 // an end-of-input fails the entry as too large — a stored prefix of a larger
 // value would be a silently wrong secret. Bytes past the refusal are left
-// unread, exactly as the stdin path leaves them.
-export function readHiddenValueBytes(descriptor = 0): Uint8Array {
+// unread, exactly as the stdin path leaves them. Whatever the way out (a
+// value, an abandoned read, or a refusal that throws), the bytes read so far
+// and the one-byte buffers are zeroed before it leaves; only the returned copy
+// survives, and its owner zeroes it.
+export function readHiddenValueBytes(
+  descriptor = 0,
+  scratch: HiddenReadScratch = {},
+): Uint8Array {
   const bytes: number[] = [];
   const buffer = new Uint8Array(1);
-  for (;;) {
-    const read = readOnce(descriptor, buffer);
-    if (read === 0) break;
-    const byte = buffer[0] as number;
-    if (byte === 0x0d) {
-      consumeLineFeedAfterReturn(descriptor);
-      break;
+  const next = new Uint8Array(1);
+  scratch.bytes = bytes;
+  scratch.buffer = buffer;
+  scratch.next = next;
+  try {
+    for (;;) {
+      const read = readOnce(descriptor, buffer);
+      if (read === 0) break;
+      const byte = buffer[0] as number;
+      if (byte === 0x0d) {
+        consumeLineFeedAfterReturn(descriptor, next);
+        break;
+      }
+      if (byte === 0x0a) break;
+      if (byte === 0x03) return new Uint8Array(0);
+      if (byte === 0x04) break;
+      if (byte === 0x7f || byte === 0x08) {
+        bytes.pop();
+        continue;
+      }
+      if (bytes.length === secretLimits.maxValueBytes)
+        throw new WardError("secret_value_too_large");
+      bytes.push(byte);
     }
-    if (byte === 0x0a) break;
-    if (byte === 0x03) return new Uint8Array(0);
-    if (byte === 0x04) break;
-    if (byte === 0x7f || byte === 0x08) {
-      bytes.pop();
-      continue;
-    }
-    if (bytes.length === secretLimits.maxValueBytes)
-      throw new WardError("secret_value_too_large");
-    bytes.push(byte);
+    return new Uint8Array(bytes);
+  } finally {
+    bytes.fill(0);
+    buffer.fill(0);
+    next.fill(0);
   }
-  return new Uint8Array(bytes);
 }
 
 // Standard input to EOF as exact bytes: nothing is stripped, and a
