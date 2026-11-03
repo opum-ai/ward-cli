@@ -72,9 +72,11 @@ export interface ProbedCheckout {
   readonly inode: string;
   // The nonce in that checkout's git directory, when it has one.
   readonly checkoutId?: string;
-  // Whether `ward init` could give that checkout an identity. False when its
-  // git directory does not resolve or its nonce file is unusable, where init
-  // throws checkout_identity_unavailable. Absent means it could.
+  // Whether `ward init` could plausibly give that checkout an identity, judged
+  // without writing. False when its git directory does not resolve or is not
+  // writable by this account, its nonce file is invalid, or a link or file
+  // stands where the `ward` directory belongs: init throws
+  // checkout_identity_unavailable there. Absent means it could.
   readonly registrable?: boolean;
   // The project manifest's text, or undefined when there is none to read.
   readonly manifest: string | undefined;

@@ -64,11 +64,10 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 
 7. On a new machine run `ward setup` first. A build that created the vault key
    (a fresh `ward setup`) reads it back with no prompt; any other build (an
-   upgrade, or a checkout build you are replacing) is expected to prompt, and
-   the interactive dialog is not yet measured. The first command that needs the vault key (`ward status` is the
+   upgrade, or a checkout build you are replacing) is expected to prompt. The first command that needs the vault key (`ward status` is the
    cheapest) may raise a macOS keychain dialog. It should appear right after
    you ran `~/.local/bin/ward`; if it appears when you ran nothing, stop and do
-   not approve it. The exact dialog text is not yet recorded from a released
+   not approve it. The dialog is not yet measured or recorded from a released
    build. The approval is bound to this build's cdhash and does not carry over
    to the next one. Over SSH the dialog cannot appear and the command fails with
    `vault_key_unavailable`: approve it once at the Mac itself.
@@ -76,29 +75,31 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 ### Re-approve profiles
 
 8. Release 0.1.0 raised the profile snapshot version from 1 to 2
-   ([ADR 0018](../adr/0018-profilesnapshotversion-bumps-at-the-first-release.md))
+   (ADR 0018)
    and 0.1.1 raises it from 2 to 3
-   ([ADR 0024](../adr/0024-a-secret-in-one-named-header-is-an-auth-scheme-beside-bearer.md)).
+   (ADR 0024).
    A vault whose profile approvals an earlier build wrote does not treat
    them as approval: each one authorises nothing, and `ward status` and
    `ward doctor` name it with its checkout and its snapshot version (the
    `stale_approvals` check). Nothing is migrated or edited. Approve each named
    profile again in a trusted terminal with `ward profile approve <name>`,
    which replaces the stale record. Run it from the checkout the report named:
-   the replacement matches profile, project and checkout root, so running it
-   elsewhere records a second approval and leaves the stale one in place.
+   elsewhere it records a second approval and leaves the stale one.
    Projects, secrets and bindings that hold no approval are read as before.
 
-   Only a record whose checkout still exists and still declares the profile
-   needs you: re-approve it. A record whose checkout is gone,
-   or whose profile is no longer declared, is named as inert and unreachable
+   Only a record whose checkout still exists, still declares the profile and is
+   registered needs you: re-approve it. A record whose checkout is gone, or
+   whose profile is no longer declared, is named as inert and unreachable
    without failing `ward doctor`. 0.1.1 has no command to remove it; it stays
-   in the vault authorising nothing, and a later release is expected to add one. Only this project's
-   records are named; `ward doctor` counts other projects' records, and running
+   in the vault authorising nothing, and a later release is expected to add
+   one. Only this project's records are named; `ward doctor` counts other projects' records, and running
    Ward there names them.
 
-   A legacy approval at an unregistered checkout is inert: `ward profile
-   approve` there is refused.
+   A 0.1.1 record has no checkout identity, nor does its binding, so its
+   checkout reads as unregistered and `ward profile approve` is refused there.
+   Run `ward init` from it (registering gives it access to the project's
+   secrets), then `ward profile approve`. Where init cannot give it an
+   identity, the record stays inert, with no hint.
 
 ### Upgrade
 

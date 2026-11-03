@@ -19,12 +19,14 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1233,6 +1235,22 @@ describe("ward doctor", () => {
       const found = unregisteredSibling(projectId, true);
       seedState(h, { approvals: [legacyRecord(projectId, found)] });
       await expectInertLegacy(h, checkout, found);
+      // The probe only reads: the doctor must not have bound an identity.
+      expect(existsSync(join(found.root, ".git", "ward"))).toBe(false);
+    });
+
+    // An empty real `ward` directory is not in init's way: it can create the
+    // nonce file in it, so the register hint stands.
+    test("is inert, with a hint, when its checkout has an empty ward directory", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-empty-ward");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const found = unregisteredSibling(projectId, true);
+      mkdirSync(join(found.root, ".git", "ward"));
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      await expectInertLegacy(h, checkout, found);
     });
 
     // M1: the user unregistered that checkout on purpose. Its nonce file
@@ -1301,6 +1319,41 @@ describe("ward doctor", () => {
       );
       seedState(h, { approvals: [legacyRecord(projectId, found)] });
       await expectInertUnregistrable(h, checkout);
+    });
+
+    // A link where the `ward` directory belongs is one init refuses to write
+    // through, so no register step is named.
+    test("is inert when a link stands where the checkout's ward directory belongs", async () => {
+      const h = harness();
+      const checkout = worktree("doctor-legacy-ward-link");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const found = unregisteredSibling(projectId, true);
+      const elsewhere = siblingCheckout(false);
+      symlinkSync(elsewhere, join(found.root, ".git", "ward"));
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      await expectInertUnregistrable(h, checkout);
+    });
+
+    // A git directory this account cannot write is one init cannot bind an
+    // identity in (a root-owned .git after a sudo clone), though every other
+    // part of it looks fine. As root the mode does not bind, so it is skipped.
+    test("is inert when the checkout's git directory is not writable", async () => {
+      if (process.getuid?.() === 0) return;
+      const h = harness();
+      const checkout = worktree("doctor-legacy-readonly-git");
+      await h.setUp(checkout);
+      await h.init(checkout, ["--claude"]);
+      const projectId = declareProfile(checkout, "deploy");
+      const found = unregisteredSibling(projectId, true);
+      seedState(h, { approvals: [legacyRecord(projectId, found)] });
+      chmodSync(join(found.root, ".git"), 0o555);
+      try {
+        await expectInertUnregistrable(h, checkout);
+      } finally {
+        chmodSync(join(found.root, ".git"), 0o755);
+      }
     });
 
     test("is inert when the checkout's current binding is another project's", async () => {
