@@ -370,7 +370,7 @@ export const commands: CommandSpec[] = [
   {
     name: "secret",
     summary:
-      "Set, list, inspect or delete this project's secrets, or grant one to another project for use only and revoke the grant. A value is entered hidden in a trusted terminal, or piped with --stdin for trusted automation; it is never an argument and never printed. Setting, deleting and granting are the developer's acts, and a granted alias is use-only in the project that receives it.",
+      "Set, list, inspect or delete this project's secrets, or grant one to another project for use only and revoke the grant. A value is entered hidden in a trusted terminal, or piped with --stdin for trusted automation, which is also the route for a multi-line secret (a file's trailing newline is stored as part of the value), since a multi-line paste into the hidden prompt is refused when it is detected; it is never an argument and never printed. Setting, deleting and granting are the developer's acts, and a granted alias is use-only in the project that receives it.",
     args: [
       { name: "action", required: true },
       { name: "alias", required: false },
