@@ -248,7 +248,9 @@ export const errorCatalog = {
   // Secrets (spec §6.2, §8, §7.1). None of these echoes an alias or names a
   // value: an alias came from argv, and a value is never text an error could
   // carry. None of them claims that nothing was changed, because a multi-file
-  // truth is not always available to a message that cannot name what happened.
+  // truth is not always available to a message that cannot name what happened;
+  // binding_changed is the exception, since unregister writes nothing before
+  // its in-transaction check and its message can say Ward removed nothing.
   project_not_registered: {
     type: "denied",
     message:
@@ -256,9 +258,10 @@ export const errorCatalog = {
     hint: "Run `ward init` in a terminal to register this checkout.",
   },
   // unregister's in-transaction check (DEC-255 a9): what it was about to
-  // remove is no longer what the developer was shown. The checkout is still
-  // registered as far as this refusal knows, so project_not_registered would
-  // be false here.
+  // remove is no longer what the developer was shown: the registration was
+  // changed or withdrawn under it. The set changed, so project_not_registered,
+  // which is for a checkout with no binding when the command started, would
+  // mislead here.
   binding_changed: {
     type: "conflict",
     message:
