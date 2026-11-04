@@ -529,3 +529,57 @@ describe("the nonce file in the git directory", () => {
     });
   });
 });
+
+// WCLI-144: readBoundedFile opens without blocking and refuses what is not a
+// regular file, so a FIFO swapped in at the path cannot stall the read. Run in
+// a child that is killed at a deadline: a regression is then a failed test, not
+// a hung one. The regular-file case is the control that the child reads at all.
+describe("readBoundedFile against a path that is not a regular file", () => {
+  const modulePath = new URL("../src/adapters/checkout.ts", import.meta.url)
+    .pathname;
+  const readInChild = async (path: string) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `import { readBoundedFile } from ${JSON.stringify(modulePath)};
+         console.log(JSON.stringify(readBoundedFile(process.env.TARGET, 64) ?? null));`,
+      ],
+      { env: { ...process.env, TARGET: path }, stdout: "pipe", stderr: "pipe" },
+    );
+    const timer = setTimeout(() => child.kill(), 5000);
+    const exitCode = await child.exited;
+    clearTimeout(timer);
+    return { exitCode, out: (await new Response(child.stdout).text()).trim() };
+  };
+
+  test("a regular file is read, as the control", async () => {
+    const path = join(mkdtempSync(join(root, "bounded-")), "file");
+    writeFileSync(path, "gitdir: elsewhere\n");
+    expect(await readInChild(path)).toEqual({
+      exitCode: 0,
+      out: JSON.stringify("gitdir: elsewhere\n"),
+    });
+  });
+
+  test("a FIFO with no writer is refused at once, not waited on", async () => {
+    const path = join(mkdtempSync(join(root, "bounded-")), "pipe");
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    expect(await readInChild(path)).toEqual({ exitCode: 0, out: "null" });
+  });
+});
+
+// DEC-255 (a11): the project_not_registered hint is one static string that
+// also names the checkout_identity_unavailable path, because `ward init` cannot
+// register a checkout it cannot give an identity. The message is unchanged.
+describe("the project_not_registered hint", () => {
+  test("points at the identity error as well as at ward init", () => {
+    const envelope = errorEnvelope(new WardError("project_not_registered"));
+    expect(envelope.hint).toBe(
+      "Run `ward init` in a terminal to register this checkout. If init reports that it could not give the checkout an identity, fix what that error names first; init cannot register the checkout until then.",
+    );
+    expect(envelope.message).toBe(
+      "This checkout is not registered with Ward, so it has no access to this project's secrets.",
+    );
+  });
+});
