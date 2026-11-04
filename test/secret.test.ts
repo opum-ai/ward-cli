@@ -39,6 +39,7 @@ import {
   readHiddenValueBytes,
   readOnce,
   readStdinValueBytes,
+  waitReadable,
 } from "../src/adapters/secret-value.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type { RegistrationApprover } from "../src/application/approvals.ts";
@@ -1107,7 +1108,9 @@ describe("the terminal value adapters", () => {
     // Accepted values and an abandoned read.
     run("token\r\n", "token", "token".length);
     run("ab\u0003", "", "ab".length);
-    // A backspace frees its slot zeroed, and the peak is what was held.
+    // The peak is what was held at most. The all-zero check above is met by
+    // the final fill(0) whatever a backspace does, so it is not evidence that
+    // a backspace zeroes its slot.
     run("abc\u007f\u007fd\n", "ad", 3);
   });
 
@@ -1135,8 +1138,10 @@ describe("the terminal value adapters", () => {
     const scratch: StdinReadScratch = {};
     const source = encode("slow-producer");
     let offset = 0;
+    const targets: ArrayBufferLike[] = [];
     const out = readStdinValueBytes(64, 0, scratch, {
       read: (_descriptor, buffer) => {
+        targets.push(buffer.buffer);
         if (offset >= source.length) return 0;
         buffer[0] = source[offset++] as number;
         return 1;
@@ -1145,6 +1150,57 @@ describe("the terminal value adapters", () => {
     expect(decode(out)).toBe("slow-producer");
     expect(scratch.buffer?.length).toBe(65);
     expect(scratch.buffer?.every((byte) => byte === 0)).toBe(true);
+    // Every read, the final empty one included, was handed a view of the one
+    // buffer: a second allocation would show as a different backing store.
+    expect(targets.length).toBe(source.length + 1);
+    expect(targets.every((target) => target === scratch.buffer?.buffer)).toBe(
+      true,
+    );
+  });
+
+  test("a stdin read over a real descriptor fed in two writes keeps both, at the right offsets", async () => {
+    // readSync is the default port, so this is the real offset path: the second
+    // read lands in a view that begins after the first read's bytes. A FIFO and
+    // a separate writer process keep the two writes apart; the reader blocks in
+    // readSync, which is fine because nothing here needs this process's loop.
+    const dir = mkdtempSync(join(root, `fifo-${++cases}-`));
+    const fifo = join(dir, "pipe");
+    const made = Bun.spawnSync(["mkfifo", fifo]);
+    expect(made.exitCode).toBe(0);
+    const writer = Bun.spawn([
+      "sh",
+      "-c",
+      `{ printf first; sleep 0.3; printf second; } > '${fifo}'`,
+    ]);
+    const descriptor = openSync(fifo, "r");
+    try {
+      expect(decode(readStdinValueBytes(64, descriptor))).toBe("firstsecond");
+    } finally {
+      closeSync(descriptor);
+      await writer.exited;
+    }
+  });
+
+  test("the wait polls for readability first and sleeps only where poll did not resolve", () => {
+    const calls: string[] = [];
+    waitReadable(9, {
+      poll: (descriptor, timeoutMs) => {
+        calls.push(`poll ${descriptor} ${timeoutMs}`);
+        return { result: 1, revents: 1 };
+      },
+      sleep: (ms) => calls.push(`sleep ${ms}`),
+    });
+    // A poll that answered, even with nothing readable, ends the wait.
+    expect(calls).toEqual(["poll 9 30"]);
+    calls.length = 0;
+    waitReadable(9, {
+      poll: (descriptor, timeoutMs) => {
+        calls.push(`poll ${descriptor} ${timeoutMs}`);
+        return undefined;
+      },
+      sleep: (ms) => calls.push(`sleep ${ms}`),
+    });
+    expect(calls).toEqual(["poll 9 30", "sleep 30"]);
   });
 
   test("a read that reports EAGAIN waits before it retries, and EINTR retries at once", () => {
@@ -1192,6 +1248,13 @@ describe("the terminal value adapters", () => {
         withInput(new Uint8Array(9), (fd) => readStdinValueBytes(8, fd)),
       ),
     ).toBe("secret_value_too_large");
+    // Exactly the bound is accepted: only a byte past it refuses, so a `>=`
+    // in the bound check goes red here and nowhere above.
+    expect(
+      decode(
+        withInput(encode("a".repeat(8)), (fd) => readStdinValueBytes(8, fd)),
+      ),
+    ).toBe("a".repeat(8));
   });
 
   test("the stdin path refuses a terminal, where typing would be echoed", () => {
@@ -1222,6 +1285,23 @@ describe("the terminal value adapters", () => {
     // and it cannot redraw the prompt that asks about it.
     answering("n").confirmReplace("esc\u000aaped");
     expect(prompt.text).toContain("\\x0a");
+  });
+
+  test("a prompt that cannot be written after the read does not drop the value or leave echo off", () => {
+    const raw: boolean[] = [];
+    const values = createTerminalSecretValues({
+      isInteractive: () => true,
+      setRaw: (on) => raw.push(on),
+      writePrompt: (text) => {
+        if (text === "\n") throw new Error("terminal gone");
+      },
+      readHiddenBytes: () => encode("kept"),
+      flushInput: () => false,
+      inputPending: () => false,
+    });
+    expect(decode(values.readHidden() as Uint8Array)).toBe("kept");
+    // Echo went off for the read and back on afterwards.
+    expect(raw).toEqual([true, false]);
   });
 
   test("no terminal means no hidden read and no confirmation", () => {

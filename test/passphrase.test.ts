@@ -220,7 +220,9 @@ describe("the byte reader the terminal path uses", () => {
     };
     run([...bytes("hunter2"), 0x0a], "hunter2", 7);
     run([...bytes("half"), 0x03], "backup_passphrase_rejected", 4);
-    // End of input submits what was typed, and a backspace frees a zeroed slot.
+    // End of input submits what was typed. The all-zero check above is met by
+    // the final fill(0) whatever a backspace does, so the backspace case pins
+    // the result and the peak, not that a backspace zeroes its slot.
     run([...bytes("partial"), 0x04], "partial", 7);
     run([...bytes("abc"), 0x7f, 0x7f, ...bytes("d"), 0x0a], "ad", 3);
     run(

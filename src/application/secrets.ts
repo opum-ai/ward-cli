@@ -52,13 +52,15 @@ export interface SecretValueSource {
   // terminal.
   available(): boolean;
   // Echo-suppressed entry. The caller owns the buffer and zeroes it.
-  // undefined when the read was cancelled; an empty buffer when nothing was
-  // typed. The two are the same answer to the caller. A value past the
-  // limit is refused as too large rather than truncated.
+  // undefined when the terminal cannot be read or put into raw mode. Ctrl-C
+  // abandons the read and returns an empty buffer, as does nothing typed; the
+  // caller treats an empty buffer and undefined as the same answer. A value
+  // past the limit is refused as too large rather than truncated.
   readHidden(): Uint8Array | undefined;
   // Standard input to EOF as exact bytes, terminator included: --stdin does
-  // nothing to the bytes it is given. The caller owns the buffer and zeroes it. Refuses an interactive terminal as the
-  // source, and refuses more than maxBytes rather than truncating.
+  // nothing to the bytes it is given. The caller owns the buffer and zeroes
+  // it. Refuses an interactive terminal as the source, and refuses more than
+  // maxBytes rather than truncating.
   readStdin(maxBytes: number): Uint8Array;
   // The replacement question, answered y/yes to consent. False when it
   // cannot be asked or it was declined.

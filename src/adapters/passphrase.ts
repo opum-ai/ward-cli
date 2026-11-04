@@ -16,8 +16,9 @@
 // runs next; it does not close it. Nothing is printed in place of what is typed, not
 // even one mask character per byte, because a mask discloses the
 // passphrase's length. Backspace (0x7f and 0x08) removes the last byte;
-// Enter ends the reading; Ctrl-C and Ctrl-D end it too, leaving whatever was
-// typed. Reading refuses past its bound rather than truncating: a stream that
+// Enter ends the reading; Ctrl-D ends the input and submits what was typed;
+// Ctrl-C cancels, and the reader throws backup_passphrase_rejected whatever
+// was typed. Reading refuses past its bound rather than truncating: a stream that
 // never ends cannot grow it, and a passphrase longer than the bound is
 // rejected rather than silently shortened. The prompt goes to the controlling
 // terminal (or stderr) and never to stdout.
@@ -51,13 +52,6 @@ function defaultSetRaw(on: boolean): void {
   stdin.setRawMode(on);
 }
 
-// The reader the terminal path uses, over any readable descriptor so its
-// byte semantics (backspace, Ctrl-C, the bound) can be tested without a pty.
-// At the bound it refuses rather than truncates, matching the secret reader:
-// a value of exactly the limit is accepted, and the next byte that is not a
-// terminator, an edit or an end-of-input fails the read as too large. A
-// silently shortened passphrase would let the confirm step compare two
-// identically truncated values and accept one the user never chose.
 // What a read keeps while it runs, handed to the caller only so a test can see
 // that both were zeroed on every way out.
 export interface PassphraseReadScratch {
@@ -67,13 +61,22 @@ export interface PassphraseReadScratch {
   buffer?: Uint8Array;
 }
 
+// The reader the terminal path uses, over any readable descriptor so its
+// byte semantics (backspace, Ctrl-C, the bound) can be tested without a pty.
+// At the bound it refuses rather than truncates, matching the secret reader:
+// a value of exactly the limit is accepted, and the next byte that is not a
+// terminator, an edit or an end-of-input fails the read as too large. A
+// silently shortened passphrase would let the confirm step compare two
+// identically truncated values and accept one the user never chose.
+//
 // Whatever the way out (a passphrase, an abandoned read, or a refusal that
 // throws), the bytes read and the one-byte buffer are zeroed before it leaves.
-// The bytes live in one fixed array and a backspace zeroes the slot it frees,
-// so no typed byte outlives the read in a place fill(0) cannot reach. Only the
-// returned copy survives, and its owner zeroes it. The read retries the
-// transient errors a non-blocking descriptor reports, as the secret reader
-// does.
+// The bytes live in one fixed array, so the final fill(0) reaches every typed
+// byte, including one a backspace removed; the slot a backspace frees is
+// zeroed at once as well, which narrows how long it lingers but is not what
+// guarantees it. Only the returned copy survives, and its owner zeroes it. The
+// read retries the transient errors a non-blocking descriptor reports, as the
+// secret reader does.
 export function readPassphraseBytes(
   descriptor = 0,
   scratch: PassphraseReadScratch = {},
