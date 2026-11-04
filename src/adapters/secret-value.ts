@@ -108,6 +108,10 @@ export function waitReadable(descriptor: number, ports: WaitPorts = {}): void {
   sleep(QUIET_MS);
 }
 
+// The wait the default read port uses. Not covered by a test: the arms of
+// waitReadable are asserted through its ports, and nothing asserts that this
+// wrapper waits at all or that the real Atomics.wait sleep sleeps; a no-op
+// here would still pass, a read that reports EAGAIN would only spin.
 function defaultWait(descriptor: number): void {
   waitReadable(descriptor);
 }

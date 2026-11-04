@@ -19,10 +19,13 @@ import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   closeSync,
+  constants as fsConstants,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -1159,24 +1162,57 @@ describe("the terminal value adapters", () => {
   });
 
   test("a stdin read over a real descriptor fed in two writes keeps both, at the right offsets", async () => {
-    // readSync is the default port, so this is the real offset path: the second
-    // read lands in a view that begins after the first read's bytes. A FIFO and
-    // a separate writer process keep the two writes apart; the reader blocks in
-    // readSync, which is fine because nothing here needs this process's loop.
+    // The real readSync offset path: the second read lands in a view that
+    // begins after the first read's bytes. The two writes are ordered by a
+    // handshake, not by timing: the writer sends its second write only after
+    // the reader's recording port has seen the first read return, so a read can
+    // never take both. The FIFO is opened non-blocking, so a writer that never
+    // starts fails the test at the deadline below instead of hanging the
+    // process in openSync, and the writer's own wait is bounded too.
     const dir = mkdtempSync(join(root, `fifo-${++cases}-`));
     const fifo = join(dir, "pipe");
-    const made = Bun.spawnSync(["mkfifo", fifo]);
-    expect(made.exitCode).toBe(0);
+    const opened = join(dir, "writer-opened");
+    const firstRead = join(dir, "first-read-done");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const descriptor = openSync(
+      fifo,
+      fsConstants.O_RDONLY | fsConstants.O_NONBLOCK,
+    );
     const writer = Bun.spawn([
       "sh",
       "-c",
-      `{ printf first; sleep 0.3; printf second; } > '${fifo}'`,
+      'exec 3>"$1" || exit 1; : > "$2"; printf first >&3; i=0; while [ ! -e "$3" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done; printf second >&3; exec 3>&-',
+      "sh",
+      fifo,
+      opened,
+      firstRead,
     ]);
-    const descriptor = openSync(fifo, "r");
     try {
-      expect(decode(readStdinValueBytes(64, descriptor))).toBe("firstsecond");
+      // A read before the writer holds its end reports end of input, so the
+      // read waits for the writer to say it has the FIFO open.
+      for (let waited = 0; !existsSync(opened) && waited < 500; waited++)
+        await Bun.sleep(10);
+      expect(existsSync(opened)).toBe(true);
+      const sizes: number[] = [];
+      const out = readStdinValueBytes(
+        64,
+        descriptor,
+        {},
+        {
+          read: (fd, buffer) => {
+            const count = readSync(fd, buffer, 0, buffer.length, null);
+            sizes.push(count);
+            if (count > 0) writeFileSync(firstRead, "");
+            return count;
+          },
+        },
+      );
+      expect(decode(out)).toBe("firstsecond");
+      // At least two reads returned bytes, so the second landed past the first.
+      expect(sizes.filter((size) => size > 0).length).toBeGreaterThanOrEqual(2);
     } finally {
       closeSync(descriptor);
+      writeFileSync(firstRead, "");
       await writer.exited;
     }
   });
@@ -1186,11 +1222,12 @@ describe("the terminal value adapters", () => {
     waitReadable(9, {
       poll: (descriptor, timeoutMs) => {
         calls.push(`poll ${descriptor} ${timeoutMs}`);
-        return { result: 1, revents: 1 };
+        return { result: 0, revents: 0 };
       },
       sleep: (ms) => calls.push(`sleep ${ms}`),
     });
-    // A poll that answered, even with nothing readable, ends the wait.
+    // A poll that answered, even with nothing readable (result 0, no revents),
+    // ends the wait: a quiet interval that passed inside poll is the wait.
     expect(calls).toEqual(["poll 9 30"]);
     calls.length = 0;
     waitReadable(9, {
