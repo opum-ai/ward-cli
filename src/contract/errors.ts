@@ -255,7 +255,7 @@ export const errorCatalog = {
     type: "denied",
     message:
       "This checkout is not registered with Ward, so it has no access to this project's secrets.",
-    hint: "Run `ward init` in a terminal to register this checkout.",
+    hint: "Run `ward init` in a terminal to register this checkout. If init reports that it could not give the checkout an identity, fix what that error names first; init cannot register the checkout until then.",
   },
   // unregister's in-transaction check (DEC-255 a9): what it was about to
   // remove is no longer what the developer was shown: the registration was

@@ -568,3 +568,18 @@ describe("readBoundedFile against a path that is not a regular file", () => {
     expect(await readInChild(path)).toEqual({ exitCode: 0, out: "null" });
   });
 });
+
+// DEC-255 (a11): the project_not_registered hint is one static string that
+// also names the checkout_identity_unavailable path, because `ward init` cannot
+// register a checkout it cannot give an identity. The message is unchanged.
+describe("the project_not_registered hint", () => {
+  test("points at the identity error as well as at ward init", () => {
+    const envelope = errorEnvelope(new WardError("project_not_registered"));
+    expect(envelope.hint).toBe(
+      "Run `ward init` in a terminal to register this checkout. If init reports that it could not give the checkout an identity, fix what that error names first; init cannot register the checkout until then.",
+    );
+    expect(envelope.message).toBe(
+      "This checkout is not registered with Ward, so it has no access to this project's secrets.",
+    );
+  });
+});
