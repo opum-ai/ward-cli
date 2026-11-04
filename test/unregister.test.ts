@@ -783,7 +783,9 @@ describe("ward unregister", () => {
           const current = parseVaultState(plaintext);
           return serializeVaultState({
             ...current,
-            profileApprovals: current.profileApprovals.slice(1),
+            profileApprovals: current.profileApprovals.filter(
+              (approval) => approval.root !== identity.root,
+            ),
           });
         });
         return w.store.mutate(key, change);
