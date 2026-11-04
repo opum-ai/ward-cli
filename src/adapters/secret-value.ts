@@ -86,11 +86,34 @@ function defaultRead(descriptor: number, buffer: Uint8Array): number {
   return readSync(descriptor, buffer, 0, buffer.length, null);
 }
 
+// The two calls the wait makes, passed in so a test can take each arm: a real
+// poll resolves on every machine that has it, and the sleep arm needs one
+// where it did not.
+export interface WaitPorts {
+  poll?: (
+    descriptor: number,
+    timeoutMs: number,
+  ) => { result: number; revents: number } | undefined;
+  sleep?: (ms: number) => void;
+}
+
 // Waits until the descriptor is readable, or a quiet interval passes, so a
 // retry does not spin. Where poll did not resolve it sleeps the interval.
+export function waitReadable(descriptor: number, ports: WaitPorts = {}): void {
+  const poll = ports.poll ?? pollInput;
+  const sleep =
+    ports.sleep ??
+    ((ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+  if (poll(descriptor, QUIET_MS) !== undefined) return;
+  sleep(QUIET_MS);
+}
+
+// The wait the default read port uses. Not covered by a test: the arms of
+// waitReadable are asserted through its ports, and nothing asserts that this
+// wrapper waits at all or that the real Atomics.wait sleep sleeps; a no-op
+// here would still pass, a read that reports EAGAIN would only spin.
 function defaultWait(descriptor: number): void {
-  if (pollInput(descriptor, QUIET_MS) !== undefined) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, QUIET_MS);
+  waitReadable(descriptor);
 }
 
 // A descriptor read that is retried across the transient errors a
@@ -157,9 +180,10 @@ export interface HiddenReadScratch {
 // unread, exactly as the stdin path leaves them. Whatever the way out (a
 // value, an abandoned read, or a refusal that throws), the bytes read so far
 // and the one-byte buffers are zeroed before it leaves. The bytes live in one
-// fixed array and a backspace zeroes the slot it frees, so no typed byte
-// outlives the read in a place fill(0) cannot reach. Only the returned copy
-// survives, and its owner zeroes it.
+// fixed array, so the final fill(0) reaches every typed byte, including one a
+// backspace removed; the slot a backspace frees is zeroed at once as well,
+// which narrows how long it lingers but is not what guarantees it. Only the
+// returned copy survives, and its owner zeroes it.
 export function readHiddenValueBytes(
   descriptor = 0,
   scratch: HiddenReadScratch = {},
@@ -200,6 +224,12 @@ export function readHiddenValueBytes(
   }
 }
 
+// What a stdin read keeps while it runs, handed to the caller only so a test
+// can see that it was zeroed on every way out.
+export interface StdinReadScratch {
+  buffer?: Uint8Array;
+}
+
 // Standard input to EOF as exact bytes: nothing is stripped, and a
 // terminator a producer sent is part of the value. Bounded rather than
 // truncating — the read never takes more than one byte past the bound, so
@@ -209,10 +239,6 @@ export function readHiddenValueBytes(
 // The bytes are read into one array, sized to the bound and one byte more,
 // and that array is zeroed on every way out, the refusal included; no second
 // copy is kept. Only the returned copy survives, and its owner zeroes it.
-export interface StdinReadScratch {
-  buffer?: Uint8Array;
-}
-
 export function readStdinValueBytes(
   maxBytes: number,
   descriptor = 0,
