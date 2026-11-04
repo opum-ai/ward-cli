@@ -40,7 +40,8 @@ path, device and inode, so it is not reachable from the new location and
    inode as every binding is, and never another root's binding, whatever project
    that binding names. Its approvals are matched by the same identity and the
    binding's project, so another project's approval at this identity is kept. A
-   checkout with no binding is refused with `project_not_registered` and the vault is not written.
+   checkout with no binding at the start is refused with
+   `project_not_registered`; nothing is written.
 3. **Removing the binding is one confirmation; removing that binding's profile
    approvals is a second.** The second is asked only when the checkout has
    approvals. Declining it removes the binding and keeps the approvals.

@@ -191,7 +191,8 @@ export async function runUnregister(
       // exactly what the developer was shown, bindings and approvals both, or
       // nothing is removed. A binding or approval that appeared since is not
       // consent given. The refusal is binding_changed (DEC-255 a9), not
-      // project_not_registered, which is for a checkout with no binding at all.
+      // project_not_registered, which is for a checkout with no binding when the
+      // command starts, before any question is asked.
       const current = parseVaultState(plaintext);
       const present = removalSet(current, options.checkout);
       if (
