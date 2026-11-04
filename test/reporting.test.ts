@@ -1338,23 +1338,59 @@ describe("ward doctor", () => {
 
     // A git directory this account cannot write is one init cannot bind an
     // identity in (a root-owned .git after a sudo clone), though every other
-    // part of it looks fine. As root the mode does not bind, so it is skipped.
-    test("is inert when the checkout's git directory is not writable", async () => {
-      if (process.getuid?.() === 0) return;
-      const h = harness();
-      const checkout = worktree("doctor-legacy-readonly-git");
-      await h.setUp(checkout);
-      await h.init(checkout, ["--claude"]);
-      const projectId = declareProfile(checkout, "deploy");
-      const found = unregisteredSibling(projectId, true);
-      seedState(h, { approvals: [legacyRecord(projectId, found)] });
-      chmodSync(join(found.root, ".git"), 0o555);
-      try {
-        await expectInertUnregistrable(h, checkout);
-      } finally {
-        chmodSync(join(found.root, ".git"), 0o755);
-      }
-    });
+    // part of it looks fine. As root the mode does not bind, so a root run
+    // shows these three as skipped rather than passed.
+    const asRoot = process.getuid?.() === 0;
+    test.skipIf(asRoot)(
+      "is inert when the checkout's git directory is not writable",
+      async () => {
+        const h = harness();
+        const checkout = worktree("doctor-legacy-readonly-git");
+        await h.setUp(checkout);
+        await h.init(checkout, ["--claude"]);
+        const projectId = declareProfile(checkout, "deploy");
+        const found = unregisteredSibling(projectId, true);
+        seedState(h, { approvals: [legacyRecord(projectId, found)] });
+        chmodSync(join(found.root, ".git"), 0o555);
+        try {
+          await expectInertUnregistrable(h, checkout);
+        } finally {
+          chmodSync(join(found.root, ".git"), 0o755);
+        }
+      },
+    );
+
+    // When a real `ward` directory exists, the create writes into it, so it is
+    // that directory's mode that decides, not the writable git directory
+    // around it: removing the writesInto = ward directory choice reads the
+    // writable .git instead and names a register step init cannot take.
+    // 0o555 is not writable; 0o300 is writable and searchable but not
+    // readable, and the bind opens the directory for reading first.
+    for (const [mode, label] of [
+      [0o555, "writable"],
+      [0o300, "readable"],
+    ] as const) {
+      test.skipIf(asRoot)(
+        `is inert when the checkout's ward directory is not ${label}`,
+        async () => {
+          const h = harness();
+          const checkout = worktree(`doctor-legacy-ward-dir-${label}`);
+          await h.setUp(checkout);
+          await h.init(checkout, ["--claude"]);
+          const projectId = declareProfile(checkout, "deploy");
+          const found = unregisteredSibling(projectId, true);
+          const ward = join(found.root, ".git", "ward");
+          mkdirSync(ward);
+          seedState(h, { approvals: [legacyRecord(projectId, found)] });
+          chmodSync(ward, mode);
+          try {
+            await expectInertUnregistrable(h, checkout);
+          } finally {
+            chmodSync(ward, 0o755);
+          }
+        },
+      );
+    }
 
     test("is inert when the checkout's current binding is another project's", async () => {
       const h = harness();

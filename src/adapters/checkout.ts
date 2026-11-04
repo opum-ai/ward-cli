@@ -236,21 +236,27 @@ export function locateCheckout(startDirectory: string): CheckoutIdentity {
 // holds a valid nonce already or has nothing in the way of creating one. Not
 // in the way: no `ward` entry, or a real `ward` directory with no file in it,
 // and in either case the directory the create would write into is writable and
-// searchable by this account. A pruned linked-worktree gitdir, an invalid
-// nonce file, a link or file where the `ward` directory belongs, and a git
-// directory this account cannot write all make `ward init` throw
-// checkout_identity_unavailable, so a report must not tell the developer to
-// run it there. What it cannot see (a race, an ACL, a read-only mount access()
-// does not report) it does not claim.
+// searchable by this account, and, when that is an existing `ward` directory,
+// readable too, because the bind opens it with O_RDONLY|O_DIRECTORY before it
+// creates the file. A pruned linked-worktree gitdir, an invalid nonce file, a
+// link or file where the `ward` directory belongs, a git directory this
+// account cannot write, and a `ward` directory it cannot write, search or read
+// all make `ward init` throw checkout_identity_unavailable, so a report must
+// not tell the developer to run it there. access() answers for this account
+// and takes ACLs and a read-only mount into account; what it cannot see is a
+// race, or a refusal only the open itself raises (a security module, say),
+// and those it does not claim.
 function identityBindable(root: string): boolean {
   const gitDirectory = gitDirectoryOf(root);
   if (gitDirectory === undefined) return false;
   if (readCheckoutId(gitDirectory) !== undefined) return true;
   const { directory, file } = checkoutIdPath(gitDirectory);
   let writesInto = gitDirectory;
+  let needs = fileConstants.W_OK | fileConstants.X_OK;
   try {
     if (!lstatSync(directory).isDirectory()) return false;
     writesInto = directory;
+    needs |= fileConstants.R_OK;
     try {
       lstatSync(file);
       return false;
@@ -261,7 +267,7 @@ function identityBindable(root: string): boolean {
     if (errnoCode(error) !== "ENOENT") return false;
   }
   try {
-    accessSync(writesInto, fileConstants.W_OK | fileConstants.X_OK);
+    accessSync(writesInto, needs);
     return true;
   } catch {
     return false;

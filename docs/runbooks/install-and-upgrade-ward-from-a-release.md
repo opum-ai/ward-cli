@@ -76,7 +76,7 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
 
 8. Release 0.1.0 raised the profile snapshot version from 1 to 2
    (ADR 0018)
-   and 0.1.1 raises it from 2 to 3
+   and 0.1.1 raised it from 2 to 3
    (ADR 0024).
    A vault whose profile approvals an earlier build wrote does not treat
    them as approval: each one authorises nothing, and `ward status` and
@@ -90,16 +90,15 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
    Only a record whose checkout still exists, still declares the profile and is
    registered needs you: re-approve it. A record whose checkout is gone, or
    whose profile is no longer declared, is named as inert and unreachable
-   without failing `ward doctor`. 0.1.1 has no command to remove it; it stays
-   in the vault authorising nothing, and a later release is expected to add
-   one. Only this project's records are named; `ward doctor` counts other projects' records, and running
-   Ward there names them.
+   without failing `ward doctor`. No command removes it; it stays, authorising
+   nothing. Only this project's records are named; `ward doctor` counts other
+   projects' records, and running Ward there names them.
 
-   A 0.1.1 record has no checkout identity, nor does its binding, so its
-   checkout reads as unregistered and `ward profile approve` is refused there.
-   Run `ward init` from it (registering gives it access to the project's
-   secrets), then `ward profile approve`. Where init cannot give it an
-   identity, the record stays inert, with no hint.
+   From the release after 0.1.1, a 0.1.1 record and its binding have no
+   checkout identity: until registered, its checkout reads as unregistered and
+   `ward profile approve` is refused there. To replace it, and only if that checkout should have the project's
+   secrets, run `ward init` from it, then `ward profile approve`. If init
+   cannot give it an identity, it stays inert, with no hint.
 
 ### Upgrade
 
