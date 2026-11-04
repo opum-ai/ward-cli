@@ -15,6 +15,7 @@ import {
   accessSync,
   closeSync,
   constants as fileConstants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -79,14 +80,25 @@ const GITDIR_FILE_MAX_BYTES = 4096;
 const CHECKOUT_ID_FILE_MAX_BYTES = 64;
 
 // One bounded read of a regular file opened without following a link; the
-// file may be one byte over the bound to prove it is over.
-function readBoundedFile(path: string, maxBytes: number): string | undefined {
+// file may be one byte over the bound to prove it is over. The open is
+// non-blocking and the opened descriptor must be a regular file: a FIFO put at
+// the path between the caller's lstat and this open would otherwise block the
+// open until a writer appeared. Hardening against a same-account swap, which
+// ADR 0002 does not count as an attacker; a regular file is unaffected by
+// O_NONBLOCK.
+export function readBoundedFile(
+  path: string,
+  maxBytes: number,
+): string | undefined {
   let descriptor: number | undefined;
   try {
     descriptor = openSync(
       path,
-      fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW,
+      fileConstants.O_RDONLY |
+        fileConstants.O_NOFOLLOW |
+        fileConstants.O_NONBLOCK,
     );
+    if (!fstatSync(descriptor).isFile()) return undefined;
     const buffer = Buffer.alloc(maxBytes + 1);
     const read = readSync(descriptor, buffer, 0, buffer.length, 0);
     if (read > maxBytes) return undefined;

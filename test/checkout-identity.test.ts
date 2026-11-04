@@ -529,3 +529,42 @@ describe("the nonce file in the git directory", () => {
     });
   });
 });
+
+// WCLI-144: readBoundedFile opens without blocking and refuses what is not a
+// regular file, so a FIFO swapped in at the path cannot stall the read. Run in
+// a child that is killed at a deadline: a regression is then a failed test, not
+// a hung one. The regular-file case is the control that the child reads at all.
+describe("readBoundedFile against a path that is not a regular file", () => {
+  const modulePath = new URL("../src/adapters/checkout.ts", import.meta.url)
+    .pathname;
+  const readInChild = async (path: string) => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `import { readBoundedFile } from ${JSON.stringify(modulePath)};
+         console.log(JSON.stringify(readBoundedFile(process.env.TARGET, 64) ?? null));`,
+      ],
+      { env: { ...process.env, TARGET: path }, stdout: "pipe", stderr: "pipe" },
+    );
+    const timer = setTimeout(() => child.kill(), 5000);
+    const exitCode = await child.exited;
+    clearTimeout(timer);
+    return { exitCode, out: (await new Response(child.stdout).text()).trim() };
+  };
+
+  test("a regular file is read, as the control", async () => {
+    const path = join(mkdtempSync(join(root, "bounded-")), "file");
+    writeFileSync(path, "gitdir: elsewhere\n");
+    expect(await readInChild(path)).toEqual({
+      exitCode: 0,
+      out: JSON.stringify("gitdir: elsewhere\n"),
+    });
+  });
+
+  test("a FIFO with no writer is refused at once, not waited on", async () => {
+    const path = join(mkdtempSync(join(root, "bounded-")), "pipe");
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    expect(await readInChild(path)).toEqual({ exitCode: 0, out: "null" });
+  });
+});
