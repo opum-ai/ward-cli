@@ -1178,19 +1178,22 @@ describe("the terminal value adapters", () => {
       fifo,
       fsConstants.O_RDONLY | fsConstants.O_NONBLOCK,
     );
-    const writer = Bun.spawn([
-      "sh",
-      "-c",
-      'exec 3>"$1" || exit 1; : > "$2"; printf first >&3; i=0; while [ ! -e "$3" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done; printf second >&3; exec 3>&-',
-      "sh",
-      fifo,
-      opened,
-      firstRead,
-    ]);
+    let writer: ReturnType<typeof Bun.spawn> | undefined;
     try {
+      writer = Bun.spawn([
+        "sh",
+        "-c",
+        'exec 3>"$1" || exit 1; : > "$2"; printf first >&3; i=0; while [ ! -e "$3" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done; printf second >&3; exec 3>&-',
+        "sh",
+        fifo,
+        opened,
+        firstRead,
+      ]);
       // A read before the writer holds its end reports end of input, so the
-      // read waits for the writer to say it has the FIFO open.
-      for (let waited = 0; !existsSync(opened) && waited < 500; waited++)
+      // read waits for the writer to say it has the FIFO open. The deadline is
+      // 3 s, inside bun's 5 s per-test timeout, so a writer that never opens
+      // the FIFO fails the assertion below rather than the test's timeout.
+      for (let waited = 0; !existsSync(opened) && waited < 300; waited++)
         await Bun.sleep(10);
       expect(existsSync(opened)).toBe(true);
       const sizes: number[] = [];
@@ -1213,7 +1216,9 @@ describe("the terminal value adapters", () => {
     } finally {
       closeSync(descriptor);
       writeFileSync(firstRead, "");
-      await writer.exited;
+      // A late writer would otherwise block in open(2) and outlive the test.
+      writer?.kill();
+      await writer?.exited;
     }
   });
 

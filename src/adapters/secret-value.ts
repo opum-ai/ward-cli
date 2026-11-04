@@ -108,10 +108,11 @@ export function waitReadable(descriptor: number, ports: WaitPorts = {}): void {
   sleep(QUIET_MS);
 }
 
-// The wait the default read port uses. Not covered by a test: the arms of
-// waitReadable are asserted through its ports, and nothing asserts that this
-// wrapper waits at all or that the real Atomics.wait sleep sleeps; a no-op
-// here would still pass, a read that reports EAGAIN would only spin.
+// The wait the default read port uses. The real-descriptor FIFO test runs it
+// when a read reports EAGAIN, but nothing asserts that it waited: the arms of
+// waitReadable are asserted through its ports, and neither this wrapper nor the
+// real Atomics.wait sleep is pinned; a no-op here would still pass, and a read
+// that reports EAGAIN would only spin.
 function defaultWait(descriptor: number): void {
   waitReadable(descriptor);
 }
