@@ -454,6 +454,17 @@ describe("backup", () => {
     expect(carried.secrets.every((secret) => secret.kind === undefined)).toBe(
       true,
     );
+    // Restore says in prose that signing keys are never carried (DEC-262
+    // a6), into its own empty vault, and does not claim to name them: the
+    // container records none.
+    const textTarget = session();
+    const restoredText = await runWard(["restore", "--input", file], {
+      ...textTarget.options,
+      cwd: options.cwd,
+    });
+    expect(restoredText.exitCode).toBe(exitCodes.success);
+    expect(restoredText.stdout).toContain("Signing keys are never carried");
+    expect(restoredText.stdout).not.toContain("signer");
     // The restored vault holds the ordinary secret and no sign key. The
     // checkout is re-registered, since a restore clears every binding.
     const target = session();

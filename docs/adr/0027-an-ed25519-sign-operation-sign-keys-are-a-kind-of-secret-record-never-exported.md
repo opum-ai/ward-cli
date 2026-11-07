@@ -16,7 +16,7 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-07, under **DEC-262 (a3), (a4) and (a5)**, ruled by opum-doc as design authority
+Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5) and (a6)**, ruled by opum-doc as design authority
 (not the operator's words) and carried here from its relay. The record binds, not this document's
 copy. This change implements (i) storage, (ii) backup exclusion and the `ward key` commands; the sign
 profile and `ward sign` follow in a later change under WCLI-149.
@@ -47,7 +47,7 @@ fail-closed price. Custody is the vault's own; there is no second key store.
 
 **(ii) Backup excludes sign keys.** `ward backup` seals the state without them and reports
 `excludedSignKeys`, so the developer regenerates and re-enrols each. The container format is
-unchanged, so a restore cannot name what a backup left out; the backup does, in its text output and in `--json`. Restore also drops any sign-kind record by kind, so "restore reproduces none" holds by construction.
+unchanged, so a restore cannot name what a backup left out; the backup does, in its text output and in `--json`, and `ward restore` states in prose that signing keys are never carried and must be regenerated and re-enrolled (DEC-262 a6, which replaces (a3)'s "restore names each excluded alias"). Restore also drops any sign-kind record by kind, so "restore reproduces none" holds by construction.
 
 **(iii) Authority is an approved "sign" profile** (ruled; implemented in the next change): a key alias plus allowed domain
 prefixes (one to eight, never empty: an empty list would admit any domain, DEC-262 a5), with bytes
