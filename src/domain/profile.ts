@@ -628,6 +628,8 @@ export function snapshotVersionFor(snapshot: ApprovedSnapshot): number {
     : profileSnapshotVersion;
 }
 
+// An empty list is refused (DEC-262 a5): a sign profile with no prefix would
+// admit any domain.
 function normalizedPrefixes(value: unknown): readonly string[] {
   if (!Array.isArray(value)) invalid();
   if (value.length < 1 || value.length > signProfileLimits.maxPrefixes)

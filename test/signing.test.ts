@@ -662,7 +662,12 @@ describe("normalizeSignProfile", () => {
     refused({ ...declaration, adapter: "http" });
     refused({ ...declaration, key: "1bad" });
     refused({ ...declaration, key: undefined });
-    refused({ ...declaration, prefixes: [] });
+    // DEC-262 (a5): an empty list would admit any domain, so it is refused as
+    // an invalid declaration, and a one-entry list is accepted.
+    expect(() =>
+      normalizeSignProfile({ ...declaration, prefixes: [] }),
+    ).toThrow(new WardError("profile_invalid"));
+    expect(() => normalizeSignProfile(declaration)).not.toThrow();
     refused({ ...declaration, prefixes: "app" });
     refused({ ...declaration, prefixes: [1] });
     // Not the canonical base64 of its bytes.
