@@ -16,7 +16,7 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-07, under **DEC-262 (a3) and (a4)**, ruled by opum-doc as design authority (not
+Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5), (a6) and (a7)**, ruled by opum-doc as design authority (not
 the operator's words) and carried here from its relay. The record binds, not this document's copy.
 
 ## Context
@@ -58,8 +58,8 @@ trusted terminal, under ADR 0003's rules, and `ward check` and `profile list` re
 the sign snapshot has its own `signSnapshotVersion`, 1, and the reader tells them apart by the stored
 `adapter`. A later change to one kind's normalizer makes only that kind's approvals stale-inert (ADR
 0018, DEC-246 a2). Bumping both would force every developer to re-approve every HTTP profile for no
-change to HTTP. (a4 names the HTTP version as 2; the code's current value is 3, and the rule is the
-same: HTTP is not touched.)
+change to HTTP. (a4) says HTTP is at version 2; the code has 3, bumped before release, and (a7) reads
+(a4) as "HTTP stays at its current version, 3". HTTP is untouched, and the sign snapshot starts at 1.
 
 **(iv) Commands:** `ward key generate <alias>`, `ward key public <alias>`, `ward sign <profile>`.
 `ward sign` reads the bytes on standard input (at most 64 KiB) and writes the raw 64-byte signature
@@ -68,7 +68,9 @@ A sign is audited with the existing audit record, admission then completion, wit
 profile and `secretId` the key's id, so the audit schema is unchanged. Bytes outside every prefix are
 refused before admission and so are not audited, as a run refused before it is sent is not. If the
 completion event cannot be written after a signature exists, the signature is still returned and the
-exit is nonzero (`auditRecorded: false` under `--json`), as `ward run` reports it. No result or error
+exit is nonzero (`auditRecorded: false` under `--json`), as `ward run` reports it, and the failure is
+named on standard error (DEC-262 a7), so an unaudited signature cannot read as success. Sign keys are
+not in `ward status` or `ward doctor` (a7); `secret list`, `inspect` and `key public` show them. No result or error
 carries key material.
 
 ## Consequences

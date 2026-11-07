@@ -777,6 +777,44 @@ describe("ward sign", () => {
     expect(wrongKind.exitCode).not.toBe(exitCodes.success);
   });
 
+  test("a signature whose completion audit cannot be written exits nonzero and says so on stderr (DEC-262 a7)", async () => {
+    const { options, publicKey } = await signReady();
+    const message = encoder.encode("app/v1\0x");
+    // `runSign` reads the clock for the approval check, the admission event
+    // and the completion event, in that order. Failing the third makes only
+    // the completion write fail, after the signature exists.
+    let reads = 0;
+    const failing: RunOptions = {
+      ...withInput(options, message),
+      now: () => {
+        if (++reads === 3) throw new Error("clock unavailable");
+        return new Date();
+      },
+    };
+    const raw = await runWard(["sign", "signer"], failing);
+    expect(reads).toBe(3);
+    expect(raw.exitCode).toBe(exitCodes.validation);
+    expect(raw.stderr).toContain("completion audit event could not be written");
+    // The signature is still there, and still verifies.
+    expect(verifies(publicKey, message, raw.stdoutBytes as Uint8Array)).toBe(
+      true,
+    );
+    reads = 0;
+    const enveloped = await runWard(["sign", "signer", "--json"], failing);
+    expect(enveloped.exitCode).toBe(exitCodes.validation);
+    expect(data(enveloped.stdout).auditRecorded).toBe(false);
+    expect(enveloped.stderr).toContain(
+      "audit trail for this sign is incomplete",
+    );
+    // A clean sign writes nothing to stderr.
+    const clean = await runWard(
+      ["sign", "signer"],
+      withInput(options, message),
+    );
+    expect(clean.exitCode).toBe(exitCodes.success);
+    expect(clean.stderr).toBe("");
+  });
+
   test("an HTTP run of a sign profile is refused", async () => {
     const { options } = await signReady();
     const ran = await runWard(["run", "signer", "--json"], options);

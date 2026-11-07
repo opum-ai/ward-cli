@@ -508,7 +508,11 @@ async function keyCommand(
 async function signCommand(
   input: CommandInput,
   options: RunOptions,
-): Promise<{ output: CommandOutput; signature: Uint8Array }> {
+): Promise<{
+  output: CommandOutput;
+  signature: Uint8Array;
+  warning: string;
+}> {
   const checkout = locateCheckout(options.cwd ?? process.cwd());
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const values = options.secrets ?? createTerminalSecretValues();
@@ -539,6 +543,7 @@ async function signCommand(
       ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
     },
     signature: result.signature,
+    warning: result.warning === undefined ? "" : `${result.warning}\n`,
   };
 }
 
@@ -691,6 +696,8 @@ async function dispatch(
   // Set only by `ward sign`: the signature, written raw unless asked for as
   // text or inside the JSON envelope.
   let rawSignature: Uint8Array | undefined;
+  // Standard error for `ward sign`, empty unless its audit is incomplete.
+  let signWarning = "";
   if (command.name === "setup") {
     const run = await setupCommand(options);
     output = run.output;
@@ -725,6 +732,7 @@ async function dispatch(
     const signed = await signCommand(parsed, options);
     output = signed.output;
     rawSignature = signed.signature;
+    signWarning = signed.warning;
   } else if (command.name === "profile") {
     output = await profileCommand(parsed, options);
   } else if (command.name === "unregister") {
@@ -748,7 +756,7 @@ async function dispatch(
     return {
       stdout: "",
       stdoutBytes: rawSignature,
-      stderr: "",
+      stderr: signWarning,
       exitCode: output.exitCode ?? exitCodes.success,
     };
   const stdout = parsed.flags.has("--json")
@@ -756,7 +764,7 @@ async function dispatch(
     : output.text;
   return {
     stdout: `${stdout}\n`,
-    stderr: "",
+    stderr: signWarning,
     // A report can carry its own exit code (ward doctor: 6 when a check
     // failed); everything else exits 0.
     exitCode: output.exitCode ?? exitCodes.success,
