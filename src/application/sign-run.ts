@@ -81,6 +81,11 @@ export interface SignResult {
   readonly signature: Uint8Array;
   readonly text: string;
   readonly exitCode?: ExitCode;
+  // Written to standard error. Set only when a signature exists but its
+  // completion audit event could not be written (DEC-262 a7): the exit is
+  // nonzero then, and this says why, so a caller cannot read the exit as an
+  // unspecific failure or the raw signature on stdout as a clean success.
+  readonly warning?: string;
 }
 
 // The approved sign snapshot, or the reason there is not one to act on. The
@@ -187,6 +192,9 @@ function writeSignAudit(options: {
     return serializeVaultState(withAuditRecord(state, record));
   });
 }
+
+export const auditIncompleteWarning =
+  "ward sign: the signature was produced, but its completion audit event could not be written, so the audit trail for this sign is incomplete.";
 
 export async function runSign(
   input: SignCommandInput,
@@ -320,7 +328,12 @@ export async function runSign(
         },
         signature,
         text: Buffer.from(signature).toString("base64"),
-        ...(recorded ? {} : { exitCode: exitCodes.validation }),
+        ...(recorded
+          ? {}
+          : {
+              exitCode: exitCodes.validation,
+              warning: auditIncompleteWarning,
+            }),
       };
     } finally {
       key.fill(0);
