@@ -15,6 +15,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  deriveBackupKey,
+  openBackup,
+  parseBackup,
+} from "../src/domain/backup.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import type {
   GrantApprover,
@@ -437,6 +442,18 @@ describe("backup", () => {
       plainOnly.options,
     );
     expect(plain.stdout).not.toContain("Signing keys");
+    // The container itself carries no sign key. Restore also filters by kind,
+    // so only opening the container shows the backup left it out.
+    const record = parseBackup(readFileSync(file));
+    const opened = openBackup(
+      deriveBackupKey(encoder.encode("signing-test-passphrase"), record.kdf),
+      record,
+    );
+    const carried = parseVaultState(opened);
+    expect(carried.secrets.map((secret) => secret.alias)).toEqual(["plain"]);
+    expect(carried.secrets.every((secret) => secret.kind === undefined)).toBe(
+      true,
+    );
     // The restored vault holds the ordinary secret and no sign key. The
     // checkout is re-registered, since a restore clears every binding.
     const target = session();

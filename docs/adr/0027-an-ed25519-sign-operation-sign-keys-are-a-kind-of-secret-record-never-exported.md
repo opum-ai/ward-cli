@@ -16,11 +16,10 @@ generated:
 
 ## Status
 
-Accepted in part, 2026-11-07, under **DEC-262 (a3)**, ruled by opum-doc as design authority
-(not the operator's words) and carried here from its relay. The record binds, not this
-document's copy of it. Part (iii), the sign profile, is **held**: this ADR records it as ruled
-and its implementation lands in a later change under WCLI-149, after opum-doc rules on the
-snapshot-version question below.
+Accepted, 2026-11-07, under **DEC-262 (a3), (a4) and (a5)**, ruled by opum-doc as design authority
+(not the operator's words) and carried here from its relay. The record binds, not this document's
+copy. This change implements (i) storage, (ii) backup exclusion and the `ward key` commands; the sign
+profile and `ward sign` follow in a later change under WCLI-149.
 
 ## Context
 
@@ -48,11 +47,18 @@ fail-closed price. Custody is the vault's own; there is no second key store.
 
 **(ii) Backup excludes sign keys.** `ward backup` seals the state without them and reports
 `excludedSignKeys`, so the developer regenerates and re-enrols each. The container format is
-unchanged, so a restore cannot name what a backup left out; the backup does.
+unchanged, so a restore cannot name what a backup left out; the backup does, in its text output and in `--json`. Restore also drops any sign-kind record by kind, so "restore reproduces none" holds by construction.
 
-**(iii) Authority is an approved "sign" profile** (ruled, held): a key alias plus allowed domain
-prefixes, with bytes refused unless they begin with one. Ward signs exactly the bytes given; the
-caller prefixes. An empty prefix list allows nothing.
+**(iii) Authority is an approved "sign" profile** (ruled; implemented in the next change): a key alias plus allowed domain
+prefixes (one to eight, never empty: an empty list would admit any domain, DEC-262 a5), with bytes
+refused unless they begin with one. Ward signs exactly the bytes given; the caller prefixes.
+
+**Two version lines (DEC-262 a4).** HTTP approvals keep their `profileSnapshotVersion` and stay valid;
+the sign snapshot has its own first version, and the reader tells the kinds apart by the stored
+`adapter`. A later change to one kind's normalizer makes only that kind's approvals stale-inert (ADR
+0018, DEC-246 a2). Bumping every approval to a new version was refused: it would force every developer
+to re-approve every HTTP profile for no change to HTTP, against the rule that a vault with neither a sign
+key nor a sign approval stays as it was.
 
 **(iv) Commands:** `ward key generate <alias>`, `ward key public <alias>`, `ward sign <profile>`.
 No result or error carries key material.
@@ -67,8 +73,5 @@ No result or error carries key material.
   version differs holds an approval of another version inert (DEC-246 a2). It is the sign key's
   `kind` that refuses. A sign approval left after its key is deleted is held inert by an older
   build, which is fail-safe.
-- Open, awaiting opum-doc: whether the sign profile bumps `profileSnapshotVersion` for everything
-  (every existing HTTPS approval would go inert and need re-approval) or is versioned per kind so
-  HTTPS approvals stay valid. Until it is ruled, `ward sign` is not implemented.
 - Tests use synthetic keys and a temporary store only; the RFC 8032 test vector 1 pins the
   signing and public-key derivation.
