@@ -279,6 +279,11 @@ export const errorCatalog = {
     message: "Unknown secret action.",
     hint: "Use set, list, inspect or delete. Run `ward help secret` for usage.",
   },
+  key_action_unknown: {
+    type: "usage",
+    message: "Unknown key action.",
+    hint: "Use generate or public. Run `ward help key` for usage.",
+  },
   secret_alias_invalid: {
     type: "usage",
     message:
@@ -325,6 +330,24 @@ export const errorCatalog = {
     message:
       "The secret changed while this command was running, so Ward did not write it.",
     hint: "Run the command again to see the current state and confirm a replacement.",
+  },
+  // Sign keys (DEC-262 (2), docs/adr/0027). None of these echoes an alias, and
+  // none can carry key material: the seed never reaches a message.
+  sign_key_refused: {
+    type: "denied",
+    message:
+      "That alias is a signing key. A signing key is never used as a credential value, replaced as an ordinary secret or shared.",
+    hint: "Use `ward sign` with it, or delete it with `ward secret delete` and generate a new one.",
+  },
+  sign_key_exists: {
+    type: "conflict",
+    message: "A secret or signing key already exists under that alias.",
+    hint: "Choose another alias, or delete the existing record first.",
+  },
+  sign_key_not_found: {
+    type: "not_found",
+    message: "No signing key with that alias exists in this project.",
+    hint: "Create one with `ward key generate <alias>`.",
   },
   // Cross-project grants (spec §7.2, docs/adr/0020). None of these echoes an
   // alias or a project id: both come from the command line.

@@ -27,4 +27,5 @@
 - [A secret in one named header is an auth scheme beside bearer](0024-a-secret-in-one-named-header-is-an-auth-scheme-beside-bearer.md)
 - [The profile approval prompt keeps y/N because its answer line shows the whole host](0025-the-profile-approval-prompt-keeps-y-n-because-its-answer-line-shows-the-whole-host.md)
 - [A checkout is identified by its directory identity and a nonce in its git directory](0026-a-checkout-is-identified-by-its-directory-identity-and-a-nonce-in-its-git-directory.md)
+- [An Ed25519 sign operation: sign keys are a kind of secret record, never exported](0027-an-ed25519-sign-operation-sign-keys-are-a-kind-of-secret-record-never-exported.md)
 <!-- lore:index:end -->

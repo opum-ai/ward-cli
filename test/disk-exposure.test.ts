@@ -47,6 +47,7 @@ import type {
 } from "../src/application/transport.ts";
 import { profileActions } from "../src/application/profiles.ts";
 import { secretActions } from "../src/application/secrets.ts";
+import { keyActions } from "../src/application/sign.ts";
 import { runWard } from "../src/cli/main.ts";
 import { type ExitCode, exitCodes } from "../src/contract/envelope.ts";
 import { commands } from "../src/contract/manifest.ts";
@@ -80,6 +81,7 @@ const EXEMPT: Record<string, string> = {};
 // manifest says a command takes one (an `action` argument); these say which.
 const actionVocabulary: Record<string, readonly string[]> = {
   secret: secretActions,
+  key: keyActions,
   profile: profileActions,
 };
 
@@ -223,6 +225,8 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
     await step("secret replace", first, ["secret", "set", ALIAS, "--stdin"]);
     await step("secret list", first, ["secret", "list"]);
     await step("secret inspect", first, ["secret", "inspect", ALIAS]);
+    await step("key generate", first, ["key", "generate", "signing-key"]);
+    await step("key public", first, ["key", "public", "signing-key"]);
     await step("profile approve", first, ["profile", "approve", PROFILE]);
     await step("profile list", first, ["profile", "list"]);
     await step("check", first, ["check"]);

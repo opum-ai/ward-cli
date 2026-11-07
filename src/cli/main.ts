@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createBackupFiles } from "../adapters/backup-file.ts";
+import { runKey } from "../application/sign.ts";
 import {
   bindCheckoutIdentity,
   canonicalDirectory,
@@ -471,6 +472,32 @@ async function secretCommand(
   return { kind: result.kind, data: result.data, text: result.text };
 }
 
+// The composition root for `ward key`. Like `ward secret`, authority is the
+// checkout binding; nothing here reads or prints a private key.
+async function keyCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const action = input.positionals[0];
+  if (action === undefined) throw new WardError("missing_argument");
+  const result = await runKey(
+    { action, alias: input.positionals[1] },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+      now: options.now ?? (() => new Date()),
+      newSecretId: () => randomUUID(),
+    },
+  );
+  return { kind: result.kind, data: result.data, text: result.text };
+}
+
 // The composition root for `ward unregister`. It needs the checkout's
 // identity and the vault, and a terminal to ask on; it reads no manifest.
 async function unregisterCommand(options: RunOptions): Promise<CommandOutput> {
@@ -645,6 +672,8 @@ async function dispatch(
     exitExplicitly = run.exitExplicitly;
   } else if (command.name === "secret") {
     output = await secretCommand(parsed, options);
+  } else if (command.name === "key") {
+    output = await keyCommand(parsed, options);
   } else if (command.name === "profile") {
     output = await profileCommand(parsed, options);
   } else if (command.name === "unregister") {

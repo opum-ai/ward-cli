@@ -59,3 +59,7 @@ trusted terminal. The agent's skill never runs these commands to approve itself.
   fine-grained business-action authorization. The default is no body.
 - Revocation blocks newly admitted operations only. Ward cannot recall a credential it has already
   sent, and it does not revoke credentials at their provider.
+
+## Amendment, 2026-11-07 (DEC-262 a3, WCLI-149)
+
+A **sign** profile is a second approved operation: see [ADR 0027](0027-an-ed25519-sign-operation-sign-keys-are-a-kind-of-secret-record-never-exported.md).

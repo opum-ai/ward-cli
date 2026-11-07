@@ -17,7 +17,7 @@ sources = [
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
   "adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke",
-  "adr/0013-stale-test-roots-are-reclaimed-by-an-explicit-command-never-a-sweep",
+  "adr/0013-stale-test-roots-are-reclaimed-by-an-explicit-command-never-a-sweep#decision",
   "adr/0014-ward-stores-no-skill-source-selection",
   "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable",
   "adr/0017-the-init-multiselect-s-prompt-library-is-a-pinned-dependency",

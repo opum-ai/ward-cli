@@ -368,6 +368,36 @@ export const commands: CommandSpec[] = [
     examples: ["ward restore --input ward-backup.json"],
   },
   {
+    name: "key",
+    summary:
+      "Generate an Ed25519 signing key inside the vault, or print the public key of one. The private key is made in Ward, never shown, never exported and never part of a backup; only the public key and, through an approved profile, signatures leave Ward.",
+    args: [
+      { name: "action", required: true },
+      { name: "alias", required: true },
+    ],
+    flags: [jsonFlag],
+    kind: "key.generate",
+    resultKinds: ["key.public"],
+    mutates: true,
+    // Reads and writes the encrypted vault through the project binding.
+    unlocksVault: true,
+    admin: false,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.indeterminate,
+    ],
+    examples: [
+      "ward key generate example-signing-key",
+      "ward key public example-signing-key",
+    ],
+  },
+  {
     name: "secret",
     summary:
       "Set, list, inspect or delete this project's secrets, or grant one to another project for use only and revoke the grant. A value is entered hidden in a trusted terminal, or piped with --stdin for trusted automation, which is also the route for a multi-line secret (a file's trailing newline is stored as part of the value), since a multi-line paste into the hidden prompt is refused when it is detected; it is never an argument and never printed. Setting, deleting and granting are the developer's acts, and a granted alias is use-only in the project that receives it.",

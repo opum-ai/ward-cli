@@ -22,6 +22,7 @@ import {
   type ResultKind,
 } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
+import { isSignKey } from "../domain/secret.ts";
 import {
   defaultApprovalTtlMs,
   parseApprovalTtl,
@@ -249,11 +250,18 @@ function readinessFor(options: {
   // A revoked grant is its own state and not "missing": the advice for a
   // missing credential is to store one, and storing a local secret under a
   // revoked grant's alias would block the owner from granting it again.
-  const resolved = resolveSecret(
+  const resolution = resolveSecret(
     state,
     authority.projectId,
     snapshot.auth.secret,
-  ).kind;
+  );
+  // A profile cannot use a signing key as its credential (DEC-262 (2)).
+  if (
+    (resolution.kind === "owned" || resolution.kind === "granted") &&
+    isSignKey(resolution.secret)
+  )
+    throw new WardError("sign_key_refused");
+  const resolved = resolution.kind;
   const secret: SecretState =
     resolved === "owned" || resolved === "granted"
       ? "present"

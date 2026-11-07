@@ -68,3 +68,7 @@ as a damaged record, and no record type gains tolerance for unknown keys.
 - Nothing in `src/` changes for this decision. The reader already behaves this
   way; what is new is that the behaviour is now a recorded commitment rather than
   an unsettled one.
+
+## Amendment, 2026-11-07 (DEC-262 a3, WCLI-149)
+
+A sign key's optional `kind` key uses this price: see [ADR 0027](0027-an-ed25519-sign-operation-sign-keys-are-a-kind-of-secret-record-never-exported.md).
