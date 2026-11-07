@@ -370,7 +370,7 @@ export const commands: CommandSpec[] = [
   {
     name: "key",
     summary:
-      "Generate an Ed25519 signing key inside the vault, or print the public key of one. The private key is made in Ward, never shown, never exported and never part of a backup; only the public key and, through an approved profile, signatures leave Ward.",
+      "Generate an Ed25519 signing key inside the vault, or print the public key of one. The private key is made in Ward, never shown, never exported and never part of a backup; only the public key leaves Ward.",
     args: [
       { name: "action", required: true },
       { name: "alias", required: true },

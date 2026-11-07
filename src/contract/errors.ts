@@ -337,12 +337,18 @@ export const errorCatalog = {
     type: "denied",
     message:
       "That alias is a signing key. A signing key is never used as a credential value, replaced as an ordinary secret or shared.",
-    hint: "Use `ward sign` with it, or delete it with `ward secret delete` and generate a new one.",
+    hint: "Delete it with `ward secret delete` and generate a new one, or name a different secret.",
   },
   sign_key_exists: {
     type: "conflict",
     message: "A secret or signing key already exists under that alias.",
     hint: "Choose another alias, or delete the existing record first.",
+  },
+  sign_input_refused: {
+    type: "denied",
+    message:
+      "The bytes to sign do not begin with a domain prefix the approved profile allows, so Ward did not sign them.",
+    hint: "Prefix the bytes with one of the profile's approved domain prefixes.",
   },
   sign_key_not_found: {
     type: "not_found",

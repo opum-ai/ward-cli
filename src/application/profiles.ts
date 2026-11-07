@@ -120,7 +120,15 @@ export type ApprovalState =
   | "stale"
   | "expired"
   | "not-evaluated";
-export type SecretState = "present" | "missing" | "revoked" | "not-evaluated";
+export type SecretState =
+  | "present"
+  | "missing"
+  | "revoked"
+  // The alias names a signing key, which is never a credential (DEC-262 (2)).
+  // Reported, not thrown: one such declaration must not take down the report
+  // for every other profile.
+  | "sign-key"
+  | "not-evaluated";
 
 export interface ProfileReadiness {
   readonly profile: string;
@@ -143,6 +151,7 @@ export const profileCheckReasons = [
   "approval-expired",
   "secret",
   "grant-revoked",
+  "sign-key",
 ] as const;
 
 export type ProfileCheckReason = (typeof profileCheckReasons)[number];
@@ -255,19 +264,16 @@ function readinessFor(options: {
     authority.projectId,
     snapshot.auth.secret,
   );
-  // A profile cannot use a signing key as its credential (DEC-262 (2)).
-  if (
-    (resolution.kind === "owned" || resolution.kind === "granted") &&
-    isSignKey(resolution.secret)
-  )
-    throw new WardError("sign_key_refused");
   const resolved = resolution.kind;
+  const usable = resolved === "owned" || resolved === "granted";
   const secret: SecretState =
-    resolved === "owned" || resolved === "granted"
-      ? "present"
-      : resolved === "revoked"
-        ? "revoked"
-        : "missing";
+    usable && isSignKey(resolution.secret)
+      ? "sign-key"
+      : usable
+        ? "present"
+        : resolved === "revoked"
+          ? "revoked"
+          : "missing";
   return {
     profile: name,
     declaration,
@@ -339,6 +345,7 @@ function checkReasons(
   if (entry.approval === "expired") reasons.push("approval-expired");
   if (entry.secret === "missing") reasons.push("secret");
   if (entry.secret === "revoked") reasons.push("grant-revoked");
+  if (entry.secret === "sign-key") reasons.push("sign-key");
   return reasons;
 }
 
@@ -351,6 +358,8 @@ const reasonPhrases: Record<ProfileCheckReason, string> = {
   secret: "the credential is not stored in this project",
   "grant-revoked":
     "the grant behind the credential was revoked, or its owner secret was deleted",
+  "sign-key":
+    "the credential alias names a signing key, which is never a credential",
 };
 
 function reasonPhrase(
@@ -385,6 +394,10 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
   if (reasons.has("grant-revoked"))
     guidance.push(
       "The owning project's developer grants the secret again with `ward secret grant`. Do not store a local secret under that alias: it would block the grant.",
+    );
+  if (reasons.has("sign-key"))
+    guidance.push(
+      "Name a different secret in the profile's auth.secret: a signing key is used only through a sign profile and `ward sign`.",
     );
   if (reasons.has("declaration"))
     guidance.push(

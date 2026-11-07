@@ -182,6 +182,7 @@ function inspectText(record: SecretRecord): string {
     `  created:   ${record.createdAt}`,
     `  updated:   ${record.updatedAt}`,
     `  revision:  ${record.revision}`,
+    ...(record.kind === undefined ? [] : [`  kind:      ${record.kind}`]),
     "",
     storedValueNote,
   ].join("\n");
@@ -274,7 +275,7 @@ function listSecrets(bound: BoundVault): SecretResult {
             "",
             ...entries.map(
               (entry) =>
-                `  ${entry.alias}${entry.ownership === "granted" ? "  (granted, use only)" : ""}`,
+                `  ${entry.alias}${entry.ownership === "granted" ? "  (granted, use only)" : ""}${"kind" in entry ? `  (${entry.kind} signing key)` : ""}`,
             ),
           ].join("\n"),
   };

@@ -26,6 +26,7 @@ import type { SecretValueSource } from "../src/application/secrets.ts";
 import { signWithKey } from "../src/application/sign.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
+import { WardError } from "../src/contract/errors.ts";
 import {
   encodeSecretValue,
   signKeyKind,
@@ -116,9 +117,25 @@ describe("the vault document", () => {
   };
   const seed = encodeSecretValue(new Uint8Array(32).fill(7));
 
-  test("an ordinary secret serializes without a kind key, byte for byte as before", () => {
+  test("an ordinary secret serializes exactly as an older build wrote it", () => {
+    // Pinned to a literal (the key order and key set an older build wrote),
+    // not to a property of this build's serializer. The whole-document
+    // round trip is test/grant.test.ts "a well-formed document round-trips
+    // byte for byte".
     const state = withSecret(emptyVaultState(), { ...base, value: seed });
     const text = new TextDecoder().decode(serializeVaultState(state));
+    const older = JSON.stringify([
+      {
+        id: base.id,
+        projectId: base.projectId,
+        alias: base.alias,
+        value: seed,
+        createdAt: base.createdAt,
+        updatedAt: base.updatedAt,
+        revision: base.revision,
+      },
+    ]);
+    expect(text).toContain(`"secrets":${older}`);
     expect(text).not.toContain("kind");
   });
 
@@ -325,32 +342,72 @@ describe("a sign key is never an ordinary secret", () => {
     expect(deleted.exitCode).toBe(exitCodes.success);
   });
 
-  test("a profile that names a sign key as its credential is refused", async () => {
+  test("a profile that names a sign key is reported, not thrown, and the others still report", async () => {
     const { options } = await ready();
     await runWard(["key", "generate", "signer", "--json"], options);
+    await runWard(["secret", "set", "tok", "--stdin", "--json"], options);
     const manifestPath = join(options.cwd as string, ".ward", "project.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.profiles = {
-      status: {
-        adapter: "http",
-        method: "GET",
-        url: "https://example.invalid/status",
-        auth: { type: "bearer", secret: "signer" },
-        output: "status",
-      },
-    };
+    const http = (secret: string) => ({
+      adapter: "http",
+      method: "GET",
+      url: "https://example.invalid/status",
+      auth: { type: "bearer", secret },
+      output: "status",
+    });
+    manifest.profiles = { good: http("tok"), status: http("signer") };
     writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
-    const approved = await runWard(
-      ["profile", "approve", "status", "--json"],
-      options,
+    for (const name of ["good", "status"])
+      expect(
+        (await runWard(["profile", "approve", name, "--json"], options))
+          .exitCode,
+      ).toBe(exitCodes.success);
+
+    // Neither report fails because one profile names a signing key.
+    const listed = await runWard(["profile", "list", "--json"], options);
+    expect(listed.exitCode).toBe(exitCodes.success);
+    const listedNames = (
+      data(listed.stdout).profiles as { profile: string }[]
+    ).map((entry) => entry.profile);
+    expect(listedNames).toEqual(["good", "status"]);
+
+    type Entry = { profile: string; reasons: string[] };
+    const all = await runWard(["check", "--json"], options);
+    expect(all.exitCode).toBe(exitCodes.validation);
+    const entries = data(all.stdout).profiles as Entry[];
+    expect(entries.find((entry) => entry.profile === "good")?.reasons).toEqual(
+      [],
     );
-    expect(approved.exitCode).toBe(exitCodes.success);
-    const checked = await runWard(["check", "status", "--json"], options);
-    expect(checked.exitCode).toBe(exitCodes.denied);
-    expect(checked.stdout + checked.stderr).toContain("sign_key_refused");
+    expect(
+      entries.find((entry) => entry.profile === "status")?.reasons,
+    ).toEqual(["sign-key"]);
+    const named = await runWard(["check", "status", "--json"], options);
+    expect(named.exitCode).toBe(exitCodes.validation);
+
+    // And `run` still refuses to deliver it, before admission.
     const ran = await runWard(["run", "status", "--json"], options);
     expect(ran.exitCode).toBe(exitCodes.denied);
     expect(ran.stdout + ran.stderr).toContain("sign_key_refused");
+  });
+});
+
+describe("secret list and inspect name a sign key", () => {
+  test("the text forms show its kind, and an ordinary secret shows none", async () => {
+    const { options } = await ready();
+    await runWard(["key", "generate", "signer", "--json"], options);
+    await runWard(["secret", "set", "plain", "--stdin", "--json"], options);
+    const listed = await runWard(["secret", "list"], options);
+    expect(listed.stdout).toContain("signer  (ed25519 signing key)");
+    expect(listed.stdout).not.toContain("plain  (");
+    const inspected = await runWard(["secret", "inspect", "signer"], options);
+    expect(inspected.stdout).toContain("kind:      ed25519");
+    const ordinary = await runWard(["secret", "inspect", "plain"], options);
+    expect(ordinary.stdout).not.toContain("kind:");
+    const json = await runWard(
+      ["secret", "inspect", "signer", "--json"],
+      options,
+    );
+    expect(data(json.stdout).kind).toBe("ed25519");
   });
 });
 
@@ -366,6 +423,20 @@ describe("backup", () => {
     );
     expect(backed.exitCode).toBe(exitCodes.success);
     expect(data(backed.stdout).excludedSignKeys).toEqual(["signer"]);
+    // The text form names them too: it is what a person reads.
+    const textFile = join(options.cwd as string, "backup-text.json");
+    const text = await runWard(["backup", "--output", textFile], options);
+    expect(text.exitCode).toBe(exitCodes.success);
+    expect(text.stdout).toContain("Signing keys are never part of a backup");
+    expect(text.stdout).toContain("  signer");
+    // And a backup of a vault with no sign key says nothing about them.
+    const plainOnly = await ready();
+    const plainFile = join(plainOnly.options.cwd as string, "plain.json");
+    const plain = await runWard(
+      ["backup", "--output", plainFile],
+      plainOnly.options,
+    );
+    expect(plain.stdout).not.toContain("Signing keys");
     // The restored vault holds the ordinary secret and no sign key. The
     // checkout is re-registered, since a restore clears every binding.
     const target = session();

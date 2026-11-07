@@ -306,6 +306,19 @@ async function backupCommand(
         `  vault:    ${result.vaultId}`,
         `  revision: ${result.revision}`,
         `  bytes:    ${result.bytes}`,
+        ...(result.excludedSignKeys.length === 0
+          ? []
+          : [
+              "",
+              "Signing keys are never part of a backup. Left out, by alias:",
+              ...result.excludedSignKeys.map(
+                // An alias is the secret grammar (letters, digits, dot, underscore,
+                // dash), so it needs no escaping.
+                (alias) => `  ${alias}`,
+              ),
+              "After a restore, generate each again with `ward key generate` and",
+              "enrol its new public key wherever the old one was trusted.",
+            ]),
         "",
         "Ward cannot open it without the passphrase, and keeps no copy of either.",
         "Keep it somewhere you control: recovery from a lost key or a damaged",

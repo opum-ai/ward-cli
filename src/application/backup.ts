@@ -238,7 +238,9 @@ export async function runRestore(options: {
         // not revive access that was granted or revoked since it was taken
         // (docs/adr/0020). The owner grants again after re-registering.
         sharingGrants: [],
-        secrets: backup.secrets,
+        // A signing key is never restored: a container does not carry one, and
+        // one that did is not trusted to (DEC-262 a3 (ii)).
+        secrets: backup.secrets.filter((secret) => secret.kind === undefined),
         // The audit history is carried, unlike the bindings and approvals
         // above it, because of what separates them: a restore deactivates
         // authority, and an audit record is not authority. It says a run

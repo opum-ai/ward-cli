@@ -10,6 +10,7 @@ import type { ResultKind } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
 import { isOpaqueId } from "../domain/identifiers.ts";
 import {
+  decodeSecretValue,
   encodeSecretValue,
   isSecretAlias,
   isSignKey,
@@ -36,7 +37,6 @@ import {
   type SecretOptions,
   withBoundVault,
 } from "./secrets.ts";
-import { decodeSecretValue } from "../domain/secret.ts";
 
 export type KeyOptions = Pick<
   SecretOptions,
@@ -90,7 +90,7 @@ export function signWithKey(
   const { seed } = signKeySeed(state, projectId, alias);
   try {
     if (!startsWithAllowedPrefix(message, allowedPrefixes))
-      throw new WardError("sign_key_refused");
+      throw new WardError("sign_input_refused");
     return {
       signature: signBytes(seed, message),
       publicKey: publicKeyOf(seed),

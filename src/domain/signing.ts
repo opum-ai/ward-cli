@@ -32,11 +32,13 @@ export interface GeneratedSignKey {
 function privateKeyOf(seed: Uint8Array) {
   if (seed.length !== signKeySeedBytes)
     throw new WardError("vault_state_malformed");
-  return createPrivateKey({
-    key: Buffer.concat([pkcs8Prefix, seed]),
-    format: "der",
-    type: "pkcs8",
-  });
+  // The DER copy holds the seed, so it is zeroed once the key object exists.
+  const der = Buffer.concat([pkcs8Prefix, seed]);
+  try {
+    return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+  } finally {
+    der.fill(0);
+  }
 }
 
 function rawPublicKey(key: ReturnType<typeof createPublicKey>): Uint8Array {
@@ -49,6 +51,7 @@ export function generateSignKey(): GeneratedSignKey {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const der = privateKey.export({ format: "der", type: "pkcs8" });
   const seed = new Uint8Array(der.subarray(der.length - signKeySeedBytes));
+  der.fill(0);
   return { seed, publicKey: rawPublicKey(publicKey) };
 }
 
