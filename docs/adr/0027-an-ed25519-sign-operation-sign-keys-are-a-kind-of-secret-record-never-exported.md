@@ -16,7 +16,7 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5) and (a6)**, ruled by opum-doc as design authority
+Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5), (a6) and (a7)**, ruled by opum-doc as design authority
 (not the operator's words) and carried here from its relay. The record binds, not this document's
 copy. This change implements (i) storage, (ii) backup exclusion and the `ward key` commands; the sign
 profile and `ward sign` follow in a later change under WCLI-149.
@@ -41,9 +41,10 @@ a sign key is byte-identical (no migration, no `formatVersion` change). The read
 literal and a 32-byte seed. An older build refuses a vault holding one (ADR 0023): the intended
 fail-closed price. Custody is the vault's own; there is no second key store.
 
-**A sign key is never a credential.** `run` and `check` refuse an alias naming one
-(`sign_key_refused`); `secret set` does not replace it, `secret grant` does not share it, and
-`secret delete` removes it.
+**A sign key is never a credential.** `run` refuses an alias naming one (`sign_key_refused`) before
+admission, and `check` and `profile list` report such a profile with the reason `sign-key` (exit 6,
+no error code) rather than failing every other profile's report. `secret set` does not replace a sign
+key, `secret grant` does not share it, and `secret delete` removes it.
 
 **(ii) Backup excludes sign keys.** `ward backup` seals the state without them and reports
 `excludedSignKeys`, so the developer regenerates and re-enrols each. The container format is

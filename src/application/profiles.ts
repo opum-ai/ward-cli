@@ -397,7 +397,7 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
     );
   if (reasons.has("sign-key"))
     guidance.push(
-      "Name a different secret in the profile's auth.secret: a signing key is used only through a sign profile and `ward sign`.",
+      "Name a different secret in the profile's auth.secret: a signing key is never a credential. Delete it and generate a new one, or name a different secret.",
     );
   if (reasons.has("declaration"))
     guidance.push(

@@ -17,8 +17,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   deriveBackupKey,
+  encodeBackup,
+  newBackupKdf,
   openBackup,
   parseBackup,
+  sealBackup,
 } from "../src/domain/backup.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import type {
@@ -375,6 +378,12 @@ describe("a sign key is never an ordinary secret", () => {
       data(listed.stdout).profiles as { profile: string }[]
     ).map((entry) => entry.profile);
     expect(listedNames).toEqual(["good", "status"]);
+    const secretStates = Object.fromEntries(
+      (
+        data(listed.stdout).profiles as { profile: string; secret: string }[]
+      ).map((entry) => [entry.profile, entry.secret]),
+    );
+    expect(secretStates).toEqual({ good: "present", status: "sign-key" });
 
     type Entry = { profile: string; reasons: string[] };
     const all = await runWard(["check", "--json"], options);
@@ -487,6 +496,65 @@ describe("backup", () => {
   });
 });
 
+describe("restore never carries a sign key", () => {
+  test("a container that holds one still restores to nothing", async () => {
+    const { options } = await ready();
+    const manifest = JSON.parse(
+      readFileSync(
+        join(options.cwd as string, ".ward", "project.json"),
+        "utf8",
+      ),
+    ) as { projectId: string };
+    const at = "2026-01-01T00:00:00.000Z";
+    const record = (alias: string, kind?: typeof signKeyKind) => ({
+      id: randomUUID(),
+      projectId: manifest.projectId,
+      alias,
+      value: encodeSecretValue(new Uint8Array(32).fill(5)),
+      createdAt: at,
+      updatedAt: at,
+      revision: 1,
+      ...(kind === undefined ? {} : { kind }),
+    });
+    const state = withSecret(
+      withSecret(
+        {
+          ...emptyVaultState(),
+          projects: [{ id: manifest.projectId, createdAt: at }],
+        },
+        record("plain"),
+      ),
+      record("smuggled", signKeyKind),
+    );
+    // A container this build's backup would never write: its sealed state
+    // carries a sign key. Sealed with the domain functions, not the command.
+    const kdf = newBackupKdf();
+    const sealed = sealBackup(
+      deriveBackupKey(encoder.encode("signing-test-passphrase"), kdf),
+      { vaultId: randomUUID(), revision: 1, kdf },
+      serializeVaultState(state),
+    );
+    const file = join(options.cwd as string, "smuggled.json");
+    writeFileSync(file, encodeBackup(sealed));
+
+    const target = session();
+    const there = { ...target.options, cwd: options.cwd };
+    expect(
+      (await runWard(["restore", "--input", file, "--json"], there)).exitCode,
+    ).toBe(exitCodes.success);
+    expect((await runWard(["init", "--json"], there)).exitCode).toBe(
+      exitCodes.success,
+    );
+    const listed = await runWard(["secret", "list", "--json"], there);
+    const aliases = (data(listed.stdout).secrets as { alias: string }[]).map(
+      (entry) => entry.alias,
+    );
+    expect(aliases).toEqual(["plain"]);
+    const gone = await runWard(["key", "public", "smuggled", "--json"], there);
+    expect(gone.exitCode).toBe(exitCodes.notFound);
+  });
+});
+
 describe("signWithKey", () => {
   test("signs exactly the bytes given under an allowed prefix, and refuses others", () => {
     const { seed, publicKey } = generateSignKey();
@@ -509,9 +577,9 @@ describe("signWithKey", () => {
       signWithKey(state, projectId, "signer", encoder.encode("other"), [
         prefix,
       ]),
-    ).toThrow();
+    ).toThrow(new WardError("sign_input_refused"));
     expect(() =>
       signWithKey(state, projectId, "absent", message, [prefix]),
-    ).toThrow();
+    ).toThrow(new WardError("sign_key_not_found"));
   });
 });
