@@ -36,6 +36,16 @@ import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
 import { WardError } from "../src/contract/errors.ts";
 import {
+  type ApprovedSnapshot,
+  approvedSnapshotsMatch,
+  differingApprovedFields,
+  normalizeProfile,
+  normalizeSignProfile,
+  profileSnapshotVersion,
+  signSnapshotVersion,
+  snapshotVersionFor,
+} from "../src/domain/profile.ts";
+import {
   encodeSecretValue,
   signKeyKind,
   signKeySeedBytes,
@@ -581,5 +591,371 @@ describe("signWithKey", () => {
     expect(() =>
       signWithKey(state, projectId, "absent", message, [prefix]),
     ).toThrow(new WardError("sign_key_not_found"));
+  });
+});
+
+// ---- Slice 2: the sign profile, `ward sign` and the version lines --------
+
+const prefixBytes = encoder.encode("app/v1\0");
+const prefixB64 = Buffer.from(prefixBytes).toString("base64");
+
+function withInput(options: RunOptions, bytes: Uint8Array): RunOptions {
+  return {
+    ...options,
+    secrets: { ...secrets, readStdin: () => bytes.slice() },
+  };
+}
+
+function declareProfiles(
+  options: RunOptions,
+  profiles: Record<string, unknown>,
+) {
+  const manifestPath = join(options.cwd as string, ".ward", "project.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.profiles = profiles;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+}
+
+async function signReady() {
+  const made = await ready();
+  const generated = await runWard(
+    ["key", "generate", "signer", "--json"],
+    made.options,
+  );
+  declareProfiles(made.options, {
+    signer: { adapter: "sign", key: "signer", prefixes: [prefixB64] },
+  });
+  const approved = await runWard(
+    ["profile", "approve", "signer", "--json"],
+    made.options,
+  );
+  expect(approved.exitCode).toBe(exitCodes.success);
+  return {
+    ...made,
+    publicKey: Buffer.from(
+      data(generated.stdout).publicKey as string,
+      "base64",
+    ),
+  };
+}
+
+describe("normalizeSignProfile", () => {
+  const declaration = { adapter: "sign", key: "signer", prefixes: [prefixB64] };
+
+  test("a declaration normalizes, and prefixes are sorted and de-duplicated", () => {
+    const other = Buffer.from("zz").toString("base64");
+    const snapshot = normalizeSignProfile({
+      ...declaration,
+      prefixes: [other, prefixB64, other],
+    });
+    expect(snapshot).toEqual({
+      adapter: "sign",
+      key: "signer",
+      prefixes: [other, prefixB64].sort(),
+    });
+  });
+
+  test("every malformed declaration is refused", () => {
+    const refused = (value: unknown) =>
+      expect(() => normalizeSignProfile(value)).toThrow();
+    refused({ ...declaration, extra: 1 });
+    refused({ ...declaration, adapter: "http" });
+    refused({ ...declaration, key: "1bad" });
+    refused({ ...declaration, key: undefined });
+    refused({ ...declaration, prefixes: [] });
+    refused({ ...declaration, prefixes: "app" });
+    refused({ ...declaration, prefixes: [1] });
+    // Not the canonical base64 of its bytes.
+    refused({ ...declaration, prefixes: ["YXBw "] });
+    refused({ ...declaration, prefixes: ["YXBw=="] });
+    // Empty, and over 64 bytes.
+    refused({ ...declaration, prefixes: [""] });
+    refused({
+      ...declaration,
+      prefixes: [Buffer.alloc(65, 1).toString("base64")],
+    });
+    // More than eight.
+    refused({
+      ...declaration,
+      prefixes: Array.from({ length: 9 }, (_, index) =>
+        Buffer.from([index + 1]).toString("base64"),
+      ),
+    });
+    expect(() =>
+      normalizeSignProfile({
+        ...declaration,
+        prefixes: [Buffer.alloc(64, 1).toString("base64")],
+      }),
+    ).not.toThrow();
+  });
+
+  test("two spellings of one set are one approval; a changed field is named", () => {
+    const left = normalizeSignProfile(declaration);
+    const right = normalizeSignProfile({
+      ...declaration,
+      prefixes: [prefixB64, prefixB64],
+    });
+    expect(approvedSnapshotsMatch(left, right)).toBe(true);
+    expect(
+      differingApprovedFields(
+        left,
+        normalizeSignProfile({ ...declaration, key: "other" }),
+      ),
+    ).toEqual(["key"]);
+    expect(
+      differingApprovedFields(
+        left,
+        normalizeSignProfile({
+          ...declaration,
+          prefixes: [Buffer.from("x").toString("base64")],
+        }),
+      ),
+    ).toEqual(["prefixes"]);
+    expect(
+      differingApprovedFields(
+        left,
+        normalizeProfile({
+          adapter: "http",
+          method: "GET",
+          url: "https://example.invalid/",
+          auth: { type: "bearer", secret: "t" },
+        }),
+      ),
+    ).toEqual(["adapter"]);
+  });
+});
+
+describe("the version lines (DEC-262 a4)", () => {
+  const checkout = {
+    root: "/tmp/ward-signing-root",
+    device: "1",
+    inode: "2",
+  };
+  function stateWith(snapshot: ApprovedSnapshot, version: number) {
+    const base = withSecret(emptyVaultState(), {
+      id: randomUUID(),
+      projectId: randomUUID(),
+      alias: "x",
+      value: encodeSecretValue(new Uint8Array(4).fill(1)),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      revision: 1,
+    });
+    return {
+      ...base,
+      profileApprovals: [
+        {
+          profile: "p",
+          projectId: base.secrets[0]?.projectId as string,
+          ...checkout,
+          approvedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2026-01-02T00:00:00.000Z",
+          snapshotVersion: version,
+          snapshot,
+        },
+      ],
+    };
+  }
+  const sign = normalizeSignProfile({
+    adapter: "sign",
+    key: "signer",
+    prefixes: [prefixB64],
+  });
+  const http = normalizeProfile({
+    adapter: "http",
+    method: "GET",
+    url: "https://example.invalid/",
+    auth: { type: "bearer", secret: "t" },
+  });
+
+  test("each kind is current at its own version and stale at the other's", () => {
+    expect(snapshotVersionFor(sign)).toBe(signSnapshotVersion);
+    expect(snapshotVersionFor(http)).toBe(profileSnapshotVersion);
+    for (const [snapshot, version, active] of [
+      [sign, signSnapshotVersion, true],
+      [http, profileSnapshotVersion, true],
+      [sign, signSnapshotVersion + 1, false],
+      [http, profileSnapshotVersion + 1, false],
+    ] as const) {
+      const read = parseVaultState(
+        serializeVaultState(stateWith(snapshot, version)),
+      );
+      expect(read.profileApprovals.length).toBe(active ? 1 : 0);
+      expect(read.staleProfileApprovals.length).toBe(active ? 0 : 1);
+    }
+  });
+
+  test("a sign approval round-trips byte for byte", () => {
+    const bytes = serializeVaultState(stateWith(sign, signSnapshotVersion));
+    const again = serializeVaultState(parseVaultState(bytes));
+    expect(Buffer.from(again).equals(Buffer.from(bytes))).toBe(true);
+  });
+});
+
+describe("ward sign", () => {
+  test("signs exactly the bytes given under an approved prefix", async () => {
+    const { options, publicKey } = await signReady();
+    const message = encoder.encode("app/v1\0hello");
+    const result = await runWard(
+      ["sign", "signer"],
+      withInput(options, message),
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(result.stdout).toBe("");
+    const signature = result.stdoutBytes as Uint8Array;
+    expect(signature.length).toBe(64);
+    expect(verifies(publicKey, message, signature)).toBe(true);
+
+    const text = await runWard(
+      ["sign", "signer", "--base64"],
+      withInput(options, message),
+    );
+    expect(text.stdoutBytes).toBeUndefined();
+    expect(Buffer.from(text.stdout.trim(), "base64").length).toBe(64);
+
+    const enveloped = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, message),
+    );
+    const body = data(enveloped.stdout);
+    expect(body.outcome).toBe("succeeded");
+    expect(body.auditRecorded).toBe(true);
+    expect(
+      verifies(
+        publicKey,
+        message,
+        new Uint8Array(Buffer.from(body.signature as string, "base64")),
+      ),
+    ).toBe(true);
+    expect(Object.keys(body)).not.toContain("seed");
+  });
+
+  test("bytes outside every approved prefix are refused and not audited", async () => {
+    const { options } = await signReady();
+    const before = await runWard(["audit", "--json"], options);
+    const refused = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, encoder.encode("other/v1\0hello")),
+    );
+    expect(refused.exitCode).toBe(exitCodes.denied);
+    expect(refused.stdout + refused.stderr).toContain("sign_input_refused");
+    const empty = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, new Uint8Array()),
+    );
+    expect(empty.exitCode).toBe(exitCodes.denied);
+    const after = await runWard(["audit", "--json"], options);
+    expect(after.stdout).toBe(before.stdout);
+  });
+
+  test("a sign is audited as admission then completion against the key's id", async () => {
+    const { options } = await signReady();
+    await runWard(
+      ["sign", "signer", "--json", "--actor-label", "agent-one"],
+      withInput(options, encoder.encode("app/v1\0x")),
+    );
+    const audit = await runWard(["audit", "--json"], options);
+    expect(audit.exitCode).toBe(exitCodes.success);
+    const text = audit.stdout;
+    expect(text).toContain("signer");
+    expect(text).toContain("agent-one");
+    expect(text).toContain("admission");
+    expect(text).toContain("completion");
+    expect(text).toContain("succeeded");
+  });
+
+  test("an unapproved, stale or expired profile does not sign", async () => {
+    const { options } = await ready();
+    await runWard(["key", "generate", "signer", "--json"], options);
+    declareProfiles(options, {
+      signer: { adapter: "sign", key: "signer", prefixes: [prefixB64] },
+    });
+    const message = encoder.encode("app/v1\0x");
+    const unapproved = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, message),
+    );
+    expect(unapproved.exitCode).not.toBe(exitCodes.success);
+    expect(unapproved.stdout + unapproved.stderr).toContain(
+      "profile_not_approved",
+    );
+    await runWard(["profile", "approve", "signer", "--json"], options);
+    declareProfiles(options, {
+      signer: {
+        adapter: "sign",
+        key: "signer",
+        prefixes: [prefixB64, Buffer.from("more").toString("base64")],
+      },
+    });
+    const stale = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, message),
+    );
+    expect(stale.exitCode).toBe(exitCodes.denied);
+    expect(stale.stdout + stale.stderr).toContain("profile_approval_stale");
+    const checked = await runWard(["check", "signer", "--json"], options);
+    expect(checked.stdout).toContain("prefixes");
+    // The same declaration, approved and then past its lifetime.
+    declareProfiles(options, {
+      signer: { adapter: "sign", key: "signer", prefixes: [prefixB64] },
+    });
+    await runWard(["profile", "approve", "signer", "--json"], options);
+    const later = {
+      ...options,
+      now: () => new Date(Date.now() + 365 * 24 * 3600 * 1000),
+    };
+    const expired = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(later, message),
+    );
+    expect(expired.stdout + expired.stderr).toContain(
+      "profile_approval_expired",
+    );
+  });
+
+  test("a missing key, a revoked approval and an HTTP profile do not sign", async () => {
+    const { options } = await signReady();
+    const message = encoder.encode("app/v1\0x");
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    const gone = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, message),
+    );
+    expect(gone.stdout + gone.stderr).toContain("sign_key_not_found");
+    declareProfiles(options, {
+      web: {
+        adapter: "http",
+        method: "GET",
+        url: "https://example.invalid/status",
+        auth: { type: "bearer", secret: "tok" },
+        output: "status",
+      },
+    });
+    const wrongKind = await runWard(
+      ["sign", "web", "--json"],
+      withInput(options, message),
+    );
+    expect(wrongKind.exitCode).not.toBe(exitCodes.success);
+  });
+
+  test("an HTTP run of a sign profile is refused", async () => {
+    const { options } = await signReady();
+    const ran = await runWard(["run", "signer", "--json"], options);
+    expect(ran.exitCode).not.toBe(exitCodes.success);
+  });
+
+  test("an input over the limit is refused before the vault is read", async () => {
+    const { options } = await signReady();
+    const limited: RunOptions = {
+      ...options,
+      secrets: {
+        ...secrets,
+        readStdin: () => {
+          throw new WardError("secret_value_too_large");
+        },
+      },
+    };
+    const result = await runWard(["sign", "signer", "--json"], limited);
+    expect(result.stdout + result.stderr).toContain("sign_input_too_large");
   });
 });

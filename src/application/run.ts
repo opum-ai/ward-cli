@@ -36,6 +36,7 @@ import { WardError } from "../contract/errors.ts";
 import { authorizationHeader } from "../domain/authorization.ts";
 import {
   isProfileName,
+  isSignSnapshot,
   normalizeProfile,
   type NormalizedProfile,
   profilesMatch,
@@ -159,11 +160,14 @@ function approvedSnapshot(options: {
     options.name,
   );
   if (approval === undefined) throw new WardError("profile_not_approved");
-  if (!profilesMatch(declared, approval.snapshot))
+  // An approval of another kind is not this declaration's approval, so a
+  // sign approval under an HTTP profile's name is stale rather than run.
+  const approved = approval.snapshot;
+  if (isSignSnapshot(approved) || !profilesMatch(declared, approved))
     throw new WardError("profile_approval_stale");
   if (approvalExpired(approval, options.now))
     throw new WardError("profile_approval_expired");
-  return approval.snapshot;
+  return approved;
 }
 
 // The secret an alias resolves to inside this project, or the fixed refusal.
@@ -242,7 +246,8 @@ function writeAudit(options: {
     if (approval === undefined) throw new WardError("profile_not_approved");
     if (
       options.executing !== undefined &&
-      !profilesMatch(options.executing, approval.snapshot)
+      (isSignSnapshot(approval.snapshot) ||
+        !profilesMatch(options.executing, approval.snapshot))
     )
       throw new WardError("profile_approval_stale");
     // Expiry is an admission rule like revocation: judged here, in the
@@ -338,7 +343,7 @@ function resultText(options: {
 // a value outside it is refused rather than recorded — a label is a name Ward
 // carries into a record and prints, and one this build will not write is not
 // one it should accept and then quietly drop.
-function assertedLabel(value: string | undefined): string | null {
+export function assertedLabel(value: string | undefined): string | null {
   if (value === undefined) return null;
   if (!isSecretAlias(value)) throw new WardError("run_label_invalid");
   return value;

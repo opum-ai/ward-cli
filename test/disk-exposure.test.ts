@@ -211,6 +211,14 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
         requestBody: "none",
         output: "status",
       },
+      // A sign profile over the key the `key generate` step makes. The bytes
+      // it signs are a synthetic sentinel, so the scan also shows a sign
+      // leaves neither its input nor the key on disk.
+      signer: {
+        adapter: "sign",
+        key: "signing-key",
+        prefixes: [Buffer.from("ward-sentinel-").toString("base64")],
+      },
     };
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -228,9 +236,15 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
     await step("key generate", first, ["key", "generate", "signing-key"]);
     await step("key public", first, ["key", "public", "signing-key"]);
     await step("profile approve", first, ["profile", "approve", PROFILE]);
+    await step("profile approve signer", first, [
+      "profile",
+      "approve",
+      "signer",
+    ]);
     await step("profile list", first, ["profile", "list"]);
     await step("check", first, ["check"]);
     await step("run", first, ["run", PROFILE]);
+    await step("sign", first, ["sign", "signer"]);
     await step("status", first, ["status"]);
     await step("doctor", first, ["doctor"]);
     await step("audit", first, ["audit"]);

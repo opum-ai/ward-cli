@@ -9,7 +9,7 @@ This is a proposed v0.1 skill. Install it only with the matching implemented CLI
 
 ## Before credential-dependent work
 
-Run `ward instructions` for current task guidance. Confirm the current project's state with `ward status --json`. Use `ward profile list --json` to find an existing operation, then `ward check <profile> --json` to verify local readiness. Use `ward run <profile> --json` only for an approved operation relevant to the user's task.
+Run `ward instructions` for current task guidance. Confirm the current project's state with `ward status --json`. Use `ward profile list --json` to find an existing operation, then `ward check <profile> --json` to verify local readiness. Use `ward run <profile> --json` only for an approved operation relevant to the user's task. To sign bytes, use an approved sign profile: `ward sign <profile>` reads the bytes on standard input and writes the signature, and `ward key public <alias>` prints the public key. Ward signs only bytes that begin with one of the profile's approved domain prefixes, and the private key is never shown, exported or backed up.
 
 A Ward reference identifies a credential; it is not a bearer token and does not grant access. Keep references and profile names in code or documentation rather than values.
 

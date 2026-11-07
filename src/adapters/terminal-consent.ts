@@ -35,6 +35,10 @@ import type {
   RegistrationRequest,
 } from "../application/approvals.ts";
 import { escapeForDisplay } from "../domain/display.ts";
+import {
+  isSignSnapshot,
+  type NormalizedSignProfile,
+} from "../domain/profile.ts";
 
 export interface TerminalConsentParts {
   isInteractive?: () => boolean;
@@ -176,6 +180,7 @@ function destinationHostForDisplay(url: string): string {
 // the real destination beside the question.
 function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
   const { snapshot } = question;
+  if (isSignSnapshot(snapshot)) return signApprovalPrompt(question, snapshot);
   const shownHeaders = snapshot.headers.slice(0, maxDisplayedHeaders);
   const hiddenHeaders = snapshot.headers.length - shownHeaders.length;
   const headerCount = `${snapshot.headers.length} header${snapshot.headers.length === 1 ? "" : "s"}`;
@@ -214,6 +219,39 @@ function profileApprovalPrompt(question: ProfileApprovalQuestion): string {
     "would approve the new version. Nothing here is a secret value: the",
     "credential is read from the vault when the profile runs.",
     `Answer y to approve ${escapeForDisplay(snapshot.method)} to ${destinationHostForDisplay(snapshot.url)} (${headerCount}), anything else to decline. [y/N] `,
+  ].join("\n");
+}
+
+// A sign approval names the key and every domain prefix it may sign under
+// (DEC-262 a3 (iii)). A prefix is shown twice, as escaped text and as the
+// base64 of its exact bytes, because the text alone can hide a NUL or a
+// look-alike character and the base64 alone cannot be read; the answer line
+// repeats the key and the prefix count so it cannot be counterfeited by
+// layout above it.
+function signApprovalPrompt(
+  question: ProfileApprovalQuestion,
+  snapshot: NormalizedSignProfile,
+): string {
+  const prefixes = snapshot.prefixes.map((prefix) => {
+    const bytes = Buffer.from(prefix, "base64");
+    const text = new TextDecoder("utf-8").decode(bytes);
+    return `    ${escapeForDisplay(text, { maxChars: 80 })}  [base64 ${prefix}, ${bytes.length} byte${bytes.length === 1 ? "" : "s"}]`;
+  });
+  const count = `${snapshot.prefixes.length} prefix${snapshot.prefixes.length === 1 ? "" : "es"}`;
+  return [
+    "Ward is asking you to approve a signing operation for this checkout.",
+    "",
+    `  profile:  ${escapeForDisplay(question.profile)}`,
+    `  project:  ${question.projectId}`,
+    `  checkout: ${escapeForDisplay(question.root)}`,
+    `  key:      ${escapeForDisplay(snapshot.key)}`,
+    "  prefixes (Ward signs only bytes that begin with one of these):",
+    ...prefixes,
+    "",
+    "Approving records exactly this operation in your vault, for this",
+    "checkout. Ward signs the bytes it is given and adds nothing to them. The",
+    "private key is never shown and never leaves Ward.",
+    `Answer y to approve signing with the key ${escapeForDisplay(snapshot.key)} under ${count}, anything else to decline. [y/N] `,
   ].join("\n");
 }
 
