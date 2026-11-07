@@ -248,6 +248,42 @@ async function prepareExample(name: string, example = ""): Promise<RunOptions> {
     expect((await runWard(["init", "--json"], prepared)).exitCode).toBe(
       exitCodes.success,
     );
+  } else if (name === "sign") {
+    // A vault, a registered checkout, a signing key, and a sign profile over
+    // it that is approved. The stdin source below answers with a value that
+    // begins with the profile's one prefix.
+    for (const args of [["setup"], ["init"]])
+      expect((await runWard([...args, "--json"], prepared)).exitCode).toBe(
+        exitCodes.success,
+      );
+    expect(
+      (
+        await runWard(
+          ["key", "generate", "example-signing-key", "--json"],
+          prepared,
+        )
+      ).exitCode,
+    ).toBe(exitCodes.success);
+    const manifestPath = join(exampleCheckout, ".ward", "project.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      profiles?: Record<string, unknown>;
+    };
+    manifest.profiles = {
+      "example-signer": {
+        adapter: "sign",
+        key: "example-signing-key",
+        prefixes: [Buffer.from("contract-example").toString("base64")],
+      },
+    };
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    expect(
+      (
+        await runWard(
+          ["profile", "approve", "example-signer", "--json"],
+          prepared,
+        )
+      ).exitCode,
+    ).toBe(exitCodes.success);
   } else if (name === "profile" || name === "check" || name === "run") {
     // A vault, a registered checkout and a manifest declaring the profile
     // the examples name. `ward check` is expected to answer "not ready" —
@@ -336,6 +372,7 @@ describe("manifest", () => {
       "unregister",
       "check",
       "run",
+      "sign",
       "agents",
     ];
     expect(commands.map((command) => command.name).sort()).toEqual(

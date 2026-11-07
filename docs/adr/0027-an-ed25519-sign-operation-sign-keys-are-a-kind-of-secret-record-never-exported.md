@@ -16,11 +16,8 @@ generated:
 
 ## Status
 
-Accepted in part, 2026-11-07, under **DEC-262 (a3)**, ruled by opum-doc as design authority
-(not the operator's words) and carried here from its relay. The record binds, not this
-document's copy of it. Part (iii), the sign profile, is **held**: this ADR records it as ruled
-and its implementation lands in a later change under WCLI-149, after opum-doc rules on the
-snapshot-version question below.
+Accepted, 2026-11-07, under **DEC-262 (a3) and (a4)**, ruled by opum-doc as design authority (not
+the operator's words) and carried here from its relay. The record binds, not this document's copy.
 
 ## Context
 
@@ -50,12 +47,29 @@ fail-closed price. Custody is the vault's own; there is no second key store.
 `excludedSignKeys`, so the developer regenerates and re-enrols each. The container format is
 unchanged, so a restore cannot name what a backup left out; the backup does.
 
-**(iii) Authority is an approved "sign" profile** (ruled, held): a key alias plus allowed domain
-prefixes, with bytes refused unless they begin with one. Ward signs exactly the bytes given; the
-caller prefixes. An empty prefix list allows nothing.
+**(iii) Authority is an approved "sign" profile:** `{"adapter": "sign", "key": "<alias>",
+"prefixes": ["<base64>", ...]}` in the manifest, which needs no manifest-version change (profiles are
+normalized where used). One to eight prefixes, each 1 to 64 bytes, as the canonical base64 of its exact
+bytes (a prefix can hold a NUL), sorted and de-duplicated. Ward signs exactly the bytes given, and only
+if they begin with one of them; the caller does the prefixing. The approval is of that snapshot, from a
+trusted terminal, under ADR 0003's rules, and `ward check` and `profile list` report it.
+
+**Two version lines (DEC-262 a4).** HTTP approvals keep their `profileSnapshotVersion` and stay valid;
+the sign snapshot has its own `signSnapshotVersion`, 1, and the reader tells them apart by the stored
+`adapter`. A later change to one kind's normalizer makes only that kind's approvals stale-inert (ADR
+0018, DEC-246 a2). Bumping both would force every developer to re-approve every HTTP profile for no
+change to HTTP. (a4 names the HTTP version as 2; the code's current value is 3, and the rule is the
+same: HTTP is not touched.)
 
 **(iv) Commands:** `ward key generate <alias>`, `ward key public <alias>`, `ward sign <profile>`.
-No result or error carries key material.
+`ward sign` reads the bytes on standard input (at most 64 KiB) and writes the raw 64-byte signature
+to standard output; `--base64` writes it as text, and `--json` carries it as base64 in the envelope.
+A sign is audited with the existing audit record, admission then completion, with `profile` the sign
+profile and `secretId` the key's id, so the audit schema is unchanged. Bytes outside every prefix are
+refused before admission and so are not audited, as a run refused before it is sent is not. If the
+completion event cannot be written after a signature exists, the signature is still returned and the
+exit is nonzero (`auditRecorded: false` under `--json`), as `ward run` reports it. No result or error
+carries key material.
 
 ## Consequences
 
@@ -67,8 +81,7 @@ No result or error carries key material.
   version differs holds an approval of another version inert (DEC-246 a2). It is the sign key's
   `kind` that refuses. A sign approval left after its key is deleted is held inert by an older
   build, which is fail-safe.
-- Open, awaiting opum-doc: whether the sign profile bumps `profileSnapshotVersion` for everything
-  (every existing HTTPS approval would go inert and need re-approval) or is versioned per kind so
-  HTTPS approvals stay valid. Until it is ruled, `ward sign` is not implemented.
+- An HTTPS profile and a sign profile cannot stand in for each other: `ward run` refuses a sign
+  approval and `ward sign` refuses an HTTP one, and a sign key is never an HTTPS credential.
 - Tests use synthetic keys and a temporary store only; the RFC 8032 test vector 1 pins the
   signing and public-key derivation.

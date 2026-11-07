@@ -344,6 +344,16 @@ export const errorCatalog = {
     message: "A secret or signing key already exists under that alias.",
     hint: "Choose another alias, or delete the existing record first.",
   },
+  sign_input_refused: {
+    type: "denied",
+    message:
+      "The bytes to sign do not begin with a domain prefix this profile approves, so Ward did not sign them.",
+    hint: "Prefix the bytes with one of the profile's approved domain prefixes. `ward profile list` shows the profile, and the developer approves a change with `ward profile approve <name>`.",
+  },
+  sign_input_too_large: {
+    type: "validation",
+    message: "The bytes to sign are larger than 64 KiB.",
+  },
   sign_key_not_found: {
     type: "not_found",
     message: "No signing key with that alias exists in this project.",

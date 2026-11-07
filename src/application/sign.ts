@@ -90,7 +90,7 @@ export function signWithKey(
   const { seed } = signKeySeed(state, projectId, alias);
   try {
     if (!startsWithAllowedPrefix(message, allowedPrefixes))
-      throw new WardError("sign_key_refused");
+      throw new WardError("sign_input_refused");
     return {
       signature: signBytes(seed, message),
       publicKey: publicKeyOf(seed),

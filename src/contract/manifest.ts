@@ -609,6 +609,56 @@ export const commands: CommandSpec[] = [
     ],
   },
   {
+    name: "sign",
+    summary:
+      "Sign the bytes on standard input with the Ed25519 key an approved sign profile names, and write the raw 64-byte signature to standard output. Ward signs exactly the bytes it is given, and only if they begin with one of the profile's approved domain prefixes. The private key is never shown or returned.",
+    args: [{ name: "profile", required: true }],
+    flags: [
+      jsonFlag,
+      {
+        name: "--base64",
+        takesValue: false,
+        summary:
+          "Write the signature as base64 text with a trailing newline instead of 64 raw bytes.",
+      },
+      {
+        name: "--actor-label",
+        takesValue: true,
+        summary:
+          "Record what the caller asserts about who it is, on this sign's audit events. Bounded by the alias grammar; self-asserted correlation metadata, never authorization.",
+      },
+      {
+        name: "--task-label",
+        takesValue: true,
+        summary:
+          "Record what the caller asserts about what this sign belongs to, on this sign's audit events. Bounded by the alias grammar; self-asserted correlation metadata, never authorization.",
+      },
+    ],
+    kind: "sign.result",
+    // It writes the sign's own admission and completion events and changes
+    // nothing else, as `ward run` does.
+    mutates: false,
+    unlocksVault: true,
+    // Not admin, like `ward run`: what holds the line is the developer's
+    // approval of the profile, checked against the stored snapshot.
+    admin: false,
+    outputSensitivity: "metadata",
+    exitCodes: [
+      exitCodes.success,
+      exitCodes.uncaught,
+      exitCodes.usage,
+      exitCodes.notFound,
+      exitCodes.denied,
+      exitCodes.conflict,
+      exitCodes.validation,
+    ],
+    examples: [
+      "ward sign example-signer",
+      "ward sign example-signer --base64",
+      "ward sign example-signer --json --actor-label example-agent",
+    ],
+  },
+  {
     name: "help",
     summary: "Show usage for Ward or one command.",
     args: [{ name: "command", required: false }],

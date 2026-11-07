@@ -17,7 +17,7 @@ sources = [
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release",
   "adr/0021-a-profile-approval-expires-24-hours-by-default",
-  "adr/0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes",
+  "adr/0022-ward-unregister-withdraws-one-checkout-and-approvals-go-on-a-second-yes#decision",
   "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
   "adr/0014-ward-stores-no-skill-source-selection",
   "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable",

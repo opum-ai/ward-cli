@@ -63,6 +63,7 @@
 - 2026-11-03T09:34:18-06:00 88bd209a1db3117d14207873d6450c386701c254 fix(WCLI-137): unregister is project-scoped and refuses an unseen removal; legacy wording, doctor remedy, tests (#258)
 - 2026-11-03T10:28:07-06:00 d3eb3b913387378d9b9e4af25c5ad86ad3289f80 feat(WCLI-139): unregister raises binding_changed when the removal set changed (DEC-255 a9) (#264)
 - 2026-11-04T08:13:31-06:00 108df11306c3736fe51da4e92876cdb9b9eb9b1b fix(WCLI-143): the WCLI-139 review LOWs: binding_changed wording, ADR 0022 clause 2, race-test order dependency (#272)
+- 2026-11-07T15:42:11-06:00 03104acb60e36f39cb8d2d813b26b587e30bf74c feat(WCLI-149): Ed25519 sign keys as a kind of secret record, ward key, backup exclusion (DEC-262 a3)
 
 ## docs/runbooks
 

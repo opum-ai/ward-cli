@@ -29,13 +29,14 @@ import {
 } from "../domain/approval-ttl.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import {
-  differingProfileFields,
+  type ApprovedSnapshot,
+  approvedSnapshotsMatch,
+  differingApprovedFields,
   isProfileName,
-  type NormalizedProfile,
-  normalizeProfile,
+  isSignSnapshot,
+  normalizeDeclaration,
   type ProfileSnapshotField,
-  profileSnapshotVersion,
-  profilesMatch,
+  snapshotVersionFor,
 } from "../domain/profile.ts";
 import {
   type ProjectManifest,
@@ -45,6 +46,7 @@ import {
   approvalExpired,
   type CheckoutIdentity,
   findProfileApproval,
+  findSecret,
   resolveSecret,
   type ProfileApprovalRecord,
   parseVaultState,
@@ -205,11 +207,11 @@ function readinessFor(options: {
     ? manifest.profiles[name]
     : undefined;
   let declaration: DeclarationState = "valid";
-  let snapshot: NormalizedProfile | undefined;
+  let snapshot: ApprovedSnapshot | undefined;
   if (!isProfileName(name)) declaration = "invalid";
   else {
     try {
-      snapshot = normalizeProfile(declared);
+      snapshot = normalizeDeclaration(declared);
     } catch {
       declaration = "invalid";
     }
@@ -236,7 +238,7 @@ function readinessFor(options: {
   const differing =
     approved === undefined
       ? []
-      : differingProfileFields(snapshot, approved.snapshot);
+      : differingApprovedFields(snapshot, approved.snapshot);
   // A changed declaration is stale whatever the clock says; an unchanged one
   // is expired once its lifetime has run out (DEC-217 Q5).
   const approval: ApprovalState =
@@ -250,24 +252,33 @@ function readinessFor(options: {
   // A revoked grant is its own state and not "missing": the advice for a
   // missing credential is to store one, and storing a local secret under a
   // revoked grant's alias would block the owner from granting it again.
-  const resolution = resolveSecret(
-    state,
-    authority.projectId,
-    snapshot.auth.secret,
-  );
-  // A profile cannot use a signing key as its credential (DEC-262 (2)).
-  if (
-    (resolution.kind === "owned" || resolution.kind === "granted") &&
-    isSignKey(resolution.secret)
-  )
-    throw new WardError("sign_key_refused");
-  const resolved = resolution.kind;
-  const secret: SecretState =
-    resolved === "owned" || resolved === "granted"
-      ? "present"
-      : resolved === "revoked"
-        ? "revoked"
-        : "missing";
+  let secret: SecretState;
+  if (isSignSnapshot(snapshot)) {
+    // A sign profile's credential is a signing key this project owns. A key is
+    // never granted (DEC-262 (2)), and an ordinary secret under the alias is
+    // not a signing key, so both read as missing.
+    const key = findSecret(state, authority.projectId, snapshot.key);
+    secret = key !== undefined && isSignKey(key) ? "present" : "missing";
+  } else {
+    const resolution = resolveSecret(
+      state,
+      authority.projectId,
+      snapshot.auth.secret,
+    );
+    // A profile cannot use a signing key as its credential (DEC-262 (2)).
+    if (
+      (resolution.kind === "owned" || resolution.kind === "granted") &&
+      isSignKey(resolution.secret)
+    )
+      throw new WardError("sign_key_refused");
+    const resolved = resolution.kind;
+    secret =
+      resolved === "owned" || resolved === "granted"
+        ? "present"
+        : resolved === "revoked"
+          ? "revoked"
+          : "missing";
+  }
   return {
     profile: name,
     declaration,
@@ -490,7 +501,7 @@ function stillApproved(
   options: ProfileOptions,
   projectId: string,
   name: string,
-  snapshot: NormalizedProfile,
+  snapshot: ApprovedSnapshot,
 ): boolean {
   const text = options.files.read("manifest");
   if (text === undefined) return false;
@@ -498,7 +509,10 @@ function stillApproved(
     const manifest = parseProjectManifest(text);
     if (manifest.projectId !== projectId) return false;
     if (!Object.hasOwn(manifest.profiles, name)) return false;
-    return profilesMatch(normalizeProfile(manifest.profiles[name]), snapshot);
+    return approvedSnapshotsMatch(
+      normalizeDeclaration(manifest.profiles[name]),
+      snapshot,
+    );
   } catch {
     return false;
   }
@@ -514,7 +528,7 @@ async function approveProfile(
   const manifest = requireManifest(opened.checkout);
   if (!Object.hasOwn(manifest.profiles, name))
     throw new WardError("profile_not_found");
-  const snapshot = normalizeProfile(manifest.profiles[name]);
+  const snapshot = normalizeDeclaration(manifest.profiles[name]);
   if (!options.approver.available())
     throw new WardError("profile_requires_terminal");
   const answer = options.approver.ask({
@@ -557,7 +571,7 @@ async function approveProfile(
     expiresAt,
     // Written with the record so a later build reads the snapshot under the
     // rules that produced it rather than under its own (spec §6.2).
-    snapshotVersion: profileSnapshotVersion,
+    snapshotVersion: snapshotVersionFor(snapshot),
     snapshot,
   };
   writeApproval(options, opened.key, projectId, (state) =>
