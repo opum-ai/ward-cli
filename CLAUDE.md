@@ -41,7 +41,10 @@ has no entries yet.
 ### Role
 
 Owns the Ward CLI and its agent skill. Adopted into the fleet on 2026-09-28 under
-opum-agent OPAG-655. Tracker prefix `WCLI`. The repository is private for now.
+opum-agent OPAG-655. Tracker prefix `WCLI`. The repository is public: the operator directed first-party on
+2026-11-01 that Ward be released and made public after the pre-public security pass
+(ODOC-552), and `gh api repos/opum-ai/ward-cli` reads `private: false`. Re-measure rather
+than trust this line; `release.yml` reads the visibility from the event payload.
 
 ### SDLC
 
