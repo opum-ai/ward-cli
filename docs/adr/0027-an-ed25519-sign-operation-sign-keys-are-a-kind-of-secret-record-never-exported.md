@@ -105,5 +105,12 @@ carries key material.
   value is held inert (stale), but one at 3 would pass that check, be read as an HTTP snapshot,
   and make the build refuse the whole vault as `vault_state_malformed`. A later HTTP bump does not
   lift the rule for builds already shipped.
+- Contract vocabulary this change adds, decided under DEC-262 (iv) and listed here so a review can
+  check it. `ward check` and `profile list` gain two secret states and matching reasons for a sign
+  profile: `sign-key-missing` (no key under the alias; advice `ward key generate <alias>`) and
+  `sign-key-alias-taken` (an ordinary secret holds the alias; advice `ward secret delete <alias>`,
+  then `ward key generate <alias>`). `ward sign` gains the error `sign_input_terminal` (standard
+  input is a terminal), so it no longer raises the secret `--stdin` advice. Part 1 added
+  `sign-key`, `sign_key_refused`, `sign_key_exists` and `sign_key_not_found`.
 - Tests use synthetic keys and a temporary store only; the RFC 8032 test vector 1 pins the
   signing and public-key derivation.
