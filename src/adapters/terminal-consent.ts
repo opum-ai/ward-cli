@@ -245,6 +245,7 @@ function signApprovalPrompt(
     `  project:  ${question.projectId}`,
     `  checkout: ${escapeForDisplay(question.root)}`,
     `  key:      ${escapeForDisplay(snapshot.key)}`,
+    `  key id:   ${escapeForDisplay(snapshot.keyId ?? "")}  (a key regenerated under this alias needs a new approval)`,
     "  prefixes (Ward signs only bytes that begin with one of these):",
     ...prefixes,
     "",

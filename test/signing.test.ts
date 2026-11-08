@@ -41,9 +41,11 @@ import {
   differingApprovedFields,
   normalizeProfile,
   normalizeSignProfile,
+  normalizeStoredSnapshot,
   profileSnapshotVersion,
   signSnapshotVersion,
   snapshotVersionFor,
+  withSignKeyId,
 } from "../src/domain/profile.ts";
 import {
   encodeSecretValue,
@@ -761,11 +763,14 @@ describe("the version lines (DEC-262 a4)", () => {
       ],
     };
   }
-  const sign = normalizeSignProfile({
-    adapter: "sign",
-    key: "signer",
-    prefixes: [prefixB64],
-  });
+  const sign = withSignKeyId(
+    normalizeSignProfile({
+      adapter: "sign",
+      key: "signer",
+      prefixes: [prefixB64],
+    }),
+    "11111111-1111-4111-8111-111111111111",
+  ) as ApprovedSnapshot;
   const http = normalizeProfile({
     adapter: "http",
     method: "GET",
@@ -926,7 +931,9 @@ describe("ward sign", () => {
       ["sign", "signer", "--json"],
       withInput(options, message),
     );
-    expect(gone.stdout + gone.stderr).toContain("sign_key_not_found");
+    // The approval bound the deleted key's id (DEC-262 a8), so it is stale
+    // before the missing key is even looked for.
+    expect(gone.stdout + gone.stderr).toContain("profile_approval_stale");
     declareProfiles(options, {
       web: {
         adapter: "http",
@@ -1040,13 +1047,15 @@ describe("a sign profile whose key is not usable (WCLI-149 review B1)", () => {
     expect(text.stdout).toContain("ward key generate <alias>");
     const listed = await runWard(["profile", "list", "--json"], options);
     expect(listed.stdout).toContain('"secret":"sign-key-alias-taken"');
-    // The advice is followable: deleting the secret lets the key be created.
+    // The advice is followable: deleting the secret lets the key be created,
+    // and approving again (the key id is new) makes the profile ready.
     await runWard(["secret", "delete", "signer", "--json"], options);
     const generated = await runWard(
       ["key", "generate", "signer", "--json"],
       options,
     );
     expect(generated.exitCode).toBe(exitCodes.success);
+    await runWard(["profile", "approve", "signer", "--json"], options);
     const after = await runWard(["check", "signer", "--json"], options);
     expect(after.exitCode).toBe(exitCodes.success);
   });
@@ -1108,5 +1117,62 @@ describe("ward sign on a terminal (WCLI-149 review N2)", () => {
     const result = await runWard(["sign", "signer", "--json"], onTerminal);
     expect(result.stdout + result.stderr).toContain("sign_input_terminal");
     expect(result.stdout + result.stderr).not.toContain("--stdin");
+  });
+});
+
+describe("a sign approval binds the key id (DEC-262 a8)", () => {
+  test("an unchanged key still signs", async () => {
+    const { options, publicKey } = await signReady();
+    const message = encoder.encode("app/v1\0x");
+    const result = await runWard(
+      ["sign", "signer"],
+      withInput(options, message),
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(verifies(publicKey, message, result.stdoutBytes as Uint8Array)).toBe(
+      true,
+    );
+  });
+
+  test("a key regenerated under the same alias leaves the approval stale until approved again", async () => {
+    const { options } = await signReady();
+    const message = encoder.encode("app/v1\0x");
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    const regenerated = await runWard(
+      ["key", "generate", "signer", "--json"],
+      options,
+    );
+    expect(regenerated.exitCode).toBe(exitCodes.success);
+    const refused = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, message),
+    );
+    expect(refused.exitCode).toBe(exitCodes.denied);
+    expect(refused.stdout + refused.stderr).toContain("profile_approval_stale");
+    const checked = await runWard(["check", "signer", "--json"], options);
+    expect(checked.stdout).toContain("approval-stale");
+    expect(checked.stdout).toContain("keyId");
+    // A person approving again, in a terminal, binds the new key.
+    await runWard(["profile", "approve", "signer", "--json"], options);
+    const again = await runWard(
+      ["sign", "signer"],
+      withInput(options, message),
+    );
+    expect(again.exitCode).toBe(exitCodes.success);
+  });
+
+  test("a stored sign snapshot without a key id is refused as a malformed vault", () => {
+    const stored = {
+      adapter: "sign",
+      key: "signer",
+      prefixes: [prefixB64],
+    };
+    expect(() => normalizeStoredSnapshot(stored)).toThrow(WardError);
+    expect(() => normalizeStoredSnapshot({ ...stored, keyId: "" })).toThrow(
+      WardError,
+    );
+    expect(() => normalizeSignProfile({ ...stored, keyId: "x" })).toThrow(
+      WardError,
+    );
   });
 });

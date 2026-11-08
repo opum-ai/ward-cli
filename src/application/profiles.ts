@@ -35,6 +35,7 @@ import {
   isProfileName,
   isSignSnapshot,
   normalizeDeclaration,
+  withSignKeyId,
   type ProfileSnapshotField,
   snapshotVersionFor,
 } from "../domain/profile.ts";
@@ -244,6 +245,15 @@ function readinessFor(options: {
       secret: "not-evaluated",
       differing: [],
     };
+  // A sign approval binds the key's id (DEC-262 a8), so the declaration is
+  // compared as it stands now: against the key the alias resolves to today.
+  if (isSignSnapshot(snapshot)) {
+    const current = findSecret(state, authority.projectId, snapshot.key);
+    snapshot = withSignKeyId(
+      snapshot,
+      current !== undefined && isSignKey(current) ? current.id : undefined,
+    );
+  }
 
   const approved = findProfileApproval(
     state,
@@ -549,7 +559,10 @@ function stillApproved(
     if (manifest.projectId !== projectId) return false;
     if (!Object.hasOwn(manifest.profiles, name)) return false;
     return approvedSnapshotsMatch(
-      normalizeDeclaration(manifest.profiles[name]),
+      withSignKeyId(
+        normalizeDeclaration(manifest.profiles[name]),
+        isSignSnapshot(snapshot) ? snapshot.keyId : undefined,
+      ),
       snapshot,
     );
   } catch {
@@ -567,7 +580,15 @@ async function approveProfile(
   const manifest = requireManifest(opened.checkout);
   if (!Object.hasOwn(manifest.profiles, name))
     throw new WardError("profile_not_found");
-  const snapshot = normalizeDeclaration(manifest.profiles[name]);
+  let snapshot = normalizeDeclaration(manifest.profiles[name]);
+  if (isSignSnapshot(snapshot)) {
+    // The approval is of this key, by id (DEC-262 a8). With no key under the
+    // alias there is nothing to bind, so nothing is asked.
+    const key = findSecret(opened.state, projectId, snapshot.key);
+    if (key === undefined || !isSignKey(key))
+      throw new WardError("sign_key_not_found");
+    snapshot = withSignKeyId(snapshot, key.id);
+  }
   if (!options.approver.available())
     throw new WardError("profile_requires_terminal");
   const answer = options.approver.ask({
@@ -613,9 +634,16 @@ async function approveProfile(
     snapshotVersion: snapshotVersionFor(snapshot),
     snapshot,
   };
-  writeApproval(options, opened.key, projectId, (state) =>
-    withProfileApproval(state, record),
-  );
+  writeApproval(options, opened.key, projectId, (state) => {
+    // Inside the transaction: a key replaced while the question was open must
+    // not be approved under the old key's id.
+    if (isSignSnapshot(snapshot)) {
+      const key = findSecret(state, projectId, snapshot.key);
+      if (key === undefined || !isSignKey(key) || key.id !== snapshot.keyId)
+        throw new WardError("profile_changed");
+    }
+    return withProfileApproval(state, record);
+  });
   return {
     kind: "profile.approve",
     data: {

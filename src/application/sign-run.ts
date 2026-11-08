@@ -21,6 +21,7 @@ import {
   type NormalizedSignProfile,
   normalizeSignProfile,
   approvedSnapshotsMatch,
+  withSignKeyId,
 } from "../domain/profile.ts";
 import {
   decodeSecretValue,
@@ -99,7 +100,13 @@ function approvedSignSnapshot(options: {
   name: string;
   declared: unknown;
 }): NormalizedSignProfile {
-  const declared = normalizeSignProfile(options.declared);
+  const named = normalizeSignProfile(options.declared);
+  // Compared against the key the alias resolves to now (DEC-262 a8).
+  const current = findSecret(options.state, options.projectId, named.key);
+  const declared = withSignKeyId(
+    named,
+    current !== undefined && isSignKey(current) ? current.id : undefined,
+  ) as NormalizedSignProfile;
   const approval = findProfileApproval(
     options.state,
     options.identity,
@@ -166,6 +173,10 @@ function writeSignAudit(options: {
       );
       if (record === undefined || !isSignKey(record))
         throw new WardError("sign_key_not_found");
+      // The approval binds the key's id (DEC-262 a8): compared against the
+      // pinned id, not against whatever the alias resolves to at this moment.
+      if (record.id !== options.admitting.snapshot.keyId)
+        throw new WardError("profile_approval_stale");
       // A key replaced between the read and here keeps the alias, so id and
       // revision are what say the key about to be used is the one read.
       if (

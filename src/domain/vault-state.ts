@@ -18,7 +18,7 @@ import {
   isProfileName,
   type ApprovedSnapshot,
   isSignSnapshot,
-  normalizeDeclaration,
+  normalizeStoredSnapshot,
   profileSnapshotVersion,
   signSnapshotVersion,
 } from "./profile.ts";
@@ -546,7 +546,7 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
   }
   let snapshot: ApprovedSnapshot;
   try {
-    snapshot = normalizeDeclaration(value.snapshot);
+    snapshot = normalizeStoredSnapshot(value.snapshot);
   } catch (error) {
     // A snapshot refused for a listed header name says which one, by Ward's
     // canonical spelling (WCLI-98); the constructor keeps only list members.
@@ -820,6 +820,7 @@ function snapshotDocument(snapshot: ApprovedSnapshot): Record<string, unknown> {
     return {
       adapter: snapshot.adapter,
       key: snapshot.key,
+      keyId: snapshot.keyId,
       prefixes: [...snapshot.prefixes],
     };
   return {

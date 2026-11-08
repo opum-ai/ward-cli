@@ -195,14 +195,22 @@ export const profileSnapshotFields = [
 // The sign profile's snapshot fields (DEC-262 a3 (iii)). Its version line is
 // its own (DEC-262 a4): a later change to one kind's normalizer makes only
 // that kind's approvals stale-inert, and HTTP approvals are untouched.
-export const signSnapshotFields = ["adapter", "key", "prefixes"] as const;
+// `keyId` is the key's id at approval time (DEC-262 a8): an approval binds the
+// key, not the alias it is reached by. It is in the snapshot and never in a
+// declaration, since the manifest cannot know it.
+export const signSnapshotFields = [
+  "adapter",
+  "key",
+  "keyId",
+  "prefixes",
+] as const;
 
 export type ProfileSnapshotField =
   | (typeof profileSnapshotFields)[number]
   | (typeof signSnapshotFields)[number];
 
 const declarationFields = new Set<string>(profileSnapshotFields);
-const signDeclarationFields = new Set<string>(signSnapshotFields);
+const signDeclarationFields = new Set<string>(["adapter", "key", "prefixes"]);
 
 function invalid(): never {
   throw new WardError("profile_invalid");
@@ -610,6 +618,10 @@ export const signProfileLimits = {
 export interface NormalizedSignProfile {
   readonly adapter: "sign";
   readonly key: string;
+  // The id of the key the alias named when this was approved, or, on a
+  // snapshot built from a declaration for comparison, the id of the key it
+  // names now (undefined when there is none). Never read from a manifest.
+  readonly keyId?: string;
   readonly prefixes: readonly string[];
 }
 
@@ -665,6 +677,27 @@ export function normalizeSignProfile(value: unknown): NormalizedSignProfile {
   };
 }
 
+// The snapshot as the vault stores it: a sign snapshot must carry the key id
+// it was approved against (DEC-262 a8), and an HTTP snapshot is unchanged.
+export function normalizeStoredSnapshot(value: unknown): ApprovedSnapshot {
+  if (!isRecord(value) || value.adapter !== "sign")
+    return normalizeDeclaration(value);
+  const { keyId, ...declaration } = value;
+  if (typeof keyId !== "string" || !/^[\x21-\x7e]{1,128}$/.test(keyId))
+    invalid();
+  return { ...normalizeSignProfile(declaration), keyId };
+}
+
+// A sign snapshot with the key id it is being compared or approved against.
+export function withSignKeyId(
+  snapshot: ApprovedSnapshot,
+  keyId: string | undefined,
+): ApprovedSnapshot {
+  return isSignSnapshot(snapshot)
+    ? { ...snapshot, ...(keyId === undefined ? {} : { keyId }) }
+    : snapshot;
+}
+
 // A declaration or a stored snapshot, whichever kind it names. The adapter
 // decides which normalizer applies; one that names neither is unsupported
 // rather than read as the other.
@@ -682,6 +715,7 @@ export function differingApprovedFields(
   if (isSignSnapshot(declared) && isSignSnapshot(approved)) {
     const differing: ProfileSnapshotField[] = [];
     if (declared.key !== approved.key) differing.push("key");
+    if (declared.keyId !== approved.keyId) differing.push("keyId");
     if (
       declared.prefixes.length !== approved.prefixes.length ||
       declared.prefixes.some(

@@ -16,7 +16,7 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5), (a6) and (a7)**, ruled by opum-doc as design
+Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5), (a6), (a7) and (a8)**, ruled by opum-doc as design
 authority (not the operator's words) and carried here from its relay. The record binds, not this
 document's copy. Storage, backup exclusion and the `ward key` commands landed first; the sign profile
 and `ward sign` follow in a second change under WCLI-149, and this record covers both.
@@ -57,6 +57,17 @@ normalized where used). One to eight prefixes, each 1 to 64 bytes, as the canoni
 bytes (a prefix can hold a NUL), sorted and de-duplicated. Ward signs exactly the bytes given, and only
 if they begin with one of them; the caller does the prefixing. The approval is of that snapshot, from a
 trusted terminal, under ADR 0003's rules, and `ward check` and `profile list` report it.
+
+**The approval binds the key id (DEC-262 a8, ruled A).** The sign snapshot records the id of the key the
+alias named at approval time. A key regenerated under the same alias, for example after `ward secret
+delete signer` and `ward key generate signer`, leaves the approval stale (`profile_approval_stale`)
+until a person approves again in a terminal, and `ward check` reports the difference as `keyId`.
+Admission's in-transaction re-check compares against the pinned id, not against whatever key the
+alias resolves to at that moment. Approving a sign profile with no key under the alias is refused
+with `sign_key_not_found`, since there is nothing to bind. HTTP approvals keep binding the alias:
+a signature is an identity claim, and an HTTP credential is not. This is the sign snapshot's version 1
+shape under (a4), so there is no version bump, and a stored sign snapshot without a key id is a
+malformed vault. Binding the alias, as first built, was refused.
 
 **Two version lines (DEC-262 a4).** HTTP approvals keep their `profileSnapshotVersion` and stay valid;
 the sign snapshot has its own `signSnapshotVersion`, 1, and the reader tells them apart by the stored
