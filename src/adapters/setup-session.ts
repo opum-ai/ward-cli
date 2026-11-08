@@ -7,14 +7,15 @@
 // keychain item, and a rerun at any point either completes the same setup
 // or reports the state it finds.
 //
-// The lock, on macOS, is flock(2) on a persistent lock file: the kernel
-// arbitrates it and releases it when the holding process dies, so a crash
-// needs no reaping and two setups can never both hold it. The file is
-// never unlinked while held (unlinking a flock file re-opens the two-file
-// race); its content is advisory, the last holder's pid. Off macOS, where
-// no platform is qualified yet (WCLI-21/22), the fallback is an O_EXCL
-// file whose recorded pid is reaped only when provably dead, with
-// fail-closed staleness and compare-and-delete release.
+// The lock is flock(2) on a persistent lock file, through libc on macOS
+// and on Linux (WCLI-152): the kernel arbitrates it and releases it when
+// the holding process dies, so a crash needs no reaping and two setups can
+// never both hold it. The file is never unlinked while held (unlinking a
+// flock file re-opens the two-file race); its content is advisory, the last
+// holder's pid. Any other platform fails closed: no platform but these two
+// is qualified, and the O_EXCL file with dead-pid reaping that used to cover
+// them had a measured check-then-delete race (WCLI-20 review: 12 overlapping
+// holder pairs in 20 rounds).
 //
 // The journal is removed only when the vault exists, so it survives every
 // failure short of success.
@@ -51,15 +52,6 @@ function errnoCode(error: unknown): unknown {
     : undefined;
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return errnoCode(error) !== "ESRCH";
-  }
-}
-
 // fsync on a directory persists the entry changes inside it, so a power
 // loss cannot drop a journal whose bytes were fsynced (the journal's
 // purpose is exactly to survive the key write that follows it).
@@ -77,14 +69,18 @@ function fsyncDirectory(path: string): void {
   }
 }
 
-// Takes the lock on macOS and returns the held-open fd, whose close
-// releases it. Returns undefined off macOS, where the caller falls back to
-// the O_EXCL file. The lock file is never unlinked.
-function acquireFlock(
-  lockPath: string,
-  uid: number | undefined,
-): number | undefined {
-  if (process.platform !== "darwin") return undefined;
+// The C library that exports flock(2), by platform. Unsupported platforms
+// have none and fail closed.
+function libcPath(): string {
+  if (process.platform === "darwin") return "/usr/lib/libSystem.B.dylib";
+  if (process.platform === "linux") return "libc.so.6";
+  throw new WardError("vault_key_store_unsupported");
+}
+
+// Takes the lock and returns the held-open fd, whose close releases it. The
+// lock file is never unlinked.
+function acquireFlock(lockPath: string, uid: number | undefined): number {
+  const library = libcPath();
   let existing: Stats | undefined;
   try {
     existing = lstatSync(lockPath);
@@ -104,9 +100,17 @@ function acquireFlock(
   } catch {
     throw new WardError("vault_store_failed");
   }
-  const flock = dlopen("/usr/lib/libSystem.B.dylib", {
-    flock: { args: ["int", "int"], returns: "int" },
-  }).symbols.flock as (fd: number, operation: number) => number;
+  let flock: (fd: number, operation: number) => number;
+  try {
+    flock = dlopen(library, {
+      flock: { args: ["int", "int"], returns: "int" },
+    }).symbols.flock as (fd: number, operation: number) => number;
+  } catch {
+    // No usable C library to ask the kernel through: fail closed, never
+    // fall back to a lock the kernel does not arbitrate.
+    closeSync(fd);
+    throw new WardError("vault_store_failed");
+  }
   // A non-contention flock failure is indistinguishable here and reports
   // setup_in_progress too; fail-closed either way.
   if (flock(fd, LOCK_EX | LOCK_NB) !== 0) {
@@ -121,54 +125,6 @@ function acquireFlock(
     // Advisory content only; the lock itself is already held.
   }
   return fd;
-}
-
-// Off-macOS fallback. Removes a lock only when its recorded pid is
-// provably dead. Anything else — a live pid, an empty or unreadable file
-// (which is also the state a live holder occupies between creating the
-// file and writing its pid), or a lock that fails the privacy checks —
-// fails closed as setup_in_progress.
-function clearStaleLock(lockPath: string, uid: number | undefined): void {
-  let stats: Stats;
-  try {
-    stats = lstatSync(lockPath);
-  } catch (error) {
-    if (errnoCode(error) === "ENOENT") return;
-    throw new WardError("vault_store_failed");
-  }
-  if (!isPrivateEntry(stats, "file", uid))
-    throw new WardError("vault_store_insecure");
-  if (stats.size > maxJournalBytes) throw new WardError("setup_in_progress");
-  let content: string;
-  try {
-    content = readFileSync(lockPath, "utf8").trim();
-  } catch (error) {
-    // Removed between the lstat and the read: another reaper won it.
-    if (errnoCode(error) === "ENOENT") return;
-    throw new WardError("vault_store_failed");
-  }
-  const pid = /^\d+$/.test(content) ? Number(content) : undefined;
-  if (pid === undefined || isAlive(pid))
-    throw new WardError("setup_in_progress");
-  try {
-    rmSync(lockPath);
-  } catch (error) {
-    if (errnoCode(error) !== "ENOENT")
-      throw new WardError("vault_store_failed");
-  }
-}
-
-// Off-macOS fallback. Reads the lock's recorded pid, or undefined when the
-// lock is absent or unreadable. Used so a defeated holder never deletes a
-// lock the winner took: only a lock recording this process's pid is
-// removed by it.
-function lockPid(lockPath: string): number | undefined {
-  try {
-    const content = readFileSync(lockPath, "utf8").trim();
-    return /^\d+$/.test(content) ? Number(content) : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export interface SetupSession {
@@ -202,53 +158,10 @@ export function acquireSetupSession(directory: string): SetupSession {
     }
   }
 
-  // Compare-and-delete (fallback only): the lock goes only if it still
-  // records this pid. A lock that was removed and re-taken by another
-  // setup is left alone.
-  function removeOwnLock(): void {
-    if (lockPid(lockPath) !== process.pid) return;
-    remove(lockPath);
-  }
-
   function releaseLock(): void {
     if (released) return;
     released = true;
-    if (lockFd !== undefined) closeSync(lockFd);
-    else removeOwnLock();
-  }
-
-  if (lockFd === undefined) {
-    // Off macOS: take the lock by creating the file exclusively.
-    for (let attempt = 0; !released; attempt++) {
-      let fd: number;
-      try {
-        fd = openSync(
-          lockPath,
-          fileConstants.O_CREAT |
-            fileConstants.O_EXCL |
-            fileConstants.O_RDWR |
-            fileConstants.O_NOFOLLOW,
-          0o600,
-        );
-      } catch (error) {
-        if (errnoCode(error) !== "EEXIST")
-          throw new WardError("vault_store_failed");
-        clearStaleLock(lockPath, uid);
-        if (attempt > 0) throw new WardError("setup_in_progress");
-        continue;
-      }
-      try {
-        try {
-          writeSync(fd, `${process.pid}\n`);
-          fsyncSync(fd);
-        } catch {
-          throw new WardError("vault_store_failed");
-        }
-      } finally {
-        closeSync(fd);
-      }
-      break;
-    }
+    closeSync(lockFd);
   }
 
   return {

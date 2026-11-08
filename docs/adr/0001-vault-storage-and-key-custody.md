@@ -130,7 +130,11 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   measured 12 overlapping pairs in 20 rounds against the fallback itself, which is unreachable
   today because the key provider refuses non-darwin platforms; the platform tasks (WCLI-21,
   WCLI-22) must replace the fallback with kernel-arbitrated locking (or identity-checked
-  compare-and-delete) before any other platform is qualified. Setup records the pending vault id in a
+  compare-and-delete) before any other platform is qualified. **Amended under WCLI-152:** the
+  fallback is gone. The same flock(2) call now takes the lock on Linux through libc (`libc.so.6`) as
+  on macOS, so Linux has no pid-based lock either; any platform with neither fails closed, and so
+  does a missing C library, never to a lock the kernel does not arbitrate. A race test with real
+  overlapping processes and a no-lock control covers it. Setup records the pending vault id in a
   `setup.json` journal, durably, before the key exists. A rerun at any point either completes the
   same setup — reusing the recorded id, the stored key, or both — or reports the state it finds:
   a vault whose key loads is an already-completed setup, a vault whose key does not load is a

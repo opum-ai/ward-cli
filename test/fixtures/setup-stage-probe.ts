@@ -36,9 +36,12 @@ if (mode === "lock-hold") {
       fileConstants.O_NOFOLLOW,
     0o600,
   );
-  const flock = dlopen("/usr/lib/libSystem.B.dylib", {
-    flock: { args: ["int", "int"], returns: "int" },
-  }).symbols.flock as (fd: number, operation: number) => number;
+  const flock = dlopen(
+    process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6",
+    {
+      flock: { args: ["int", "int"], returns: "int" },
+    },
+  ).symbols.flock as (fd: number, operation: number) => number;
   if (flock(fd, 2 | 4) !== 0) throw new Error("could not take the lock");
   writeSync(fd, `${process.pid}\n`);
   writeSync(1, "ready\n");
