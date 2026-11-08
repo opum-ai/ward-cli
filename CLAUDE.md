@@ -63,10 +63,10 @@ change lands through a pull request. Re-measure rather than trust this paragraph
 Renaming or removing a CI job means updating the ruleset in the same change, or
 every merge blocks on a check that never reports.
 
-CI is `.github/workflows/ci.yml` (WCLI-17), on `[self-hosted, Linux, ARM64]`. The
-org and repository runner listings both report 0 runners, yet every job is picked
-up within seconds by the `mbpm2` group's ephemeral `linux-arm64-*` runners. A
-listing is not evidence either way; an actual job's `runner_name` is.
+CI is `.github/workflows/ci.yml` (WCLI-17), on the GitHub-hosted `ubuntu-24.04-arm`
+runner (WCLI-99, ruling W-34 A): the organisation's self-hosted runner groups refuse
+public repositories, so every job uses the hosted label. Re-measure with a job's
+`runner_name` (the log's "Runner Image" block), not a runner listing.
 
 ### Retirement machinery carried here
 
