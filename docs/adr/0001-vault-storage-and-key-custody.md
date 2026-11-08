@@ -122,8 +122,8 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   vault directory — flock(2) through bun:ffi on macOS, where the kernel arbitrates and releases
   the lock when the holding process dies, so a crash needs no reaping and two setups can never
   both hold it; the file itself persists and its content is advisory, the last holder's pid. Off
-  macOS the fallback is an O_EXCL file whose recorded pid is reaped only when provably dead, with
-  fail-closed staleness (an empty or unreadable lock refuses, because that is also the state a
+  macOS the fallback was an O_EXCL file whose recorded pid was reaped only when provably dead, with
+  fail-closed staleness (an empty or unreadable lock refused, because that is also the state a
   live holder occupies mid-write) and compare-and-delete release. An adversarial review measured
   the check-then-delete race in a purely pid-based scheme — 19 overlapping holder pairs across 25
   rounds of 12 simultaneous attempts — before flock replaced it on macOS. The same review
@@ -133,8 +133,7 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   compare-and-delete) before any other platform is qualified. **Amended under WCLI-152:** the
   fallback is gone. The same flock(2) call now takes the lock on Linux through libc (`libc.so.6`) as
   on macOS, so Linux has no pid-based lock either; any platform with neither fails closed, and so
-  does a missing C library, never to a lock the kernel does not arbitrate. A race test with real
-  overlapping processes and a no-lock control covers it. Setup records the pending vault id in a
+  does a missing C library, never to a lock the kernel does not arbitrate. A race test of fresh one-shot processes behind a start barrier covers it, with a no-lock control. Limit: on NFS or CIFS Linux emulates flock(2) with per-process POSIX locks, so exclusion there holds across processes only (setup takes one acquire per process). Setup records the pending vault id in a
   `setup.json` journal, durably, before the key exists. A rerun at any point either completes the
   same setup — reusing the recorded id, the stored key, or both — or reports the state it finds:
   a vault whose key loads is an already-completed setup, a vault whose key does not load is a
