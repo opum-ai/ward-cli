@@ -20,7 +20,10 @@ import type {
   ProfileRevocationQuestion,
 } from "../src/application/approvals.ts";
 import { escapeForDisplay } from "../src/domain/display.ts";
-import type { NormalizedProfile } from "../src/domain/profile.ts";
+import type {
+  NormalizedProfile,
+  NormalizedSignProfile,
+} from "../src/domain/profile.ts";
 
 const request = {
   projectId: "33b05c92-8a6e-4f15-9dcb-65ae5d371123",
@@ -436,5 +439,54 @@ describe("the approval prompt", () => {
     expect(prompt).not.toContain(snapshot.url);
     expect(prompt).not.toContain(snapshot.method);
     expect(prompt).not.toContain("Accept");
+  });
+});
+
+describe("the sign approval prompt", () => {
+  const keyId = "5f0c2c3e-6a53-4c1e-9a0b-2d6a8d1f7e11";
+  const nulPrefix = Buffer.from("app/v1\0", "utf8");
+  const plainPrefix = Buffer.from("log/v2:", "utf8");
+  const sign: NormalizedSignProfile = {
+    adapter: "sign",
+    key: "release-signer",
+    keyId,
+    prefixes: [nulPrefix, plainPrefix].map((p) => p.toString("base64")).sort(),
+  };
+  const question: ProfileApprovalQuestion = {
+    kind: "approve",
+    profile: "signer",
+    projectId: request.projectId,
+    root: request.root,
+    snapshot: sign,
+  };
+
+  test("shows the key, its id, and every prefix as an escape and as base64", () => {
+    const { result, prompt } = asked(question);
+    expect(result).toBe("approved");
+    expect(prompt).toContain("approve a signing operation");
+    expect(prompt).toContain("release-signer");
+    expect(prompt).toContain(`key id:   ${keyId}`);
+    expect(prompt).toContain("a key regenerated under this alias");
+    for (const prefix of [nulPrefix, plainPrefix]) {
+      expect(prompt).toContain(`base64 ${prefix.toString("base64")}`);
+      expect(prompt).toContain(`${prefix.length} bytes`);
+    }
+    // A NUL separator is shown as an escape, never emitted or left blank.
+    expect(prompt).toContain("app/v1\\x00");
+    expect(prompt).not.toContain("\0");
+    expect(prompt).toContain("log/v2:");
+  });
+
+  test("the answer line repeats the key and the prefix count", () => {
+    const { prompt } = asked(question);
+    const last = prompt.split("\n").at(-1) ?? "";
+    expect(last).toContain("release-signer");
+    expect(last).toContain("2 prefixes");
+    expect(last.endsWith("[y/N] ")).toBe(true);
+  });
+
+  test("only yes is consent", () => {
+    expect(asked(question, "n").result).toBe("declined");
+    expect(asked(question, "").result).toBe("declined");
   });
 });

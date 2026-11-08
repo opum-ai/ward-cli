@@ -37,6 +37,7 @@
 // changing where a request goes) — so none of those can invalidate an
 // approval on its own.
 import { type RefusedHeaderName, WardError } from "../contract/errors.ts";
+import { isOpaqueId } from "./identifiers.ts";
 import { isSecretAlias } from "./secret.ts";
 
 export const profileLimits = {
@@ -683,8 +684,8 @@ export function normalizeStoredSnapshot(value: unknown): ApprovedSnapshot {
   if (!isRecord(value) || value.adapter !== "sign")
     return normalizeDeclaration(value);
   const { keyId, ...declaration } = value;
-  if (typeof keyId !== "string" || !/^[\x21-\x7e]{1,128}$/.test(keyId))
-    invalid();
+  // As strict as the writer: key ids are minted as opaque ids.
+  if (!isOpaqueId(keyId)) invalid();
   return { ...normalizeSignProfile(declaration), keyId };
 }
 

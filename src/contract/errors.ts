@@ -360,6 +360,12 @@ export const errorCatalog = {
     type: "validation",
     message: "The bytes to sign are larger than 64 KiB.",
   },
+  sign_key_alias_taken: {
+    type: "conflict",
+    message:
+      "An ordinary secret holds that alias in this project, so there is no signing key to approve.",
+    hint: "Delete it with `ward secret delete <alias>`, then create the key with `ward key generate <alias>`, or name a different alias in the profile's key.",
+  },
   sign_key_not_found: {
     type: "not_found",
     message: "No signing key with that alias exists in this project.",

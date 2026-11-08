@@ -585,8 +585,12 @@ async function approveProfile(
     // The approval is of this key, by id (DEC-262 a8). With no key under the
     // alias there is nothing to bind, so nothing is asked.
     const key = findSecret(opened.state, projectId, snapshot.key);
-    if (key === undefined || !isSignKey(key))
-      throw new WardError("sign_key_not_found");
+    // Told apart here, unlike in `ward key public`: approval is a terminal
+    // act by the developer, and `ward check` already reports the same two
+    // states, so nothing is disclosed. Each has advice that can be followed:
+    // `ward key generate` refuses an alias an ordinary secret holds.
+    if (key === undefined) throw new WardError("sign_key_not_found");
+    if (!isSignKey(key)) throw new WardError("sign_key_alias_taken");
     snapshot = withSignKeyId(snapshot, key.id);
   }
   if (!options.approver.available())
@@ -667,7 +671,7 @@ async function approveProfile(
       "Ward runs this operation only while the declared profile still matches",
       "what was approved, and only until the approval expires.",
       isSignSnapshot(snapshot)
-        ? "A change to the key alias or the domain prefixes needs approval again, and so does an expired approval."
+        ? "A change to the key alias or the domain prefixes needs approval again, and so does a key regenerated under the alias (the approval is of this key's id), and so does an expired approval."
         : "A change to the destination, method, authentication reference, headers, body policy or output policy needs approval again, and so does an expired approval.",
     ].join("\n"),
   };

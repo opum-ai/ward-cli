@@ -795,6 +795,22 @@ describe("the version lines (DEC-262 a4)", () => {
     }
   });
 
+  test("a stored sign approval without a key id makes the vault malformed (DEC-262 a8)", () => {
+    const document = JSON.parse(
+      Buffer.from(
+        serializeVaultState(stateWith(sign, signSnapshotVersion)),
+      ).toString("utf8"),
+    );
+    delete document.profileApprovals[0].snapshot.keyId;
+    const bytes = new TextEncoder().encode(JSON.stringify(document));
+    expect(() => parseVaultState(bytes)).toThrow(WardError);
+    try {
+      parseVaultState(bytes);
+    } catch (error) {
+      expect((error as WardError).code).toBe("vault_state_malformed");
+    }
+  });
+
   test("a sign approval round-trips byte for byte", () => {
     const bytes = serializeVaultState(stateWith(sign, signSnapshotVersion));
     const again = serializeVaultState(parseVaultState(bytes));
@@ -1174,5 +1190,73 @@ describe("a sign approval binds the key id (DEC-262 a8)", () => {
     expect(() => normalizeSignProfile({ ...stored, keyId: "x" })).toThrow(
       WardError,
     );
+  });
+});
+
+describe("approving a sign profile whose key is not usable (WCLI-149 round 2 B1)", () => {
+  test("no key: approve refuses with sign_key_not_found and the generate advice, and approves nothing", async () => {
+    const { options } = await ready();
+    declareProfiles(options, {
+      signer: { adapter: "sign", key: "signer", prefixes: [prefixB64] },
+    });
+    const refused = await runWard(
+      ["profile", "approve", "signer", "--json"],
+      options,
+    );
+    expect(refused.exitCode).toBe(exitCodes.notFound);
+    expect(refused.stdout + refused.stderr).toContain("sign_key_not_found");
+    expect(refused.stdout + refused.stderr).toContain("ward key generate");
+    const checked = await runWard(["check", "signer", "--json"], options);
+    expect(checked.stdout).toContain("sign-key-missing");
+    // The advice works: generate the key, then approve.
+    await runWard(["key", "generate", "signer", "--json"], options);
+    const approved = await runWard(
+      ["profile", "approve", "signer", "--json"],
+      options,
+    );
+    expect(approved.exitCode).toBe(exitCodes.success);
+  });
+
+  test("an ordinary secret under the alias: approve names delete-then-generate, which then works", async () => {
+    const { options } = await signReady();
+    // The reviewer's path: an approved profile, then the key swapped for an
+    // ordinary secret. Signing reads the approval as stale.
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    await runWard(["secret", "set", "signer", "--stdin", "--json"], options);
+    const stale = await runWard(
+      ["sign", "signer", "--json"],
+      withInput(options, encoder.encode("app/v1\0x")),
+    );
+    expect(stale.stdout + stale.stderr).toContain("profile_approval_stale");
+    const refused = await runWard(
+      ["profile", "approve", "signer", "--json"],
+      options,
+    );
+    expect(refused.exitCode).toBe(exitCodes.conflict);
+    const text = refused.stdout + refused.stderr;
+    expect(text).toContain("sign_key_alias_taken");
+    expect(text).toContain("ward secret delete <alias>");
+    expect(text).toContain("ward key generate <alias>");
+    expect(text).not.toContain("Create one with");
+    // Following the advice reaches a ready profile.
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    await runWard(["key", "generate", "signer", "--json"], options);
+    const approved = await runWard(
+      ["profile", "approve", "signer", "--json"],
+      options,
+    );
+    expect(approved.exitCode).toBe(exitCodes.success);
+    const checked = await runWard(["check", "signer", "--json"], options);
+    expect(checked.exitCode).toBe(exitCodes.success);
+  });
+
+  test("the approve confirmation says a regenerated key needs approval again", async () => {
+    const { options } = await ready();
+    await runWard(["key", "generate", "signer", "--json"], options);
+    declareProfiles(options, {
+      signer: { adapter: "sign", key: "signer", prefixes: [prefixB64] },
+    });
+    const approved = await runWard(["profile", "approve", "signer"], options);
+    expect(approved.stdout).toContain("key regenerated under the alias");
   });
 });
