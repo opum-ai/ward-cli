@@ -42,8 +42,9 @@ literal and a 32-byte seed. An older build refuses a vault holding one (ADR 0023
 fail-closed price. Custody is the vault's own; there is no second key store.
 
 **A sign key is never a credential.** `run` refuses an alias naming one (`sign_key_refused`) before
-admission, and `check` and `profile list` report such a profile with the reason `sign-key` (exit 6,
-no error code) rather than failing every other profile's report. `secret set` does not replace a sign
+admission. `check` reports such a profile with the reason `sign-key` (exit 6, no error code), and
+`profile list` shows its secret state as `sign-key` (exit 0), rather than failing every other
+profile's report. `secret set` does not replace a sign
 key, `secret grant` does not share it, and `secret delete` removes it.
 
 **(ii) Backup excludes sign keys.** `ward backup` seals the state without them and reports
