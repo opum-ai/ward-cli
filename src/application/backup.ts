@@ -28,7 +28,11 @@ import {
 } from "../domain/backup.ts";
 import { generateVaultKey } from "../domain/envelope.ts";
 import { isOpaqueId } from "../domain/identifiers.ts";
-import { parseVaultState, serializeVaultState } from "../domain/vault-state.ts";
+import {
+  parseVaultState,
+  serializeVaultState,
+  withoutSignKeys,
+} from "../domain/vault-state.ts";
 import type { KeyProvider } from "./key-provider.ts";
 import type { VaultStore } from "./vault-store.ts";
 
@@ -62,6 +66,9 @@ export interface BackupResult {
   readonly bytes: number;
   readonly vaultId: string;
   readonly revision: number;
+  // Sign keys left out of the container, by alias. They never leave Ward, so
+  // a restore reproduces none of them (DEC-262 a3 (ii)).
+  readonly excludedSignKeys: readonly string[];
   readonly kdf: {
     readonly name: "scrypt";
     readonly N: number;
@@ -122,7 +129,15 @@ export async function runBackup(options: {
     // recorded in ADR 0010: preserving the bytes of a damaged vault means
     // copying the vault file, not taking a Ward backup, because this build
     // has no recovery surface for one.
-    parseVaultState(plaintext);
+    const parsedState = parseVaultState(plaintext);
+    // A sign key is not carried (DEC-262 a3 (ii)). When there is none the
+    // document is sealed byte for byte as read, so a vault without one backs
+    // up exactly as before.
+    const { state: carried, excluded } = withoutSignKeys(parsedState);
+    if (excluded.length > 0) {
+      plaintext.fill(0);
+      plaintext = serializeVaultState(carried);
+    }
     const kdf = newBackupKdf();
     derived = deriveBackupKey(passphrase, kdf);
     const sealed = sealBackup(
@@ -137,6 +152,7 @@ export async function runBackup(options: {
       bytes: bytes.length,
       vaultId: snapshot.vaultId,
       revision: snapshot.revision,
+      excludedSignKeys: excluded,
       kdf: {
         name: kdf.name,
         N: kdf.N,
@@ -222,7 +238,9 @@ export async function runRestore(options: {
         // not revive access that was granted or revoked since it was taken
         // (docs/adr/0020). The owner grants again after re-registering.
         sharingGrants: [],
-        secrets: backup.secrets,
+        // A signing key is never restored: a container does not carry one, and
+        // one that did is not trusted to (DEC-262 a3 (ii)).
+        secrets: backup.secrets.filter((secret) => secret.kind === undefined),
         // The audit history is carried, unlike the bindings and approvals
         // above it, because of what separates them: a restore deactivates
         // authority, and an audit record is not authority. It says a run

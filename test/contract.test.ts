@@ -162,6 +162,25 @@ async function prepareExample(name: string, example = ""): Promise<RunOptions> {
       source,
     );
     expect(created.exitCode).toBe(exitCodes.success);
+  } else if (name === "key") {
+    // A vault and a registered checkout; `public` finds the key `generate`
+    // made, so the examples run in order against one state.
+    expect((await runWard(["setup", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    expect((await runWard(["init", "--json"], prepared)).exitCode).toBe(
+      exitCodes.success,
+    );
+    if (example.includes(" public ")) {
+      expect(
+        (
+          await runWard(
+            ["key", "generate", "example-signing-key", "--json"],
+            prepared,
+          )
+        ).exitCode,
+      ).toBe(exitCodes.success);
+    }
   } else if (name === "secret") {
     // A vault, a registered checkout and one existing alias: `set` replaces
     // it through the hidden path, and `inspect` and `delete` find it.
@@ -312,6 +331,7 @@ describe("manifest", () => {
       "backup",
       "restore",
       "secret",
+      "key",
       "profile",
       "unregister",
       "check",

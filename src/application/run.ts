@@ -42,6 +42,7 @@ import {
 } from "../domain/profile.ts";
 import {
   decodeSecretValue,
+  isSignKey,
   isSecretAlias,
   type SecretRecord,
 } from "../domain/secret.ts";
@@ -176,8 +177,12 @@ function usableSecret(
   alias: string,
 ): SecretRecord {
   const resolved = resolveSecret(state, projectId, alias);
-  if (resolved.kind === "owned" || resolved.kind === "granted")
+  if (resolved.kind === "owned" || resolved.kind === "granted") {
+    // A signing key is never a credential value, so no alias naming one
+    // reaches the transport (DEC-262 (2), docs/adr/0027).
+    if (isSignKey(resolved.secret)) throw new WardError("sign_key_refused");
     return resolved.secret;
+  }
   throw new WardError(
     resolved.kind === "revoked" ? "grant_revoked" : "secret_not_found",
   );

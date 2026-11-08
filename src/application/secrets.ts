@@ -20,6 +20,7 @@ import { isOpaqueId } from "../domain/identifiers.ts";
 import {
   encodeSecretValue,
   isSecretAlias,
+  isSignKey,
   type SecretRecord,
   secretLimits,
 } from "../domain/secret.ts";
@@ -105,7 +106,7 @@ export interface SecretResult {
 // The key, the state and the decision every action runs against. The caller
 // of openBoundVault owns `key` and zeroes it; the plaintext buffer is zeroed
 // as soon as the state has been parsed.
-interface BoundVault {
+export interface BoundVault {
   readonly key: Uint8Array;
   readonly state: VaultState;
   readonly projectId: string;
@@ -137,6 +138,8 @@ function recordMetadata(record: SecretRecord): Record<string, unknown> {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     revision: record.revision,
+    // Named only for a record that is not an ordinary secret.
+    ...(record.kind === undefined ? {} : { kind: record.kind }),
   };
 }
 
@@ -179,6 +182,7 @@ function inspectText(record: SecretRecord): string {
     `  created:   ${record.createdAt}`,
     `  updated:   ${record.updatedAt}`,
     `  revision:  ${record.revision}`,
+    ...(record.kind === undefined ? [] : [`  kind:      ${record.kind}`]),
     "",
     storedValueNote,
   ].join("\n");
@@ -198,8 +202,8 @@ function deleteText(alias: string, projectId: string): string {
 // Opens the vault for this checkout and hands the action the key, the parsed
 // state and the project the binding authorises. The key is zeroed on every
 // path out, and the read's plaintext is zeroed as soon as it has been parsed.
-async function withBoundVault<T>(
-  options: SecretOptions,
+export async function withBoundVault<T>(
+  options: Pick<SecretOptions, "checkout" | "files" | "store" | "keyProvider">,
   run: (bound: BoundVault) => T | Promise<T>,
 ): Promise<T> {
   const checkout = readCheckout(options.checkout, options.files);
@@ -234,11 +238,12 @@ function requireAlias(input: SecretCommandInput): string {
 
 function listSecrets(bound: BoundVault): SecretResult {
   const owned = secretsFor(bound.state, bound.projectId).map(
-    ({ alias, updatedAt, revision }) => ({
+    ({ alias, updatedAt, revision, kind }) => ({
       alias,
       ownership: "owner" as const,
       updatedAt: updatedAt as string | null,
       revision: revision as number | null,
+      ...(kind === undefined ? {} : { kind }),
     }),
   );
   // A granted alias is listed so an agent can name it in a profile, and is
@@ -270,7 +275,7 @@ function listSecrets(bound: BoundVault): SecretResult {
             "",
             ...entries.map(
               (entry) =>
-                `  ${entry.alias}${entry.ownership === "granted" ? "  (granted, use only)" : ""}`,
+                `  ${entry.alias}${entry.ownership === "granted" ? "  (granted, use only)" : ""}${"kind" in entry ? `  (${entry.kind} signing key)` : ""}`,
             ),
           ].join("\n"),
   };
@@ -363,6 +368,9 @@ async function setSecret(
 ): Promise<SecretResult> {
   refuseGranted(bound.state, bound.projectId, alias);
   const existing = findSecret(bound.state, bound.projectId, alias);
+  // A signing key is not replaced as an ordinary secret (DEC-262 (2)).
+  if (existing !== undefined && isSignKey(existing))
+    throw new WardError("sign_key_refused");
   let value: Uint8Array | undefined;
   try {
     if (input.viaStdin) {
@@ -402,6 +410,8 @@ async function setSecret(
       // project from outside; writing an own record over it is refused.
       refuseGranted(current, bound.projectId, alias);
       const previous = findSecret(current, bound.projectId, alias);
+      if (previous !== undefined && isSignKey(previous))
+        throw new WardError("sign_key_refused");
       // The confirmation belongs to the state the value was read against. An
       // alias that appeared in between was never covered by it, so the write
       // is refused rather than replacing a record unasked.
@@ -476,6 +486,9 @@ function grantInto(
   refuseGranted(state, options.ownerProjectId, options.alias);
   const secret = findSecret(state, options.ownerProjectId, options.alias);
   if (secret === undefined) throw new WardError("secret_not_found");
+  // A grant gives the target the use of the value as a credential, which a
+  // signing key never is (DEC-262 (2)).
+  if (isSignKey(secret)) throw new WardError("sign_key_refused");
   if (options.targetProjectId === options.ownerProjectId)
     throw new WardError("grant_target_is_owner");
   if (!state.projects.some((project) => project.id === options.targetProjectId))

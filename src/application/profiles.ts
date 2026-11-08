@@ -22,6 +22,7 @@ import {
   type ResultKind,
 } from "../contract/envelope.ts";
 import { WardError } from "../contract/errors.ts";
+import { isSignKey } from "../domain/secret.ts";
 import {
   defaultApprovalTtlMs,
   parseApprovalTtl,
@@ -119,7 +120,15 @@ export type ApprovalState =
   | "stale"
   | "expired"
   | "not-evaluated";
-export type SecretState = "present" | "missing" | "revoked" | "not-evaluated";
+export type SecretState =
+  | "present"
+  | "missing"
+  | "revoked"
+  // The alias names a signing key, which is never a credential (DEC-262 (2)).
+  // Reported, not thrown: one such declaration must not take down the report
+  // for every other profile.
+  | "sign-key"
+  | "not-evaluated";
 
 export interface ProfileReadiness {
   readonly profile: string;
@@ -142,6 +151,7 @@ export const profileCheckReasons = [
   "approval-expired",
   "secret",
   "grant-revoked",
+  "sign-key",
 ] as const;
 
 export type ProfileCheckReason = (typeof profileCheckReasons)[number];
@@ -249,17 +259,21 @@ function readinessFor(options: {
   // A revoked grant is its own state and not "missing": the advice for a
   // missing credential is to store one, and storing a local secret under a
   // revoked grant's alias would block the owner from granting it again.
-  const resolved = resolveSecret(
+  const resolution = resolveSecret(
     state,
     authority.projectId,
     snapshot.auth.secret,
-  ).kind;
+  );
+  const resolved = resolution.kind;
+  const usable = resolved === "owned" || resolved === "granted";
   const secret: SecretState =
-    resolved === "owned" || resolved === "granted"
-      ? "present"
-      : resolved === "revoked"
-        ? "revoked"
-        : "missing";
+    usable && isSignKey(resolution.secret)
+      ? "sign-key"
+      : usable
+        ? "present"
+        : resolved === "revoked"
+          ? "revoked"
+          : "missing";
   return {
     profile: name,
     declaration,
@@ -331,6 +345,7 @@ function checkReasons(
   if (entry.approval === "expired") reasons.push("approval-expired");
   if (entry.secret === "missing") reasons.push("secret");
   if (entry.secret === "revoked") reasons.push("grant-revoked");
+  if (entry.secret === "sign-key") reasons.push("sign-key");
   return reasons;
 }
 
@@ -343,6 +358,8 @@ const reasonPhrases: Record<ProfileCheckReason, string> = {
   secret: "the credential is not stored in this project",
   "grant-revoked":
     "the grant behind the credential was revoked, or its owner secret was deleted",
+  "sign-key":
+    "the credential alias names a signing key, which is never a credential",
 };
 
 function reasonPhrase(
@@ -377,6 +394,10 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
   if (reasons.has("grant-revoked"))
     guidance.push(
       "The owning project's developer grants the secret again with `ward secret grant`. Do not store a local secret under that alias: it would block the grant.",
+    );
+  if (reasons.has("sign-key"))
+    guidance.push(
+      "Name a different secret in the profile's auth.secret, or delete the signing key and store an ordinary secret under that alias with `ward secret set`.",
     );
   if (reasons.has("declaration"))
     guidance.push(

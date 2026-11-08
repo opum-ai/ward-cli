@@ -28,6 +28,20 @@ export function isSecretAlias(value: unknown): value is string {
   return typeof value === "string" && aliasPattern.test(value);
 }
 
+// A record that is not an ordinary secret carries `kind` (DEC-262 a3 (i)).
+// Ordinary secrets never carry the field, so a vault holding none is
+// byte-identical to one an older build wrote, and an older build, whose
+// reader compares the exact key set (ADR 0023), refuses a vault holding one
+// instead of treating a signing seed as an ordinary secret.
+export const signKeyKind = "ed25519";
+export type SecretKind = typeof signKeyKind;
+// An Ed25519 private seed (RFC 8032).
+export const signKeySeedBytes = 32;
+
+export function isSignKey(secret: { readonly kind?: SecretKind }): boolean {
+  return secret.kind !== undefined;
+}
+
 export interface SecretRecord {
   readonly id: string;
   readonly projectId: string;
@@ -38,6 +52,9 @@ export interface SecretRecord {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  // Present only on a record that is not an ordinary secret. For
+  // "ed25519" the value is the 32-byte private seed.
+  readonly kind?: SecretKind;
 }
 
 export function encodeSecretValue(bytes: Uint8Array): string {

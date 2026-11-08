@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createBackupFiles } from "../adapters/backup-file.ts";
+import { runKey } from "../application/sign.ts";
 import {
   bindCheckoutIdentity,
   canonicalDirectory,
@@ -305,6 +306,19 @@ async function backupCommand(
         `  vault:    ${result.vaultId}`,
         `  revision: ${result.revision}`,
         `  bytes:    ${result.bytes}`,
+        ...(result.excludedSignKeys.length === 0
+          ? []
+          : [
+              "",
+              "Signing keys are never part of a backup. Left out, by alias:",
+              ...result.excludedSignKeys.map(
+                // An alias is the secret grammar (letters, digits, dot, underscore,
+                // dash), so it needs no escaping.
+                (alias) => `  ${alias}`,
+              ),
+              "After a restore, generate each again with `ward key generate` and",
+              "enrol its new public key wherever the old one was trusted.",
+            ]),
         "",
         "Ward cannot open it without the passphrase, and keeps no copy of either.",
         "Keep it somewhere you control: recovery from a lost key or a damaged",
@@ -356,6 +370,11 @@ async function restoreCommand(
         "these projects again, re-approve its profiles, and have each owner",
         "grant a shared secret again. Restoring an older backup does not revive",
         "authority that was granted, changed or revoked since it was taken.",
+        "",
+        "Signing keys are never carried in a backup, so none was restored. If the",
+        "vault held any, generate each again with `ward key generate` and enrol",
+        "its new public key wherever the old one was trusted. The backup that",
+        "made this file named the ones it left out.",
       ].join("\n"),
     },
     exitExplicitly: keyProvider.abandonedCall?.() ?? false,
@@ -466,6 +485,32 @@ async function secretCommand(
       now: options.now ?? (() => new Date()),
       newSecretId: () => randomUUID(),
       newGrantId: () => randomUUID(),
+    },
+  );
+  return { kind: result.kind, data: result.data, text: result.text };
+}
+
+// The composition root for `ward key`. Like `ward secret`, authority is the
+// checkout binding; nothing here reads or prints a private key.
+async function keyCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<CommandOutput> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const action = input.positionals[0];
+  if (action === undefined) throw new WardError("missing_argument");
+  const result = await runKey(
+    { action, alias: input.positionals[1] },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+      now: options.now ?? (() => new Date()),
+      newSecretId: () => randomUUID(),
     },
   );
   return { kind: result.kind, data: result.data, text: result.text };
@@ -645,6 +690,8 @@ async function dispatch(
     exitExplicitly = run.exitExplicitly;
   } else if (command.name === "secret") {
     output = await secretCommand(parsed, options);
+  } else if (command.name === "key") {
+    output = await keyCommand(parsed, options);
   } else if (command.name === "profile") {
     output = await profileCommand(parsed, options);
   } else if (command.name === "unregister") {

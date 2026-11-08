@@ -25,6 +25,8 @@ import {
   isSecretAlias,
   type SecretRecord,
   secretLimits,
+  signKeyKind,
+  signKeySeedBytes,
 } from "./secret.ts";
 
 // The document's format, and its number (DEC-38, option A).
@@ -409,7 +411,7 @@ function ownCollection<T>(
 // for use; the parse result only ever reports that the record is intact.
 function ownSecret(value: unknown): SecretRecord {
   if (!isRecord(value)) malformed();
-  const expected = [
+  const base = [
     "alias",
     "createdAt",
     "id",
@@ -418,10 +420,16 @@ function ownSecret(value: unknown): SecretRecord {
     "updatedAt",
     "value",
   ];
+  // `kind` is the one optional key, and only an exact known literal is
+  // accepted (DEC-262 a3 (i)): a record naming any other kind is a damaged
+  // document, never an ordinary secret.
+  const hasKind = Object.hasOwn(value, "kind");
+  const expected = hasKind ? [...base, "kind"].sort() : base;
   const keys = Object.keys(value).sort();
   if (keys.length !== expected.length) malformed();
   for (const [index, key] of expected.entries())
     if (keys[index] !== key) malformed();
+  if (hasKind && value.kind !== signKeyKind) malformed();
   if (!isOpaqueId(value.id) || !isOpaqueId(value.projectId)) malformed();
   if (!isSecretAlias(value.alias)) malformed();
   if (typeof value.value !== "string") malformed();
@@ -432,6 +440,7 @@ function ownSecret(value: unknown): SecretRecord {
     bytes.length > secretLimits.maxValueBytes
   )
     malformed();
+  if (hasKind && bytes.length !== signKeySeedBytes) malformed();
   if (!isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt))
     malformed();
   if (
@@ -448,6 +457,8 @@ function ownSecret(value: unknown): SecretRecord {
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     revision: value.revision,
+    // Omitted, never written as undefined or null, for an ordinary secret.
+    ...(hasKind ? { kind: signKeyKind } : {}),
   };
 }
 
@@ -812,7 +823,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
       }),
     ),
     secrets: state.secrets.map(
-      ({ id, projectId, alias, value, createdAt, updatedAt, revision }) => ({
+      ({
         id,
         projectId,
         alias,
@@ -820,6 +831,18 @@ export function serializeVaultState(state: VaultState): Uint8Array {
         createdAt,
         updatedAt,
         revision,
+        kind,
+      }) => ({
+        id,
+        projectId,
+        alias,
+        value,
+        createdAt,
+        updatedAt,
+        revision,
+        // Omitted for an ordinary secret, so a vault without a sign key stays
+        // byte-identical to what an older build wrote (DEC-262 a3 (i)).
+        ...(kind === undefined ? {} : { kind }),
       }),
     ),
     profileApprovals: [
@@ -1038,6 +1061,26 @@ export function withSecret(
       ),
       record,
     ],
+  };
+}
+
+// The state with every sign key removed, for the backup container (DEC-262
+// a3 (ii)): a signing seed never leaves Ward, and a backup is a file. The
+// alias list is returned so the caller can name what was left out.
+export function withoutSignKeys(state: VaultState): {
+  readonly state: VaultState;
+  readonly excluded: readonly string[];
+} {
+  const excluded = state.secrets
+    .filter((secret) => secret.kind !== undefined)
+    .map((secret) => secret.alias);
+  if (excluded.length === 0) return { state, excluded };
+  return {
+    state: {
+      ...state,
+      secrets: state.secrets.filter((secret) => secret.kind === undefined),
+    },
+    excluded,
   };
 }
 

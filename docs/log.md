@@ -34,6 +34,7 @@
 - 2026-10-26T16:19:53-05:00 5a616927579c3daf5d23d3bbcde04fe13d367a2e docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3
 - 2026-10-26T16:21:03-05:00 50b553b576c80a3495880fed817f3d211666d6da docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3 (#198)
 - 2026-10-28T09:19:42-05:00 e7cf35ce5fa6d028358f183fb59bfc63f3b2cb2c feat(WCLI-92): ship opum-ward from a lean plugin/ directory (#204)
+- 2026-11-03T10:48:55-06:00 f612a61ecf307c966edbc339dd4a38b668624661 fix(WCLI-140): the legacy hint names ward init only where init can run; docs and field naming (#267)
 
 ## docs/adr
 
@@ -58,6 +59,11 @@
 - 2026-11-02T13:21:15-06:00 23391c36183a1cd56496df0197aa448a78df933a docs(WCLI-100): record the habitual-y residual in ADR 0025 and tighten its wording
 - 2026-11-02T14:10:36-06:00 ca3167942016db09302fa87f64048596121021af docs(WCLI-100): ADR 0025, the approval prompt keeps y/N because its answer line shows the whole host (DEC-255 (3)) (#248)
 - 2026-11-03T08:11:57-06:00 06dad7ae341ef669a98a34c373e5fdae14f4db06 feat(WCLI-125): a checkout is its directory identity and a nonce in its git directory (DEC-255 a2 (4), a6; ADR 0026)
+- 2026-11-03T08:57:43-06:00 2037c5a985e703dfc68bc01c5c1e7f746a22f61c feat(WCLI-125): a checkout is its directory identity and a nonce in its git directory (ADR 0026) (#254)
+- 2026-11-03T09:34:18-06:00 88bd209a1db3117d14207873d6450c386701c254 fix(WCLI-137): unregister is project-scoped and refuses an unseen removal; legacy wording, doctor remedy, tests (#258)
+- 2026-11-03T10:28:07-06:00 d3eb3b913387378d9b9e4af25c5ad86ad3289f80 feat(WCLI-139): unregister raises binding_changed when the removal set changed (DEC-255 a9) (#264)
+- 2026-11-04T08:13:31-06:00 108df11306c3736fe51da4e92876cdb9b9eb9b1b fix(WCLI-143): the WCLI-139 review LOWs: binding_changed wording, ADR 0022 clause 2, race-test order dependency (#272)
+- 2026-11-07T15:42:11-06:00 03104acb60e36f39cb8d2d813b26b587e30bf74c feat(WCLI-149): Ed25519 sign keys as a kind of secret record, ward key, backup exclusion (DEC-262 a3)
 
 ## docs/runbooks
 
@@ -71,3 +77,4 @@
 - 2026-11-01T11:00:04-06:00 10704636be1f9a3ce6b640ca6120df9c79f10bc9 docs(WCLI-110, WCLI-113): install and security docs for the public flip (#235)
 - 2026-11-01T11:08:23-06:00 ae586d6611814a673505d8aa2832dfc1b5af7bfb docs(WCLI-130): pre-flip wording, a public README, an idempotent supersede step and -R on the verify script (#242)
 - 2026-11-02T13:28:20-06:00 3e73ac8f121d960c42f2f3d046eaf9258ed6d5f5 feat(WCLI-123): build, ad-hoc sign and strictly verify the darwin asset on macos-15 in the tag run (#246)
+- 2026-11-04T08:36:17-06:00 b0108706b913f0d6f73bf545ac35026153c68417 fix(WCLI-145): the WCLI-140 delta-review LOWs (#274)
