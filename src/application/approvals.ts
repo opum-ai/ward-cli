@@ -12,7 +12,7 @@
 // operation — method, URL, header names and values, policies — which the
 // manifest already holds in the repository, and the secret reference is an
 // alias, never a value.
-import type { NormalizedProfile } from "../domain/profile.ts";
+import type { ApprovedSnapshot } from "../domain/profile.ts";
 
 export interface RegistrationRequest {
   readonly projectId: string;
@@ -38,7 +38,7 @@ export interface ProfileApprovalQuestion {
   // The normalized operation the developer is being asked to approve. It is
   // what gets stored if the answer is yes, so the question and the record
   // cannot describe different operations.
-  readonly snapshot: NormalizedProfile;
+  readonly snapshot: ApprovedSnapshot;
 }
 
 export interface ProfileRevocationQuestion {

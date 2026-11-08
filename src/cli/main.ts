@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createBackupFiles } from "../adapters/backup-file.ts";
 import { runKey } from "../application/sign.ts";
+import { runSign } from "../application/sign-run.ts";
 import {
   bindCheckoutIdentity,
   canonicalDirectory,
@@ -77,6 +78,10 @@ import { parseArguments } from "./parse.ts";
 
 export interface RunResult {
   stdout: string;
+  // Raw bytes for the output that is not text (`ward sign`'s 64-byte
+  // signature). When present it is written to standard output instead of
+  // `stdout`, which is empty then.
+  stdoutBytes?: Uint8Array;
   stderr: string;
   exitCode: ExitCode;
   // The process must exit on its own rather than waiting for the event
@@ -516,6 +521,50 @@ async function keyCommand(
   return { kind: result.kind, data: result.data, text: result.text };
 }
 
+// The composition root for `ward sign`. The bytes come from standard input as
+// exact bytes (never an argument), and the signature goes back to the caller.
+async function signCommand(
+  input: CommandInput,
+  options: RunOptions,
+): Promise<{
+  output: CommandOutput;
+  signature: Uint8Array;
+  warning: string;
+}> {
+  const checkout = locateCheckout(options.cwd ?? process.cwd());
+  const directory = options.wardDirectory ?? join(homedir(), ".ward");
+  const values = options.secrets ?? createTerminalSecretValues();
+  const result = await runSign(
+    {
+      profile: input.positionals[0],
+      actorLabel: optionalFlag(input, "--actor-label"),
+      taskLabel: optionalFlag(input, "--task-label"),
+    },
+    {
+      checkout,
+      files: createProjectFiles(checkout.root),
+      store: createSqliteVaultStore({ directory }),
+      keyProvider:
+        options.keyProvider ??
+        createKeychainKeyProvider({ service: keychainService }),
+      now: options.now ?? (() => new Date()),
+      newId: options.newId ?? randomUUID,
+      observeMachine: options.machine ?? observeMachine,
+      readInput: (maxBytes) => values.readStdin(maxBytes),
+    },
+  );
+  return {
+    output: {
+      kind: result.kind,
+      data: result.data,
+      text: result.text,
+      ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+    },
+    signature: result.signature,
+    warning: result.warning === undefined ? "" : `${result.warning}\n`,
+  };
+}
+
 // The composition root for `ward unregister`. It needs the checkout's
 // identity and the vault, and a terminal to ask on; it reads no manifest.
 async function unregisterCommand(options: RunOptions): Promise<CommandOutput> {
@@ -662,6 +711,11 @@ async function dispatch(
   }
   let output: CommandOutput;
   let exitExplicitly = false;
+  // Set only by `ward sign`: the signature, written raw unless asked for as
+  // text or inside the JSON envelope.
+  let rawSignature: Uint8Array | undefined;
+  // Standard error for `ward sign`, empty unless its audit is incomplete.
+  let signWarning = "";
   if (command.name === "setup") {
     const run = await setupCommand(options);
     output = run.output;
@@ -692,6 +746,11 @@ async function dispatch(
     output = await secretCommand(parsed, options);
   } else if (command.name === "key") {
     output = await keyCommand(parsed, options);
+  } else if (command.name === "sign") {
+    const signed = await signCommand(parsed, options);
+    output = signed.output;
+    rawSignature = signed.signature;
+    signWarning = signed.warning;
   } else if (command.name === "profile") {
     output = await profileCommand(parsed, options);
   } else if (command.name === "unregister") {
@@ -707,12 +766,23 @@ async function dispatch(
     if (handler === undefined) throw new WardError("unknown_command", 1);
     output = await handler(parsed);
   }
+  if (
+    rawSignature !== undefined &&
+    !parsed.flags.has("--json") &&
+    !parsed.flags.has("--base64")
+  )
+    return {
+      stdout: "",
+      stdoutBytes: rawSignature,
+      stderr: signWarning,
+      exitCode: output.exitCode ?? exitCodes.success,
+    };
   const stdout = parsed.flags.has("--json")
     ? JSON.stringify(success(output.kind, output.data))
     : output.text;
   return {
     stdout: `${stdout}\n`,
-    stderr: "",
+    stderr: signWarning,
     // A report can carry its own exit code (ward doctor: 6 when a check
     // failed); everything else exits 0.
     exitCode: output.exitCode ?? exitCodes.success,

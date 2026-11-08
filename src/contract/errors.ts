@@ -347,8 +347,24 @@ export const errorCatalog = {
   sign_input_refused: {
     type: "denied",
     message:
-      "The bytes to sign do not begin with a domain prefix the approved profile allows, so Ward did not sign them.",
-    hint: "Prefix the bytes with one of the profile's approved domain prefixes.",
+      "The bytes to sign do not begin with a domain prefix this profile approves, so Ward did not sign them.",
+    hint: "Prefix the bytes with one of the profile's approved domain prefixes. `ward profile list` shows the profile, and the developer approves a change with `ward profile approve <name>`.",
+  },
+  sign_input_terminal: {
+    type: "usage",
+    message:
+      "Standard input is an interactive terminal. `ward sign` signs the bytes piped to it.",
+    hint: "Pipe the bytes to sign into the command, for example `printf 'prefix...' | ward sign <profile>`.",
+  },
+  sign_input_too_large: {
+    type: "validation",
+    message: "The bytes to sign are larger than 64 KiB.",
+  },
+  sign_key_alias_taken: {
+    type: "conflict",
+    message:
+      "An ordinary secret holds that alias in this project, so there is no signing key to approve.",
+    hint: "Delete it with `ward secret delete <alias>`, then create the key with `ward key generate <alias>`, or name a different alias in the profile's key.",
   },
   sign_key_not_found: {
     type: "not_found",
@@ -448,7 +464,7 @@ export const errorCatalog = {
     type: "validation",
     message:
       "The profile declaration uses an operation this version of Ward does not support, so Ward did not act on it.",
-    hint: "This build implements HTTPS with Bearer authentication or a secret in one named header, one of DELETE, GET, HEAD, PATCH, POST or PUT, a request body of none or json-stdin, and status-only output. An authentication scheme it does not implement yet (HTTP Basic) is refused rather than approximated.",
+    hint: "This build implements two kinds of profile. `ward run` implements HTTPS with Bearer authentication or a secret in one named header, one of DELETE, GET, HEAD, PATCH, POST or PUT, a request body of none or json-stdin, and status-only output. An authentication scheme it does not implement yet (HTTP Basic) is refused rather than approximated. `ward sign` implements the sign adapter: a key alias and one to eight domain prefixes. A profile of one kind cannot be used by the other command.",
   },
   profile_changed: {
     type: "conflict",

@@ -79,7 +79,7 @@ function signKeySeed(
 
 // Signs exactly the bytes given: Ward adds, strips and rewrites nothing, and
 // domain prefixing is the caller's. The allowed prefixes come from an approved
-// sign profile (held for its own change); an empty list allows no input.
+// sign profile; an empty list allows no input.
 export function signWithKey(
   state: VaultState,
   projectId: string,

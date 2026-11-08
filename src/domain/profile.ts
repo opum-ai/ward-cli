@@ -37,6 +37,7 @@
 // changing where a request goes) — so none of those can invalidate an
 // approval on its own.
 import { type RefusedHeaderName, WardError } from "../contract/errors.ts";
+import { isOpaqueId } from "./identifiers.ts";
 import { isSecretAlias } from "./secret.ts";
 
 export const profileLimits = {
@@ -192,9 +193,25 @@ export const profileSnapshotFields = [
   "output",
 ] as const;
 
-export type ProfileSnapshotField = (typeof profileSnapshotFields)[number];
+// The sign profile's snapshot fields (DEC-262 a3 (iii)). Its version line is
+// its own (DEC-262 a4): a later change to one kind's normalizer makes only
+// that kind's approvals stale-inert, and HTTP approvals are untouched.
+// `keyId` is the key's id at approval time (DEC-262 a8): an approval binds the
+// key, not the alias it is reached by. It is in the snapshot and never in a
+// declaration, since the manifest cannot know it.
+export const signSnapshotFields = [
+  "adapter",
+  "key",
+  "keyId",
+  "prefixes",
+] as const;
+
+export type ProfileSnapshotField =
+  | (typeof profileSnapshotFields)[number]
+  | (typeof signSnapshotFields)[number];
 
 const declarationFields = new Set<string>(profileSnapshotFields);
+const signDeclarationFields = new Set<string>(["adapter", "key", "prefixes"]);
 
 function invalid(): never {
   throw new WardError("profile_invalid");
@@ -581,4 +598,141 @@ export function profilesMatch(
   approved: NormalizedProfile,
 ): boolean {
   return differingProfileFields(declared, approved).length === 0;
+}
+
+// ---- The sign profile (DEC-262 a3 (iii), a4) ----------------------------
+
+export const signSnapshotVersion = 1;
+
+export const signProfileLimits = {
+  maxPrefixes: 8,
+  minPrefixBytes: 1,
+  maxPrefixBytes: 64,
+} as const;
+
+// The operation a developer approves for signing: which key, and which
+// domains it may be used for. A prefix is the canonical base64 of its exact
+// bytes (a prefix can hold a NUL separator, which text cannot carry), and
+// the set is sorted and de-duplicated so two spellings of one set are one
+// approval. Ward signs exactly the bytes given, so the prefixes only limit
+// what an approved caller may sign; they are never added to the input.
+export interface NormalizedSignProfile {
+  readonly adapter: "sign";
+  readonly key: string;
+  // The id of the key the alias named when this was approved, or, on a
+  // snapshot built from a declaration for comparison, the id of the key it
+  // names now (undefined when there is none). Never read from a manifest.
+  readonly keyId?: string;
+  readonly prefixes: readonly string[];
+}
+
+export type ApprovedSnapshot = NormalizedProfile | NormalizedSignProfile;
+
+export function isSignSnapshot(
+  snapshot: ApprovedSnapshot,
+): snapshot is NormalizedSignProfile {
+  return snapshot.adapter === "sign";
+}
+
+// The version line a snapshot is stored under, by its own adapter.
+export function snapshotVersionFor(snapshot: ApprovedSnapshot): number {
+  return isSignSnapshot(snapshot)
+    ? signSnapshotVersion
+    : profileSnapshotVersion;
+}
+
+// An empty list is refused (DEC-262 a5): a sign profile with no prefix would
+// admit any domain.
+function normalizedPrefixes(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) invalid();
+  if (value.length < 1 || value.length > signProfileLimits.maxPrefixes)
+    invalid();
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string") invalid();
+    const bytes = Buffer.from(entry, "base64");
+    // Only the canonical encoding of the bytes: Node's decoder ignores
+    // characters it does not recognise, which would let two spellings mean
+    // one prefix, or a damaged one mean another.
+    if (bytes.toString("base64") !== entry) invalid();
+    if (
+      bytes.length < signProfileLimits.minPrefixBytes ||
+      bytes.length > signProfileLimits.maxPrefixBytes
+    )
+      invalid();
+    seen.add(entry);
+  }
+  return [...seen].sort();
+}
+
+export function normalizeSignProfile(value: unknown): NormalizedSignProfile {
+  if (!isRecord(value)) invalid();
+  for (const key of Object.keys(value))
+    if (!signDeclarationFields.has(key)) unsupported();
+  if (value.adapter !== "sign") invalid();
+  if (!isSecretAlias(value.key)) invalid();
+  return {
+    adapter: "sign",
+    key: value.key,
+    prefixes: normalizedPrefixes(value.prefixes),
+  };
+}
+
+// The snapshot as the vault stores it: a sign snapshot must carry the key id
+// it was approved against (DEC-262 a8), and an HTTP snapshot is unchanged.
+export function normalizeStoredSnapshot(value: unknown): ApprovedSnapshot {
+  if (!isRecord(value) || value.adapter !== "sign")
+    return normalizeDeclaration(value);
+  const { keyId, ...declaration } = value;
+  // As strict as the writer: key ids are minted as opaque ids.
+  if (!isOpaqueId(keyId)) invalid();
+  return { ...normalizeSignProfile(declaration), keyId };
+}
+
+// A sign snapshot with the key id it is being compared or approved against.
+export function withSignKeyId(
+  snapshot: ApprovedSnapshot,
+  keyId: string | undefined,
+): ApprovedSnapshot {
+  return isSignSnapshot(snapshot)
+    ? { ...snapshot, ...(keyId === undefined ? {} : { keyId }) }
+    : snapshot;
+}
+
+// A declaration or a stored snapshot, whichever kind it names. The adapter
+// decides which normalizer applies; one that names neither is unsupported
+// rather than read as the other.
+export function normalizeDeclaration(value: unknown): ApprovedSnapshot {
+  if (isRecord(value) && value.adapter === "sign")
+    return normalizeSignProfile(value);
+  return normalizeProfile(value);
+}
+
+export function differingApprovedFields(
+  declared: ApprovedSnapshot,
+  approved: ApprovedSnapshot,
+): readonly ProfileSnapshotField[] {
+  if (declared.adapter !== approved.adapter) return ["adapter"];
+  if (isSignSnapshot(declared) && isSignSnapshot(approved)) {
+    const differing: ProfileSnapshotField[] = [];
+    if (declared.key !== approved.key) differing.push("key");
+    if (declared.keyId !== approved.keyId) differing.push("keyId");
+    if (
+      declared.prefixes.length !== approved.prefixes.length ||
+      declared.prefixes.some(
+        (prefix, index) => prefix !== approved.prefixes[index],
+      )
+    )
+      differing.push("prefixes");
+    return differing;
+  }
+  if (isSignSnapshot(declared) || isSignSnapshot(approved)) return ["adapter"];
+  return differingProfileFields(declared, approved);
+}
+
+export function approvedSnapshotsMatch(
+  declared: ApprovedSnapshot,
+  approved: ApprovedSnapshot,
+): boolean {
+  return differingApprovedFields(declared, approved).length === 0;
 }

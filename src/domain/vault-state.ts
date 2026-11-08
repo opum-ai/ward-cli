@@ -16,9 +16,11 @@ import { WardError } from "../contract/errors.ts";
 import { isOpaqueId } from "./identifiers.ts";
 import {
   isProfileName,
-  type NormalizedProfile,
-  normalizeProfile,
+  type ApprovedSnapshot,
+  isSignSnapshot,
+  normalizeStoredSnapshot,
   profileSnapshotVersion,
+  signSnapshotVersion,
 } from "./profile.ts";
 import {
   decodeSecretValue,
@@ -108,7 +110,7 @@ export interface ProfileApprovalRecord {
   // `approvedAt`, and judged at admission against the clock, never at read.
   readonly expiresAt: string;
   readonly snapshotVersion: number;
-  readonly snapshot: NormalizedProfile;
+  readonly snapshot: ApprovedSnapshot;
 }
 
 // A stored approval whose `snapshotVersion` this build does not implement.
@@ -515,7 +517,16 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
   )
     malformed();
   const checkoutId = ownCheckoutId(value);
-  if (value.snapshotVersion !== profileSnapshotVersion) {
+  // The version line is the snapshot's own kind's (DEC-262 a4): an HTTP
+  // approval is current at the HTTP version and a sign approval at the sign
+  // version, so a change to one normalizer never makes the other's approvals
+  // stale. The kind is read from the stored `adapter`; a record whose snapshot
+  // is not an object is damaged, as before.
+  if (!isRecord(value.snapshot)) malformed();
+  const storedKind = value.snapshot.adapter === "sign" ? "sign" : "http";
+  const currentVersion =
+    storedKind === "sign" ? signSnapshotVersion : profileSnapshotVersion;
+  if (value.snapshotVersion !== currentVersion) {
     // A record carrying no snapshot at all is damaged rather than merely from
     // another build; anything else here is that build's to interpret, not
     // this one's.
@@ -533,9 +544,9 @@ function ownProfileApproval(value: unknown): ParsedProfileApproval {
       },
     };
   }
-  let snapshot: NormalizedProfile;
+  let snapshot: ApprovedSnapshot;
   try {
-    snapshot = normalizeProfile(value.snapshot);
+    snapshot = normalizeStoredSnapshot(value.snapshot);
   } catch (error) {
     // A snapshot refused for a listed header name says which one, by Ward's
     // canonical spelling (WCLI-98); the constructor keeps only list members.
@@ -803,6 +814,35 @@ export function parseVaultState(plaintext: Uint8Array): VaultState {
   return state;
 }
 
+// A snapshot as the document stores it, in the shape its declaration has.
+function snapshotDocument(snapshot: ApprovedSnapshot): Record<string, unknown> {
+  if (isSignSnapshot(snapshot))
+    return {
+      adapter: snapshot.adapter,
+      key: snapshot.key,
+      keyId: snapshot.keyId,
+      prefixes: [...snapshot.prefixes],
+    };
+  return {
+    adapter: snapshot.adapter,
+    method: snapshot.method,
+    url: snapshot.url,
+    auth:
+      snapshot.auth.type === "header"
+        ? {
+            type: snapshot.auth.type,
+            name: snapshot.auth.name,
+            secret: snapshot.auth.secret,
+          }
+        : { type: snapshot.auth.type, secret: snapshot.auth.secret },
+    headers: Object.fromEntries(
+      snapshot.headers.map(({ name, value }) => [name, value]),
+    ),
+    requestBody: snapshot.requestBody,
+    output: snapshot.output,
+  };
+}
+
 export function serializeVaultState(state: VaultState): Uint8Array {
   // The reader refuses a document whose grants break the relations above, and
   // there is no repair command, so a writer that would produce one fails here
@@ -872,24 +912,7 @@ export function serializeVaultState(state: VaultState): Uint8Array {
           // normalizer reads both and a stored snapshot cannot drift into a
           // form only the serializer produces. The canonical order is the
           // normalizer's sorted one, and an object preserves it.
-          snapshot: {
-            adapter: snapshot.adapter,
-            method: snapshot.method,
-            url: snapshot.url,
-            auth:
-              snapshot.auth.type === "header"
-                ? {
-                    type: snapshot.auth.type,
-                    name: snapshot.auth.name,
-                    secret: snapshot.auth.secret,
-                  }
-                : { type: snapshot.auth.type, secret: snapshot.auth.secret },
-            headers: Object.fromEntries(
-              snapshot.headers.map(({ name, value }) => [name, value]),
-            ),
-            requestBody: snapshot.requestBody,
-            output: snapshot.output,
-          },
+          snapshot: snapshotDocument(snapshot),
         }),
       ),
       // Written back exactly as they were read. This build cannot interpret

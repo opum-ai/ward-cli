@@ -16,10 +16,10 @@ generated:
 
 ## Status
 
-Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5), (a6) and (a7)**, ruled by opum-doc as design authority
-(not the operator's words) and carried here from its relay. The record binds, not this document's
-copy. This change implements (i) storage, (ii) backup exclusion and the `ward key` commands; the sign
-profile and `ward sign` follow in a later change under WCLI-149.
+Accepted, 2026-11-07, under **DEC-262 (a3), (a4), (a5), (a6), (a7) and (a8)**, ruled by opum-doc as design
+authority (not the operator's words) and carried here from its relay. The record binds, not this
+document's copy. Storage, backup exclusion and the `ward key` commands landed first; the sign profile
+and `ward sign` follow in a second change under WCLI-149, and this record covers both.
 
 ## Context
 
@@ -51,19 +51,42 @@ key, `secret grant` does not share it, and `secret delete` removes it.
 `excludedSignKeys`, so the developer regenerates and re-enrols each. The container format is
 unchanged, so a restore cannot name what a backup left out; the backup does, in its text output and in `--json`, and `ward restore` states in prose that signing keys are never carried and must be regenerated and re-enrolled (DEC-262 a6, which replaces (a3)'s "restore names each excluded alias"). Restore also drops any sign-kind record by kind, so "restore reproduces none" holds by construction.
 
-**(iii) Authority is an approved "sign" profile** (ruled; implemented in the next change): a key alias plus allowed domain
-prefixes (one to eight, never empty: an empty list would admit any domain, DEC-262 a5), with bytes
-refused unless they begin with one. Ward signs exactly the bytes given; the caller prefixes.
+**(iii) Authority is an approved "sign" profile:** `{"adapter": "sign", "key": "<alias>",
+"prefixes": ["<base64>", ...]}` in the manifest, which needs no manifest-version change (profiles are
+normalized where used). One to eight prefixes, each 1 to 64 bytes, as the canonical base64 of its exact
+bytes (a prefix can hold a NUL), sorted and de-duplicated. Ward signs exactly the bytes given, and only
+if they begin with one of them; the caller does the prefixing. The approval is of that snapshot, from a
+trusted terminal, under ADR 0003's rules, and `ward check` and `profile list` report it.
+
+**The approval binds the key id (DEC-262 a8, ruled A).** The sign snapshot records the id of the key the
+alias named at approval time. A key regenerated under the same alias, for example after `ward secret
+delete signer` and `ward key generate signer`, leaves the approval stale (`profile_approval_stale`)
+until a person approves again in a terminal, and `ward check` reports the difference as `keyId`.
+Admission's in-transaction re-check compares against the pinned id, not against whatever key the
+alias resolves to at that moment. Approving a sign profile with no key under the alias is refused
+with `sign_key_not_found`, since there is nothing to bind. HTTP approvals keep binding the alias:
+a signature is an identity claim, and an HTTP credential is not. This is the sign snapshot's version 1
+shape under (a4), so there is no version bump, and a stored sign snapshot without a key id is a
+malformed vault. Binding the alias, as first built, was refused.
 
 **Two version lines (DEC-262 a4).** HTTP approvals keep their `profileSnapshotVersion` and stay valid;
-the sign snapshot has its own first version, and the reader tells the kinds apart by the stored
+the sign snapshot has its own `signSnapshotVersion`, 1, and the reader tells them apart by the stored
 `adapter`. A later change to one kind's normalizer makes only that kind's approvals stale-inert (ADR
-0018, DEC-246 a2). Bumping every approval to a new version was refused: it would force every developer
-to re-approve every HTTP profile for no change to HTTP, against the rule that a vault with neither a sign
-key nor a sign approval stays as it was.
+0018, DEC-246 a2). Bumping both would force every developer to re-approve every HTTP profile for no
+change to HTTP. (a4) says HTTP is at version 2; the code has 3, bumped before release, and (a7) reads
+(a4) as "HTTP stays at its current version, 3". HTTP is untouched, and the sign snapshot starts at 1.
 
 **(iv) Commands:** `ward key generate <alias>`, `ward key public <alias>`, `ward sign <profile>`.
-No result or error carries key material.
+`ward sign` reads the bytes on standard input (at most 64 KiB) and writes the raw 64-byte signature
+to standard output; `--base64` writes it as text, and `--json` carries it as base64 in the envelope.
+A sign is audited with the existing audit record, admission then completion, with `profile` the sign
+profile and `secretId` the key's id, so the audit schema is unchanged. Bytes outside every prefix are
+refused before admission and so are not audited, as a run refused before it is sent is not. If the
+completion event cannot be written after a signature exists, the signature is still returned and the
+exit is nonzero (`auditRecorded: false` under `--json`), as `ward run` reports it, and the failure is
+named on standard error (DEC-262 a7), so an unaudited signature cannot read as success. Sign keys are
+not in `ward status` or `ward doctor` (a7); `secret list`, `inspect` and `key public` show them. No result or error
+carries key material.
 
 ## Consequences
 
@@ -75,5 +98,26 @@ No result or error carries key material.
   version differs holds an approval of another version inert (DEC-246 a2). It is the sign key's
   `kind` that refuses. A sign approval left after its key is deleted is held inert by an older
   build, which is fail-safe.
+- An HTTPS profile and a sign profile cannot stand in for each other: `ward run` refuses a sign
+  approval and `ward sign` refuses an HTTP one, and a sign key is never an HTTPS credential.
+- The sign snapshot version line must never take the value 3, the current HTTP version. A build
+  from before part 2 compares every stored approval against 3 only: a sign approval at any other
+  value is held inert (stale), but one at 3 would pass that check, be read as an HTTP snapshot,
+  and make the build refuse the whole vault as `vault_state_malformed`. A later HTTP bump does not
+  lift the rule for builds already shipped.
+- The prefix count is checked before de-duplication (DEC-262 a5), so nine copies of one prefix are
+  refused: the limit is on what the manifest declares, not on the set it normalizes to.
+- Contract vocabulary this change adds, decided under DEC-262 (iv) and listed here so a review can
+  check it. `ward check` and `profile list` gain two secret states and matching reasons for a sign
+  profile: `sign-key-missing` (no key under the alias; advice `ward key generate <alias>`) and
+  `sign-key-alias-taken` (an ordinary secret holds the alias; advice `ward secret delete <alias>`,
+  then `ward key generate <alias>`). `ward sign` gains the error `sign_input_terminal` (standard
+  input is a terminal), so it no longer raises the secret `--stdin` advice. `ward profile approve`
+  gains `sign_key_alias_taken` (an ordinary secret holds the alias; advice delete then generate), so
+  it no longer gives `sign_key_not_found`'s generate advice for a case where `ward key generate`
+  would refuse with `sign_key_exists`; with no key at all it still gives `sign_key_not_found`. The
+  two are told apart on approve, unlike `ward key public`, because approval is a terminal act and
+  `ward check` reports the same two states. Part 1 added
+  `sign-key`, `sign_key_refused`, `sign_key_exists` and `sign_key_not_found`.
 - Tests use synthetic keys and a temporary store only; the RFC 8032 test vector 1 pins the
   signing and public-key derivation.

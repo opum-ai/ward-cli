@@ -291,8 +291,14 @@ describe("DEC-248: the stored shape carries the name", () => {
     const bytes = serializeVaultState(state);
     expect(new TextDecoder().decode(bytes)).toContain(`"name":"${NAME}"`);
     const read = parseVaultState(bytes);
+    const snapshot = findProfileApproval(
+      read,
+      checkout,
+      projectId,
+      "example",
+    )?.snapshot;
     expect(
-      findProfileApproval(read, checkout, projectId, "example")?.snapshot.auth,
+      snapshot !== undefined && "auth" in snapshot && snapshot.auth,
     ).toEqual({ type: "header", name: NAME, secret: ALIAS });
   });
 

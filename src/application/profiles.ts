@@ -29,13 +29,15 @@ import {
 } from "../domain/approval-ttl.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import {
-  differingProfileFields,
+  type ApprovedSnapshot,
+  approvedSnapshotsMatch,
+  differingApprovedFields,
   isProfileName,
-  type NormalizedProfile,
-  normalizeProfile,
+  isSignSnapshot,
+  normalizeDeclaration,
+  withSignKeyId,
   type ProfileSnapshotField,
-  profileSnapshotVersion,
-  profilesMatch,
+  snapshotVersionFor,
 } from "../domain/profile.ts";
 import {
   type ProjectManifest,
@@ -45,6 +47,7 @@ import {
   approvalExpired,
   type CheckoutIdentity,
   findProfileApproval,
+  findSecret,
   resolveSecret,
   type ProfileApprovalRecord,
   parseVaultState,
@@ -128,6 +131,11 @@ export type SecretState =
   // Reported, not thrown: one such declaration must not take down the report
   // for every other profile.
   | "sign-key"
+  // A sign profile's key alias: no record at all, or an ordinary secret
+  // holding the alias. They need different advice, since `ward key generate`
+  // refuses an alias an ordinary secret already holds.
+  | "sign-key-missing"
+  | "sign-key-alias-taken"
   | "not-evaluated";
 
 export interface ProfileReadiness {
@@ -152,6 +160,8 @@ export const profileCheckReasons = [
   "secret",
   "grant-revoked",
   "sign-key",
+  "sign-key-missing",
+  "sign-key-alias-taken",
 ] as const;
 
 export type ProfileCheckReason = (typeof profileCheckReasons)[number];
@@ -214,11 +224,11 @@ function readinessFor(options: {
     ? manifest.profiles[name]
     : undefined;
   let declaration: DeclarationState = "valid";
-  let snapshot: NormalizedProfile | undefined;
+  let snapshot: ApprovedSnapshot | undefined;
   if (!isProfileName(name)) declaration = "invalid";
   else {
     try {
-      snapshot = normalizeProfile(declared);
+      snapshot = normalizeDeclaration(declared);
     } catch {
       declaration = "invalid";
     }
@@ -235,6 +245,15 @@ function readinessFor(options: {
       secret: "not-evaluated",
       differing: [],
     };
+  // A sign approval binds the key's id (DEC-262 a8), so the declaration is
+  // compared as it stands now: against the key the alias resolves to today.
+  if (isSignSnapshot(snapshot)) {
+    const current = findSecret(state, authority.projectId, snapshot.key);
+    snapshot = withSignKeyId(
+      snapshot,
+      current !== undefined && isSignKey(current) ? current.id : undefined,
+    );
+  }
 
   const approved = findProfileApproval(
     state,
@@ -245,7 +264,7 @@ function readinessFor(options: {
   const differing =
     approved === undefined
       ? []
-      : differingProfileFields(snapshot, approved.snapshot);
+      : differingApprovedFields(snapshot, approved.snapshot);
   // A changed declaration is stale whatever the clock says; an unchanged one
   // is expired once its lifetime has run out (DEC-217 Q5).
   const approval: ApprovalState =
@@ -259,21 +278,35 @@ function readinessFor(options: {
   // A revoked grant is its own state and not "missing": the advice for a
   // missing credential is to store one, and storing a local secret under a
   // revoked grant's alias would block the owner from granting it again.
-  const resolution = resolveSecret(
-    state,
-    authority.projectId,
-    snapshot.auth.secret,
-  );
-  const resolved = resolution.kind;
-  const usable = resolved === "owned" || resolved === "granted";
-  const secret: SecretState =
-    usable && isSignKey(resolution.secret)
-      ? "sign-key"
-      : usable
-        ? "present"
-        : resolved === "revoked"
-          ? "revoked"
-          : "missing";
+  let secret: SecretState;
+  if (isSignSnapshot(snapshot)) {
+    // A sign profile's credential is a signing key this project owns. A key is
+    // never granted (DEC-262 (2)), and an ordinary secret under the alias is
+    // not a signing key, so both read as missing.
+    const key = findSecret(state, authority.projectId, snapshot.key);
+    secret =
+      key === undefined
+        ? "sign-key-missing"
+        : isSignKey(key)
+          ? "present"
+          : "sign-key-alias-taken";
+  } else {
+    const resolution = resolveSecret(
+      state,
+      authority.projectId,
+      snapshot.auth.secret,
+    );
+    const resolved = resolution.kind;
+    const usable = resolved === "owned" || resolved === "granted";
+    secret =
+      usable && isSignKey(resolution.secret)
+        ? "sign-key"
+        : usable
+          ? "present"
+          : resolved === "revoked"
+            ? "revoked"
+            : "missing";
+  }
   return {
     profile: name,
     declaration,
@@ -346,6 +379,9 @@ function checkReasons(
   if (entry.secret === "missing") reasons.push("secret");
   if (entry.secret === "revoked") reasons.push("grant-revoked");
   if (entry.secret === "sign-key") reasons.push("sign-key");
+  if (entry.secret === "sign-key-missing") reasons.push("sign-key-missing");
+  if (entry.secret === "sign-key-alias-taken")
+    reasons.push("sign-key-alias-taken");
   return reasons;
 }
 
@@ -360,6 +396,9 @@ const reasonPhrases: Record<ProfileCheckReason, string> = {
     "the grant behind the credential was revoked, or its owner secret was deleted",
   "sign-key":
     "the credential alias names a signing key, which is never a credential",
+  "sign-key-missing": "the signing key does not exist in this project",
+  "sign-key-alias-taken":
+    "an ordinary secret holds the signing key's alias in this project",
 };
 
 function reasonPhrase(
@@ -398,6 +437,14 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
   if (reasons.has("sign-key"))
     guidance.push(
       "Name a different secret in the profile's auth.secret, or delete the signing key and store an ordinary secret under that alias with `ward secret set`.",
+    );
+  if (reasons.has("sign-key-missing"))
+    guidance.push(
+      "A developer creates a missing signing key in a terminal with `ward key generate <alias>`.",
+    );
+  if (reasons.has("sign-key-alias-taken"))
+    guidance.push(
+      "An ordinary secret holds the signing key's alias. Delete it with `ward secret delete <alias>`, then create the key with `ward key generate <alias>`, or name a different alias in the profile's key.",
     );
   if (reasons.has("declaration"))
     guidance.push(
@@ -476,7 +523,7 @@ function listText(report: ReadinessReport): string {
         `  ${(names[index] ?? "").padEnd(width)}  ${profileStateWord(entry, report.binding)}`,
     ),
     "",
-    "A profile is runnable when it is approved here and its credential is stored.",
+    "A profile is runnable when it is approved here and its credential (a stored secret, or for a sign profile a signing key) exists.",
   ].join("\n");
 }
 
@@ -503,7 +550,7 @@ function stillApproved(
   options: ProfileOptions,
   projectId: string,
   name: string,
-  snapshot: NormalizedProfile,
+  snapshot: ApprovedSnapshot,
 ): boolean {
   const text = options.files.read("manifest");
   if (text === undefined) return false;
@@ -511,7 +558,13 @@ function stillApproved(
     const manifest = parseProjectManifest(text);
     if (manifest.projectId !== projectId) return false;
     if (!Object.hasOwn(manifest.profiles, name)) return false;
-    return profilesMatch(normalizeProfile(manifest.profiles[name]), snapshot);
+    return approvedSnapshotsMatch(
+      withSignKeyId(
+        normalizeDeclaration(manifest.profiles[name]),
+        isSignSnapshot(snapshot) ? snapshot.keyId : undefined,
+      ),
+      snapshot,
+    );
   } catch {
     return false;
   }
@@ -527,7 +580,19 @@ async function approveProfile(
   const manifest = requireManifest(opened.checkout);
   if (!Object.hasOwn(manifest.profiles, name))
     throw new WardError("profile_not_found");
-  const snapshot = normalizeProfile(manifest.profiles[name]);
+  let snapshot = normalizeDeclaration(manifest.profiles[name]);
+  if (isSignSnapshot(snapshot)) {
+    // The approval is of this key, by id (DEC-262 a8). With no key under the
+    // alias there is nothing to bind, so nothing is asked.
+    const key = findSecret(opened.state, projectId, snapshot.key);
+    // Told apart here, unlike in `ward key public`: approval is a terminal
+    // act by the developer, and `ward check` already reports the same two
+    // states, so nothing is disclosed. Each has advice that can be followed:
+    // `ward key generate` refuses an alias an ordinary secret holds.
+    if (key === undefined) throw new WardError("sign_key_not_found");
+    if (!isSignKey(key)) throw new WardError("sign_key_alias_taken");
+    snapshot = withSignKeyId(snapshot, key.id);
+  }
   if (!options.approver.available())
     throw new WardError("profile_requires_terminal");
   const answer = options.approver.ask({
@@ -570,12 +635,19 @@ async function approveProfile(
     expiresAt,
     // Written with the record so a later build reads the snapshot under the
     // rules that produced it rather than under its own (spec §6.2).
-    snapshotVersion: profileSnapshotVersion,
+    snapshotVersion: snapshotVersionFor(snapshot),
     snapshot,
   };
-  writeApproval(options, opened.key, projectId, (state) =>
-    withProfileApproval(state, record),
-  );
+  writeApproval(options, opened.key, projectId, (state) => {
+    // Inside the transaction: a key replaced while the question was open must
+    // not be approved under the old key's id.
+    if (isSignSnapshot(snapshot)) {
+      const key = findSecret(state, projectId, snapshot.key);
+      if (key === undefined || !isSignKey(key) || key.id !== snapshot.keyId)
+        throw new WardError("profile_changed");
+    }
+    return withProfileApproval(state, record);
+  });
   return {
     kind: "profile.approve",
     data: {
@@ -597,9 +669,10 @@ async function approveProfile(
       `  expires:   ${expiresAt}`,
       "",
       "Ward runs this operation only while the declared profile still matches",
-      "what was approved, and only until the approval expires. A change to the",
-      "destination, method, authentication reference, headers, body policy or",
-      "output policy needs approval again, and so does an expired approval.",
+      "what was approved, and only until the approval expires.",
+      isSignSnapshot(snapshot)
+        ? "A change to the key alias or the domain prefixes needs approval again, and so does a key regenerated under the alias (the approval is of this key's id), and so does an expired approval."
+        : "A change to the destination, method, authentication reference, headers, body policy or output policy needs approval again, and so does an expired approval.",
     ].join("\n"),
   };
 }
