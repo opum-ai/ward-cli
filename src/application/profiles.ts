@@ -130,6 +130,11 @@ export type SecretState =
   // Reported, not thrown: one such declaration must not take down the report
   // for every other profile.
   | "sign-key"
+  // A sign profile's key alias: no record at all, or an ordinary secret
+  // holding the alias. They need different advice, since `ward key generate`
+  // refuses an alias an ordinary secret already holds.
+  | "sign-key-missing"
+  | "sign-key-alias-taken"
   | "not-evaluated";
 
 export interface ProfileReadiness {
@@ -154,6 +159,8 @@ export const profileCheckReasons = [
   "secret",
   "grant-revoked",
   "sign-key",
+  "sign-key-missing",
+  "sign-key-alias-taken",
 ] as const;
 
 export type ProfileCheckReason = (typeof profileCheckReasons)[number];
@@ -267,7 +274,12 @@ function readinessFor(options: {
     // never granted (DEC-262 (2)), and an ordinary secret under the alias is
     // not a signing key, so both read as missing.
     const key = findSecret(state, authority.projectId, snapshot.key);
-    secret = key !== undefined && isSignKey(key) ? "present" : "missing";
+    secret =
+      key === undefined
+        ? "sign-key-missing"
+        : isSignKey(key)
+          ? "present"
+          : "sign-key-alias-taken";
   } else {
     const resolution = resolveSecret(
       state,
@@ -357,6 +369,9 @@ function checkReasons(
   if (entry.secret === "missing") reasons.push("secret");
   if (entry.secret === "revoked") reasons.push("grant-revoked");
   if (entry.secret === "sign-key") reasons.push("sign-key");
+  if (entry.secret === "sign-key-missing") reasons.push("sign-key-missing");
+  if (entry.secret === "sign-key-alias-taken")
+    reasons.push("sign-key-alias-taken");
   return reasons;
 }
 
@@ -371,6 +386,9 @@ const reasonPhrases: Record<ProfileCheckReason, string> = {
     "the grant behind the credential was revoked, or its owner secret was deleted",
   "sign-key":
     "the credential alias names a signing key, which is never a credential",
+  "sign-key-missing": "the signing key does not exist in this project",
+  "sign-key-alias-taken":
+    "an ordinary secret holds the signing key's alias in this project",
 };
 
 function reasonPhrase(
@@ -409,6 +427,14 @@ function checkGuidance(report: ReadinessReport): readonly string[] {
   if (reasons.has("sign-key"))
     guidance.push(
       "Name a different secret in the profile's auth.secret, or delete the signing key and store an ordinary secret under that alias with `ward secret set`.",
+    );
+  if (reasons.has("sign-key-missing"))
+    guidance.push(
+      "A developer creates a missing signing key in a terminal with `ward key generate <alias>`.",
+    );
+  if (reasons.has("sign-key-alias-taken"))
+    guidance.push(
+      "An ordinary secret holds the signing key's alias. Delete it with `ward secret delete <alias>`, then create the key with `ward key generate <alias>`, or name a different alias in the profile's key.",
     );
   if (reasons.has("declaration"))
     guidance.push(
@@ -487,7 +513,7 @@ function listText(report: ReadinessReport): string {
         `  ${(names[index] ?? "").padEnd(width)}  ${profileStateWord(entry, report.binding)}`,
     ),
     "",
-    "A profile is runnable when it is approved here and its credential is stored.",
+    "A profile is runnable when it is approved here and its credential (a stored secret, or for a sign profile a signing key) exists.",
   ].join("\n");
 }
 
@@ -611,9 +637,10 @@ async function approveProfile(
       `  expires:   ${expiresAt}`,
       "",
       "Ward runs this operation only while the declared profile still matches",
-      "what was approved, and only until the approval expires. A change to the",
-      "destination, method, authentication reference, headers, body policy or",
-      "output policy needs approval again, and so does an expired approval.",
+      "what was approved, and only until the approval expires.",
+      isSignSnapshot(snapshot)
+        ? "A change to the key alias or the domain prefixes needs approval again, and so does an expired approval."
+        : "A change to the destination, method, authentication reference, headers, body policy or output policy needs approval again, and so does an expired approval.",
     ].join("\n"),
   };
 }

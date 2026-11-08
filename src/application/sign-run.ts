@@ -214,6 +214,8 @@ export async function runSign(
   } catch (error) {
     if (error instanceof WardError && error.code === "secret_value_too_large")
       throw new WardError("sign_input_too_large");
+    if (error instanceof WardError && error.code === "secret_stdin_terminal")
+      throw new WardError("sign_input_terminal");
     throw error;
   }
   try {

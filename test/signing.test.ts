@@ -1002,3 +1002,111 @@ describe("ward sign", () => {
     expect(result.stdout + result.stderr).toContain("sign_input_too_large");
   });
 });
+
+const httpProfile = {
+  adapter: "http",
+  method: "GET",
+  url: "https://example.invalid/status",
+  auth: { type: "bearer", secret: "tok" },
+  output: "status",
+};
+
+describe("a sign profile whose key is not usable (WCLI-149 review B1)", () => {
+  test("no key reads sign-key-missing and the advice is ward key generate", async () => {
+    const { options } = await signReady();
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    const json = await runWard(["check", "signer", "--json"], options);
+    expect(json.stdout).toContain("sign-key-missing");
+    expect(json.stdout).not.toContain('"secret"');
+    const text = await runWard(["check", "signer"], options);
+    expect(text.stdout).toContain("the signing key does not exist");
+    expect(text.stdout).toContain("ward key generate <alias>");
+    expect(text.stdout).not.toContain("ward secret set");
+    const listed = await runWard(["profile", "list", "--json"], options);
+    expect(listed.stdout).toContain('"secret":"sign-key-missing"');
+    const listedText = await runWard(["profile", "list"], options);
+    expect(listedText.stdout).toContain("signing key");
+  });
+
+  test("an ordinary secret under the alias reads sign-key-alias-taken and names ward secret delete first", async () => {
+    const { options } = await signReady();
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    await runWard(["secret", "set", "signer", "--stdin", "--json"], options);
+    const json = await runWard(["check", "signer", "--json"], options);
+    expect(json.stdout).toContain("sign-key-alias-taken");
+    const text = await runWard(["check", "signer"], options);
+    expect(text.stdout).toContain("an ordinary secret holds");
+    expect(text.stdout).toContain("ward secret delete <alias>");
+    expect(text.stdout).toContain("ward key generate <alias>");
+    const listed = await runWard(["profile", "list", "--json"], options);
+    expect(listed.stdout).toContain('"secret":"sign-key-alias-taken"');
+    // The advice is followable: deleting the secret lets the key be created.
+    await runWard(["secret", "delete", "signer", "--json"], options);
+    const generated = await runWard(
+      ["key", "generate", "signer", "--json"],
+      options,
+    );
+    expect(generated.exitCode).toBe(exitCodes.success);
+    const after = await runWard(["check", "signer", "--json"], options);
+    expect(after.exitCode).toBe(exitCodes.success);
+  });
+});
+
+describe("the two profile kinds cannot stand in for each other (WCLI-149 review N1)", () => {
+  test("each command refuses the other kind's declaration with profile_unsupported", async () => {
+    const { options } = await signReady();
+    const message = encoder.encode("app/v1\0x");
+    const ranSign = await runWard(["run", "signer", "--json"], options);
+    expect(ranSign.stdout + ranSign.stderr).toContain("profile_unsupported");
+    declareProfiles(options, { web: httpProfile });
+    const signedHttp = await runWard(
+      ["sign", "web", "--json"],
+      withInput(options, message),
+    );
+    expect(signedHttp.stdout + signedHttp.stderr).toContain(
+      "profile_unsupported",
+    );
+  });
+
+  test("an HTTP approval redeclared as a sign profile is stale, not runnable by ward sign", async () => {
+    const { options } = await ready();
+    await runWard(["key", "generate", "web", "--json"], options);
+    declareProfiles(options, { web: httpProfile });
+    await runWard(["profile", "approve", "web", "--json"], options);
+    declareProfiles(options, {
+      web: { adapter: "sign", key: "web", prefixes: [prefixB64] },
+    });
+    const signed = await runWard(
+      ["sign", "web", "--json"],
+      withInput(options, encoder.encode("app/v1\0x")),
+    );
+    expect(signed.exitCode).toBe(exitCodes.denied);
+    expect(signed.stdout + signed.stderr).toContain("profile_approval_stale");
+  });
+
+  test("a sign approval redeclared as an HTTP profile is stale, not runnable by ward run", async () => {
+    const { options } = await signReady();
+    declareProfiles(options, { signer: httpProfile });
+    const ran = await runWard(["run", "signer", "--json"], options);
+    expect(ran.exitCode).toBe(exitCodes.denied);
+    expect(ran.stdout + ran.stderr).toContain("profile_approval_stale");
+  });
+});
+
+describe("ward sign on a terminal (WCLI-149 review N2)", () => {
+  test("a terminal stdin raises sign_input_terminal, not the secret --stdin advice", async () => {
+    const { options } = await signReady();
+    const onTerminal: RunOptions = {
+      ...options,
+      secrets: {
+        ...secrets,
+        readStdin: () => {
+          throw new WardError("secret_stdin_terminal");
+        },
+      },
+    };
+    const result = await runWard(["sign", "signer", "--json"], onTerminal);
+    expect(result.stdout + result.stderr).toContain("sign_input_terminal");
+    expect(result.stdout + result.stderr).not.toContain("--stdin");
+  });
+});

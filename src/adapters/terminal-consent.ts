@@ -257,7 +257,7 @@ function signApprovalPrompt(
 
 function profileRevocationPrompt(question: ProfileRevocationQuestion): string {
   return [
-    "Ward is asking you to revoke your approval of an HTTPS operation.",
+    "Ward is asking you to revoke your approval of this profile.",
     "",
     `  profile:  ${escapeForDisplay(question.profile)}`,
     `  project:  ${question.projectId}`,

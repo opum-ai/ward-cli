@@ -89,5 +89,10 @@ carries key material.
   build, which is fail-safe.
 - An HTTPS profile and a sign profile cannot stand in for each other: `ward run` refuses a sign
   approval and `ward sign` refuses an HTTP one, and a sign key is never an HTTPS credential.
+- The sign snapshot version line must never take the value 3, the current HTTP version. A build
+  from before part 2 compares every stored approval against 3 only: a sign approval at any other
+  value is held inert (stale), but one at 3 would pass that check, be read as an HTTP snapshot,
+  and make the build refuse the whole vault as `vault_state_malformed`. A later HTTP bump does not
+  lift the rule for builds already shipped.
 - Tests use synthetic keys and a temporary store only; the RFC 8032 test vector 1 pins the
   signing and public-key derivation.
