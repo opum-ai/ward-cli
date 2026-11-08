@@ -104,11 +104,9 @@ describe("T01: setup and non-initialization", () => {
     expect(keychain.items.size).toBe(1);
     expect(mode(directory)).toBe(0o700);
     expect(mode(join(directory, vaultFileName))).toBe(0o600);
-    // On macOS the flock file persists (the kernel holds the lock; the
-    // content is advisory); the O_EXCL fallback removes its file. Either
-    // way only the journal is setup bookkeeping that must disappear.
-    if (process.platform === "darwin")
-      expect(existsSync(join(directory, setupLockFileName))).toBe(true);
+    // The flock file persists (the kernel holds the lock; the content is
+    // advisory). Only the journal is setup bookkeeping that must disappear.
+    expect(existsSync(join(directory, setupLockFileName))).toBe(true);
     expect(existsSync(join(directory, setupJournalFileName))).toBe(false);
     // The sealed snapshot is the minimal skeleton document.
     const key = keychain.items.values().next().value as number[];
@@ -385,7 +383,7 @@ describe("write-unconfirmed resolution", () => {
 });
 
 describe("the setup lock", () => {
-  test.skipIf(process.platform !== "darwin")(
+  test(
     "a live flock holder refuses a second setup, and release admits it",
     async () => {
       const { directory, options } = fresh();
@@ -415,19 +413,106 @@ describe("the setup lock", () => {
   test("an unlocked lock file does not block setup", async () => {
     const { directory, options } = fresh();
     mkdirSync(directory, { mode: 0o700 });
-    // A pid of a dead process must not block a new setup. On macOS flock(2)
-    // arbitrates and the content is advisory; the O_EXCL fallback reaps the
-    // dead pid's file.
+    // A pid of a dead process must not block a new setup: flock(2)
+    // arbitrates and the content is advisory.
     writeFileSync(join(directory, setupLockFileName), "999999\n", {
       mode: 0o600,
     });
     const result = await setupViaRunWard(options());
     expect(result.exitCode).toBe(exitCodes.success);
-    if (process.platform === "darwin")
-      expect(readFileSync(join(directory, setupLockFileName), "utf8")).toBe(
-        `${process.pid}\n`,
-      );
+    expect(readFileSync(join(directory, setupLockFileName), "utf8")).toBe(
+      `${process.pid}\n`,
+    );
   });
+});
+
+// WCLI-152: the replacement for the O_EXCL fallback that the WCLI-20 review
+// measured overlapping (12 holder pairs in 20 rounds). Each round is a batch of
+// fresh one-shot processes behind a start barrier: each takes the lock once and
+// exits, half of them without releasing, so every round leaves dead recorded
+// holders behind (the path on which the old fallback reaped a live lock).
+// Real processes and the real lock on whatever platform this runs on, with the
+// platform not faked. The control shows the detector sees overlap with no lock.
+// Where this cannot run: macOS exercises only the darwin path; musl Linux (no
+// libc.so.6) and every other platform fail closed instead of locking.
+describe("the setup lock excludes real overlapping holders", () => {
+  const RACE_PROBE = join(
+    import.meta.dir,
+    "fixtures",
+    "setup-lock-race-probe.ts",
+  );
+  const ROUNDS = 60;
+  const BATCH = 6;
+
+  async function race(mode: "locked" | "unlocked") {
+    const { directory } = fresh();
+    mkdirSync(directory, { mode: 0o700 });
+    const markers = mkdtempSync(join(root, "markers-"));
+    const total = { acquired: 0, denied: 0, overlaps: 0 };
+    for (let round = 0; round < ROUNDS; round++) {
+      if (mode === "locked") {
+        // Every round opens on a lock file recording a dead holder, the state
+        // a holder killed mid-setup leaves. A pid-recording lock reaps it, and
+        // contenders reaping at once is what let the old fallback overlap.
+        const gone = Bun.spawn([process.execPath, "-e", ""]);
+        await gone.exited;
+        writeFileSync(join(directory, setupLockFileName), `${gone.pid}\n`, {
+          mode: 0o600,
+        });
+      }
+      const barrier = mkdtempSync(join(root, "barrier-"));
+      const workers = Array.from({ length: BATCH }, (_, index) =>
+        spawnProbe(RACE_PROBE, [
+          directory,
+          markers,
+          barrier,
+          String(index),
+          mode,
+        ]),
+      );
+      while (readdirSync(barrier).length < BATCH) await Bun.sleep(5);
+      writeFileSync(join(barrier, "go"), "");
+      const results = await Promise.all(
+        workers.map(async (worker) => {
+          const out = await new Response(worker.stdout).text();
+          const err = await new Response(worker.stderr).text();
+          await worker.exited;
+          if (worker.exitCode !== 0) throw new Error(`probe failed: ${err}`);
+          return JSON.parse(out) as typeof total;
+        }),
+      );
+      for (const r of results) {
+        total.acquired += r.acquired;
+        total.denied += r.denied;
+        total.overlaps += r.overlaps;
+      }
+    }
+    return total;
+  }
+
+  test(
+    "with no lock the detector sees overlapping holders (control)",
+    async () => {
+      const result = await race("unlocked");
+      expect(result.acquired).toBe(ROUNDS * BATCH);
+      expect(result.overlaps).toBeGreaterThan(0);
+    },
+    { timeout: 240_000 },
+  );
+
+  test(
+    "with the lock no two holders ever overlap, and the lock is taken and refused",
+    async () => {
+      const result = await race("locked");
+      expect(result.overlaps).toBe(0);
+      expect(result.acquired).toBeGreaterThanOrEqual(ROUNDS);
+      // Six processes released together must be refused sometimes, or the
+      // test never exercised exclusion at all.
+      expect(result.denied).toBeGreaterThan(0);
+      expect(result.acquired + result.denied).toBe(ROUNDS * BATCH);
+    },
+    { timeout: 240_000 },
+  );
 });
 
 describe("mutual exclusion under concurrency", () => {
