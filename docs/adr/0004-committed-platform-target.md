@@ -46,6 +46,6 @@ the adapter from WCLI-5 fails closed on any other platform.
 
 - Until WCLI-21 or WCLI-22 lands, the Keychain adapter reports `vault_key_store_unsupported`
   off macOS. That is the intended state of the preview, not a defect.
-- CI today is self-hosted Linux ARM64 only. It runs Ward's tests on Linux but is not a T26 run
+- CI today is GitHub-hosted Linux ARM64 (ubuntu-24.04-arm) only. It runs Ward's tests on Linux but is not a T26 run
   for any platform. Windows needs a runner or machine that does not exist yet.
 - WCLI-15's qualification matrix names the platform each T26 result came from.
