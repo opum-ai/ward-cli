@@ -3,7 +3,10 @@
 // gives tools a minimal environment: a fake cannot find `bun` on PATH or learn
 // its record directory from the environment, and a committed file mode is not
 // something a checkout is guaranteed to keep.
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+//
+// `multicall` mirrors tpm2-tools 5.x: one `tpm2` binary that dispatches on
+// argv[0], with every tpm2_* a symlink to it.
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { requiredTools } from "../../../src/adapters/tpm2-tools.ts";
 
@@ -13,14 +16,25 @@ export function installFakeTools(
   directory: string,
   recordDirectory: string,
   modes: Readonly<Record<string, string>> = {},
+  options: { multicall?: boolean } = {},
 ): void {
   mkdirSync(directory, { recursive: true });
   mkdirSync(recordDirectory, { recursive: true });
+  const run = (tool: string, mode: string) =>
+    `exec '${process.execPath}' '${FAKE}' ${tool} '${recordDirectory}' '${mode}' "$@"\n`;
+  if (options.multicall === true) {
+    const multicall = join(directory, "tpm2");
+    writeFileSync(multicall, `#!/bin/sh\n${run('"${0##*/}"', "record")}`);
+    chmodSync(multicall, 0o755);
+    for (const tool of requiredTools)
+      symlinkSync(multicall, join(directory, tool));
+    return;
+  }
   for (const tool of requiredTools) {
     const path = join(directory, tool);
     writeFileSync(
       path,
-      `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' '${tool}' '${recordDirectory}' '${modes[tool] ?? "record"}' "$@"\n`,
+      `#!/bin/sh\n${run(`'${tool}'`, modes[tool] ?? "record")}`,
     );
     chmodSync(path, 0o755);
   }

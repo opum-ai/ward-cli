@@ -6,10 +6,14 @@
 // (slice 3), so nothing here widens the contract.
 import {
   accessSync,
-  chmodSync,
+  closeSync,
   constants as fileConstants,
+  fchmodSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readFileSync,
   statSync,
   type Stats,
 } from "node:fs";
@@ -19,6 +23,9 @@ import { isPrivateEntry } from "./sqlite-vault-store.ts";
 export const tpmDevicePath = "/dev/tpmrm0";
 // Every call to a tool is bounded; a hung tool is killed, not waited for.
 export const defaultToolTimeoutMs = 10_000;
+// A tool's output is a few bytes (an unsealed key is 32); a stream past this is
+// a wrong or rogue tool, refused rather than buffered.
+export const maxToolOutputBytes = 4096;
 
 // What a seal and an unseal run, by name (condition (iii): the capability is
 // the presence of these, never a version).
@@ -37,17 +44,23 @@ export type Tpm2Reason =
   | "tpm_absent"
   | "tools_absent"
   | "tpm_not_accessible"
+  | "tpm_unusable"
+  | "directory_unusable"
   | "blob_not_user_private"
   | "tool_timeout"
+  | "tool_output_too_large"
   | "tool_failed";
 
-// What each refusal tells the operator to do; the reason names the state.
+// What each refusal says; a detail adds the step to take.
 const remedies: Record<Tpm2Reason, string> = {
   tpm_absent: "no TPM2 resource manager device",
   tools_absent: "install the tpm2-tools package",
-  tpm_not_accessible: "join the tss group (the device is not readable)",
+  tpm_not_accessible: "the TPM2 device is not accessible to this user",
+  tpm_unusable: "the TPM2 device could not be opened",
+  directory_unusable: "the blob directory could not be created",
   blob_not_user_private: "blob not user-private",
   tool_timeout: "a tpm2 tool did not finish in time",
+  tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
   tool_failed: "a tpm2 tool failed",
 };
 
@@ -72,8 +85,8 @@ export interface Tpm2Host {
   // The resource manager device. Defaults to /dev/tpmrm0, never /dev/tpm0.
   readonly device?: string;
   // Opens the device for reading and writing, throwing the errno on refusal.
-  // Injected by tests, since a character device cannot be made unreadable
-  // without root.
+  // The default really opens it (O_RDWR, no O_CREAT) and closes it at once:
+  // access(2) would pass where a mandatory-access profile refuses the open.
   readonly openCheck?: (device: string) => void;
 }
 
@@ -89,6 +102,9 @@ function errnoCode(error: unknown): unknown {
     : undefined;
 }
 
+// A tool is the first executable regular file on an absolute PATH entry. The
+// stat follows symlinks on purpose: tpm2-tools 5.x installs tpm2_* as symlinks
+// to one multicall binary that dispatches on argv[0].
 function resolveTool(tool: string, path: string): string | undefined {
   for (const directory of path.split(delimiter)) {
     if (!isAbsolute(directory)) continue;
@@ -104,8 +120,32 @@ function resolveTool(tool: string, path: string): string | undefined {
   return undefined;
 }
 
-function defaultOpenCheck(device: string): void {
-  accessSync(device, fileConstants.R_OK | fileConstants.W_OK);
+export function defaultOpenCheck(device: string): void {
+  closeSync(openSync(device, fileConstants.O_RDWR));
+}
+
+function groupName(gid: number): string {
+  try {
+    for (const line of readFileSync("/etc/group", "utf8").split("\n")) {
+      const [name, , id] = line.split(":");
+      if (name !== undefined && id === String(gid)) return name;
+    }
+  } catch {
+    // No group database: fall through to the number.
+  }
+  return `gid ${gid}`;
+}
+
+// The step that fixes an unopenable device, from the device's own owner group
+// and mode. A device that grants its group nothing cannot be fixed by joining
+// any group, so that case says it is a host configuration change.
+export function accessRemedy(
+  stats: Pick<Stats, "gid" | "mode">,
+  nameOf: (gid: number) => string = groupName,
+): string {
+  if ((stats.mode & 0o060) === 0o060)
+    return `join the ${nameOf(stats.gid)} group`;
+  return "a host configuration change is needed (the device mode grants no group access)";
 }
 
 // Presence, not version. The order of refusals is part of the contract, since
@@ -136,8 +176,8 @@ export function detectTpm2(host: Tpm2Host = {}): Tpm2Presence {
   } catch (error) {
     const code = errnoCode(error);
     if (code === "EACCES" || code === "EPERM")
-      throw new Tpm2Error("tpm_not_accessible");
-    throw new Tpm2Error("tpm_absent");
+      throw new Tpm2Error("tpm_not_accessible", accessRemedy(stats));
+    throw new Tpm2Error("tpm_unusable", String(code ?? "unknown"));
   }
   return { device, tools: found as Record<Tpm2Tool, string>, path };
 }
@@ -174,8 +214,30 @@ export function spawnTool(
   });
 }
 
+async function readCapped(
+  stream: ReadableStream<Uint8Array>,
+  tool: string,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > maxToolOutputBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Tpm2Error("tool_output_too_large", tool);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 // Runs one tool to completion within the bound. The bound is a plain
-// setTimeout plus an explicit kill, so a test asserts the delay applied.
+// setTimeout that kills the tool and returns at once: it does not wait for the
+// exit or for EOF, which a process stuck in the driver or a grandchild holding
+// a pipe would never give. A test asserts the delay applied.
 export async function runTool(
   presence: Tpm2Presence,
   tool: Tpm2Tool,
@@ -183,24 +245,42 @@ export async function runTool(
   options: { stdin?: Uint8Array; cwd?: string; timeoutMs?: number } = {},
 ): Promise<ToolRun> {
   const child = spawnTool(presence, tool, args, { cwd: options.cwd });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill(9);
-  }, options.timeoutMs ?? defaultToolTimeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      child.kill(9);
+      reject(new Tpm2Error("tool_timeout", tool));
+    }, options.timeoutMs ?? defaultToolTimeoutMs);
+  });
+  const work = (async (): Promise<ToolRun> => {
+    // A tool that exits before reading its stdin makes the write fail with a
+    // broken pipe; its exit status, not that, says whether it worked.
+    try {
+      if (options.stdin !== undefined) child.stdin.write(options.stdin);
+      await child.stdin.end();
+    } catch {
+      // Judged by the exit status below.
+    }
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        readCapped(child.stdout, tool),
+        readCapped(child.stderr, tool),
+        child.exited,
+      ]);
+      if (code !== 0) throw new Tpm2Error("tool_failed", tool);
+      return { stdout, stderr: Buffer.from(stderr).toString("utf8") };
+    } catch (error) {
+      child.kill(9);
+      throw error;
+    }
+  })();
+  // Whichever loses the race must not become an unhandled rejection.
+  work.catch(() => undefined);
   try {
-    if (options.stdin !== undefined) child.stdin.write(options.stdin);
-    child.stdin.end();
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).bytes(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    if (timedOut) throw new Tpm2Error("tool_timeout", tool);
-    if (code !== 0) throw new Tpm2Error("tool_failed", tool);
-    return { stdout, stderr };
+    return await Promise.race([work, timeout]);
   } finally {
     clearTimeout(timer);
+    timeout.catch(() => undefined);
   }
 }
 
@@ -216,7 +296,7 @@ export function preparePrivateDirectory(directory: string): void {
     mkdirSync(directory, { mode: 0o700 });
   } catch (error) {
     if (errnoCode(error) !== "EEXIST")
-      throw new Tpm2Error("tool_failed", "mkdir");
+      throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
   }
   requirePrivate(directory, "directory");
 }
@@ -240,21 +320,27 @@ export function requirePrivateFile(path: string): void {
 
 // A file a tool just wrote is made 0600 by Ward and then verified, because
 // the tools' own modes cannot be trusted: tpm2-tools wrote a 0660 context
-// under umask 077 (WCLI-153). The file must be this user's regular file,
-// never a symlink, before it is touched.
+// under umask 077 (WCLI-153). Everything runs on one descriptor opened
+// O_NOFOLLOW, so a symlink swapped in after the check is refused and a path
+// swap cannot redirect the chmod.
 export function adoptToolFile(path: string): void {
-  let stats: Stats;
+  let fd: number;
   try {
-    stats = lstatSync(path);
+    fd = openSync(path, fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW);
   } catch {
     throw new Tpm2Error("blob_not_user_private");
   }
-  if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== uid())
-    throw new Tpm2Error("blob_not_user_private");
   try {
-    chmodSync(path, 0o600);
-  } catch {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.uid !== uid())
+      throw new Tpm2Error("blob_not_user_private");
+    fchmodSync(fd, 0o600);
+    if (!isPrivateEntry(fstatSync(fd), "file", uid()))
+      throw new Tpm2Error("blob_not_user_private");
+  } catch (error) {
+    if (error instanceof Tpm2Error) throw error;
     throw new Tpm2Error("blob_not_user_private");
+  } finally {
+    closeSync(fd);
   }
-  requirePrivate(path, "file");
 }
