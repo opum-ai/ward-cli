@@ -7,11 +7,13 @@ import "./support/no-real-keychain.ts";
 import { dlopen } from "bun:ffi";
 import { describe, expect, test } from "bun:test";
 import {
+  accessSync,
   chmodSync,
   closeSync,
+  constants,
+  existsSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -215,39 +217,52 @@ describe("presence is detected, not versioned, and refuses by name", () => {
 
 // The default check really opens the device. access(2) would pass where a
 // mandatory-access profile refuses the open, so the test needs a device this
-// user truly cannot open, found by its mode: a character device owned by
-// someone else that grants us neither as other nor through a group of ours.
+// user truly cannot open. Candidates come from an explicit list of nodes whose
+// open has no side effect when it is refused, never from a sweep of /dev: an
+// open that an ACL or a capability lets through on /dev/watchdog arms a
+// hardware timer, and a tty opened without O_NOCTTY can steal the terminal.
+// Each must also fail by its mode for this user: owned by someone else, and
+// granting us neither as other nor through a group of ours.
 describe("the default device check really opens the device", () => {
   const root0 = process.getuid?.() === 0;
+  const inertDevices = ["/dev/mem", "/dev/port", "/dev/kmsg", "/dev/bpf0"];
   function unopenableDevices(): string[] {
     const me = process.getuid?.();
     const groups = new Set(process.getgroups?.() ?? []);
-    return readdirSync("/dev")
-      .map((name) => join("/dev", name))
-      .filter((path) => {
-        try {
-          const stats = statSync(path);
-          return (
-            stats.isCharacterDevice() &&
-            stats.uid !== me &&
-            (stats.mode & 0o006) !== 0o006 &&
-            !(groups.has(stats.gid) && (stats.mode & 0o060) === 0o060)
-          );
-        } catch {
-          return false;
-        }
-      });
+    return inertDevices.filter((path) => {
+      try {
+        const stats = statSync(path);
+        return (
+          stats.isCharacterDevice() &&
+          stats.uid !== me &&
+          (stats.mode & 0o006) !== 0o006 &&
+          !(groups.has(stats.gid) && (stats.mode & 0o060) === 0o060)
+        );
+      } catch {
+        return false;
+      }
+    });
   }
 
   test("a world-writable device opens (the positive control)", () => {
     expect(() => defaultOpenCheck(DEVICE)).not.toThrow();
   });
 
+  test("the check opens, not merely accesses: a directory passes access(2) and fails open(2)", () => {
+    const { base } = fresh();
+    expect(() =>
+      accessSync(base, constants.R_OK | constants.W_OK),
+    ).not.toThrow();
+    expect(() => defaultOpenCheck(base)).toThrow(
+      expect.objectContaining({ code: "EISDIR" }),
+    );
+  });
+
   test.skipIf(root0)(
     "a device this user cannot open is refused by the default path",
     () => {
       const candidates = unopenableDevices();
-      // Linux CI must have one (/dev/mem, /dev/kmsg and others are root-only):
+      // Linux CI must have one (/dev/mem and /dev/kmsg are root-only):
       // finding none there means the check proved nothing, so it fails.
       if (candidates.length === 0 && process.platform !== "linux") return;
       expect(candidates.length).toBeGreaterThan(0);
@@ -259,8 +274,9 @@ describe("the default device check really opens the device", () => {
           defaultOpenCheck(device);
         } catch {
           refused++;
-          expect(reasonOf(() => detectTpm2({ path: bin, device }))).toMatch(
-            /^tpm_(not_accessible|unusable)$/,
+          // A mode-denied device is always refused with EACCES.
+          expect(reasonOf(() => detectTpm2({ path: bin, device }))).toBe(
+            "tpm_not_accessible",
           );
         }
       }
@@ -425,21 +441,32 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     }
   });
 
-  test("the bound holds when a grandchild keeps the output pipe open", async () => {
-    const { bin, records } = fresh();
-    installFakeTools(bin, records, { tpm2_unseal: "grandchild" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
-    const started = performance.now();
-    const reason = await runTool(presence, "tpm2_unseal", [], {
-      timeoutMs: 300,
-    }).catch((e) => e.reason);
-    const elapsed = performance.now() - started;
-    const pid = Number(readFileSync(join(records, "grandchild.pid"), "utf8"));
-    process.kill(pid, 9);
-    // EOF never comes, so waiting for it would take the grandchild's 30 s.
-    expect(reason).toBe("tool_timeout");
-    expect(elapsed).toBeLessThan(5_000);
-  });
+  test(
+    "the bound holds when a grandchild keeps the output pipe open",
+    async () => {
+      const { bin, records } = fresh();
+      installFakeTools(bin, records, { tpm2_unseal: "grandchild" });
+      const presence = detectTpm2({ path: bin, device: DEVICE });
+      const pidFile = join(records, "grandchild.pid");
+      const started = performance.now();
+      try {
+        // The bound has headroom over the fake's cold start, which must reach
+        // the grandchild before the kill; the grandchild sleeps 60 s, so a
+        // runTool that waited for EOF would run far past the ceiling.
+        const reason = await runTool(presence, "tpm2_unseal", [], {
+          timeoutMs: 2_500,
+        }).catch((e) => e.reason);
+        const elapsed = performance.now() - started;
+        expect(existsSync(pidFile)).toBe(true);
+        expect(reason).toBe("tool_timeout");
+        expect(elapsed).toBeLessThan(15_000);
+      } finally {
+        if (existsSync(pidFile))
+          process.kill(Number(readFileSync(pidFile, "utf8")), 9);
+      }
+    },
+    { timeout: 30_000 },
+  );
 
   test("the default bound is 10 s and is the one applied", async () => {
     expect(defaultToolTimeoutMs).toBe(10_000);
@@ -457,6 +484,45 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
 });
 
 describe("Ward sets and verifies user-private modes itself", () => {
+  test(
+    "a FIFO at the path is refused at once and never blocks the open",
+    async () => {
+      const { base } = fresh();
+      const fifo = join(base, "seal.priv");
+      expect(Bun.spawnSync(["/usr/bin/mkfifo", fifo]).exitCode).toBe(0);
+      // A blocking open cannot be timed out in-process, so the call runs in a
+      // child with a deadline: a regression is a clean failure, not a hang.
+      const adapter = join(
+        import.meta.dir,
+        "..",
+        "src",
+        "adapters",
+        "tpm2-tools.ts",
+      );
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `const m = await import(process.argv[1]);
+try { m.adoptToolFile(process.argv[2]); console.log("accepted"); }
+catch (e) { console.log(e.reason); }`,
+          adapter,
+          fifo,
+        ],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const deadline = setTimeout(() => child.kill(9), 8_000);
+      try {
+        const out = await new Response(child.stdout).text();
+        expect(out.trim()).toBe("blob_not_user_private");
+      } finally {
+        clearTimeout(deadline);
+        child.kill(9);
+      }
+    },
+    { timeout: 20_000 },
+  );
+
   test("the directory is created 0700 and an existing 0700 one is accepted", () => {
     const { base } = fresh();
     const directory = join(base, "tpm");

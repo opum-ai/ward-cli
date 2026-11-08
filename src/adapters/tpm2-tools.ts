@@ -326,7 +326,15 @@ export function requirePrivateFile(path: string): void {
 export function adoptToolFile(path: string): void {
   let fd: number;
   try {
-    fd = openSync(path, fileConstants.O_RDONLY | fileConstants.O_NOFOLLOW);
+    fd = openSync(
+      path,
+      fileConstants.O_RDONLY |
+        fileConstants.O_NOFOLLOW |
+        // A FIFO or device at the path must neither block the open nor gain a
+        // controlling terminal; the fstat below refuses anything not a file.
+        fileConstants.O_NONBLOCK |
+        fileConstants.O_NOCTTY,
+    );
   } catch {
     throw new Tpm2Error("blob_not_user_private");
   }

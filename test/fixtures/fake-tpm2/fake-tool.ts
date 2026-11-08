@@ -29,7 +29,7 @@ if (mode === "hang") await new Promise(() => {});
 if (mode === "fail") process.exit(1);
 if (mode === "flood") process.stdout.write("x".repeat(64 * 1024));
 if (mode === "grandchild") {
-  const held = Bun.spawn(["/bin/sleep", "30"], {
+  const held = Bun.spawn(["/bin/sleep", "60"], {
     stdin: "ignore",
     stdout: "inherit",
     stderr: "inherit",
