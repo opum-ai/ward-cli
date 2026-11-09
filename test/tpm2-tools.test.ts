@@ -12,21 +12,29 @@ import {
   closeSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
+  realpathSync,
   openSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { acquireSetupSession } from "../src/adapters/setup-session.ts";
 import {
   accessRemedy,
   adoptToolFile,
+  assertToolTrusted,
+  walkToolTrustForTest,
   defaultOpenCheck,
   defaultToolTimeoutMs,
   detectTpm2,
+  detectTpm2ForTest,
   maxToolOutputBytes,
   preparePrivateDirectory,
   requiredTools,
@@ -35,6 +43,7 @@ import {
   safeOpenFlags,
   spawnTool,
   Tpm2Error,
+  type Tpm2Host,
   tpmDevicePath,
 } from "../src/adapters/tpm2-tools.ts";
 import { installFakeTools } from "./fixtures/fake-tpm2/install.ts";
@@ -42,6 +51,12 @@ import { createImmediateTimers } from "./support/immediate-timers.ts";
 import { createTempRoot } from "./support/temp-root.ts";
 
 const root = createTempRoot("ward-tpm2-");
+// The test files live under a temp directory the test does not own (a
+// sticky, world-writable /tmp on Linux), so the trust walk starts at the
+// test's private root. Production leaves trustRoot unset and walks to /.
+function detect(host: Tpm2Host = {}, trustedUids?: readonly number[]) {
+  return detectTpm2ForTest(host, { trustRoot: root, trustedUids });
+}
 let cases = 0;
 function fresh() {
   const base = join(root, `case-${++cases}`);
@@ -97,6 +112,7 @@ function refusal(action: () => unknown): Tpm2Error {
 
 function record(records: string, tool: string) {
   return JSON.parse(readFileSync(join(records, `${tool}.json`), "utf8")) as {
+    tool: string;
     args: string[];
     env: Record<string, string>;
     stdinHex: string;
@@ -107,7 +123,7 @@ describe("presence is detected, not versioned, and refuses by name", () => {
   test("every required tool resolves to an absolute path", () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records);
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     expect(Object.keys(presence.tools).sort()).toEqual(
       [...requiredTools].sort(),
     );
@@ -118,7 +134,7 @@ describe("presence is detected, not versioned, and refuses by name", () => {
   test("symlinked tools, as tpm2-tools 5.x installs them, resolve and run", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records, {}, { multicall: true });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     expect(presence.tools.tpm2_unseal).toBe(join(bin, "tpm2_unseal"));
     await runTool(presence, "tpm2_unseal", ["-c", "x"]);
     // The multicall binary dispatched on the name it was spawned as.
@@ -133,7 +149,7 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     const { base } = fresh();
     expect(
       reasonOf(() =>
-        detectTpm2({ path: base, device: join(base, "no-such-device") }),
+        detect({ path: base, device: join(base, "no-such-device") }),
       ),
     ).toBe("tpm_absent");
   });
@@ -143,14 +159,14 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     installFakeTools(bin, records);
     const planted = join(base, "tpmrm0");
     writeFileSync(planted, "");
-    expect(reasonOf(() => detectTpm2({ path: bin, device: planted }))).toBe(
+    expect(reasonOf(() => detect({ path: bin, device: planted }))).toBe(
       "tpm_absent",
     );
   });
 
   test("a missing tool is refused by name, naming the package", () => {
     const { base } = fresh();
-    const error = refusal(() => detectTpm2({ path: base, device: DEVICE }));
+    const error = refusal(() => detect({ path: base, device: DEVICE }));
     expect(error.reason).toBe("tools_absent");
     expect(error.message).toContain("tpm2-tools");
     for (const tool of requiredTools) expect(error.detail).toContain(tool);
@@ -160,9 +176,9 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records);
     chmodSync(join(bin, "tpm2_unseal"), 0o644);
-    expect(
-      refusal(() => detectTpm2({ path: bin, device: DEVICE })).detail,
-    ).toBe("tpm2_unseal");
+    expect(refusal(() => detect({ path: bin, device: DEVICE })).detail).toBe(
+      "tpm2_unseal",
+    );
   });
 
   test("a relative PATH entry is never searched", () => {
@@ -171,7 +187,7 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     const previous = process.cwd();
     process.chdir(bin);
     try {
-      expect(reasonOf(() => detectTpm2({ path: ".", device: DEVICE }))).toBe(
+      expect(reasonOf(() => detect({ path: ".", device: DEVICE }))).toBe(
         "tools_absent",
       );
     } finally {
@@ -183,7 +199,7 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records);
     const error = refusal(() =>
-      detectTpm2({ path: bin, device: DEVICE, openCheck: denied }),
+      detect({ path: bin, device: DEVICE, openCheck: denied }),
     );
     expect(error.reason).toBe("tpm_not_accessible");
     // /dev/null grants its group read and write, so the step is a group, read
@@ -210,7 +226,7 @@ describe("presence is detected, not versioned, and refuses by name", () => {
       throw Object.assign(new Error("ro"), { code: "EROFS" });
     };
     const error = refusal(() =>
-      detectTpm2({ path: bin, device: DEVICE, openCheck: readOnly }),
+      detect({ path: bin, device: DEVICE, openCheck: readOnly }),
     );
     expect(error.reason).toBe("tpm_unusable");
     expect(error.detail).toBe("EROFS");
@@ -220,16 +236,248 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     const { base, bin, records } = fresh();
     // Tools missing and the device unopenable: the tools are named first.
     expect(
-      reasonOf(() =>
-        detectTpm2({ path: base, device: DEVICE, openCheck: denied }),
-      ),
+      reasonOf(() => detect({ path: base, device: DEVICE, openCheck: denied })),
     ).toBe("tools_absent");
     installFakeTools(bin, records);
     expect(
-      reasonOf(() =>
-        detectTpm2({ path: bin, device: DEVICE, openCheck: denied }),
-      ),
+      reasonOf(() => detect({ path: bin, device: DEVICE, openCheck: denied })),
     ).toBe("tpm_not_accessible");
+  });
+});
+
+// DEC-262 (a10): a tool receives the vault key on stdin, so it is trusted only
+// after an ownership and mode walk of the chain that decides which file runs.
+// Trees are built under the test's private root (trustRoot), each directory
+// chmod'ed explicitly so the umask cannot decide the outcome. Another uid's
+// file cannot be created without root, so that case narrows the trusted uids
+// instead: a file owned by this user is then another uid's file.
+describe("a tool is trusted only after an ownership and mode walk", () => {
+  const root0 = process.getuid?.() === 0;
+  function dir(path: string, mode: number): string {
+    mkdirSync(path, { recursive: true });
+    chmodSync(path, mode);
+    return path;
+  }
+  function trustedTree(name: string) {
+    const base = dir(join(fresh().base, name), 0o755);
+    const bin = dir(join(base, "bin"), 0o755);
+    const records = join(base, "records");
+    installFakeTools(bin, records);
+    return { base, bin, records };
+  }
+  const walk = (path: string) =>
+    walkToolTrustForTest(path, { trustRoot: root });
+  function untrusted(action: () => unknown): Tpm2Error {
+    const error = refusal(action);
+    expect(error.reason).toBe("tool_untrusted");
+    return error;
+  }
+
+  test("accept: a symlinked multicall tool in a 0755 tree, relative and absolute links", async () => {
+    const { bin, records } = fresh();
+    dir(bin, 0o755);
+    installFakeTools(bin, records, {}, { multicall: true });
+    chmodSync(records, 0o755);
+    expect(() => walk(join(bin, "tpm2_create"))).not.toThrow();
+    // An absolute link to the same target is followed the same way.
+    const other = dir(join(fresh().base, "bin"), 0o755);
+    symlinkSync(join(bin, "tpm2"), join(other, "tpm2_create"));
+    expect(() => walk(join(other, "tpm2_create"))).not.toThrow();
+    const presence = detect({ path: bin, device: DEVICE });
+    await runTool(presence, "tpm2_create", []);
+    expect(record(records, "tpm2_create").tool).toBe("tpm2_create");
+  });
+
+  test("accept: a real system binary under the default policy, from / (positive control)", () => {
+    // Walks /bin/sh to its final file with no trustRoot: the real chain of a
+    // host, symlinks included (/bin and sh are links on many Linux hosts).
+    expect(() => assertToolTrusted("/bin/sh")).not.toThrow();
+  });
+
+  test("reject: a group-writable PATH directory ahead of the good one, never falling through", () => {
+    const good = trustedTree("good");
+    const bad = trustedTree("bad");
+    chmodSync(bad.bin, 0o775);
+    const error = untrusted(() =>
+      detect({ path: `${bad.bin}:${good.bin}`, device: DEVICE }),
+    );
+    expect(error.detail).toContain(bad.bin);
+    expect(error.detail).toContain("0775");
+    expect(error.detail).toContain("group- or world-writable");
+    // The good tool later on PATH was not used in its place and nothing ran.
+    expect(() => detect({ path: good.bin, device: DEVICE })).not.toThrow();
+    expect(existsSync(join(bad.records, "tpm2_create.json"))).toBe(false);
+  });
+
+  test("reject: a world-writable sticky directory is not excused by the sticky bit", () => {
+    const tree = trustedTree("sticky");
+    // chmodSync drops the sticky bit under Bun, so the shell sets it, and the
+    // precondition is asserted: a test that never made the directory sticky
+    // would pass without testing the sticky rule.
+    expect(Bun.spawnSync(["/bin/chmod", "1777", tree.bin]).exitCode).toBe(0);
+    expect(statSync(tree.bin).mode & 0o1000).toBe(0o1000);
+    const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+    expect(error.detail).toContain(tree.bin);
+    expect(error.detail).toContain("1777");
+  });
+
+  test("reject: a good link whose target sits in a writable directory", () => {
+    const good = trustedTree("linkgood");
+    const evil = dir(join(fresh().base, "evil"), 0o775);
+    writeFileSync(join(evil, "tpm2"), "#!/bin/sh\n");
+    chmodSync(join(evil, "tpm2"), 0o755);
+    const link = join(good.bin, "tpm2_unseal");
+    rmSync(link);
+    symlinkSync(join(evil, "tpm2"), link);
+    const error = untrusted(() => walk(link));
+    expect(error.detail).toContain(evil);
+    expect(error.detail).toContain("0775");
+  });
+
+  test("reject: a tool file that is itself group-writable", () => {
+    const tree = trustedTree("filewide");
+    chmodSync(join(tree.bin, "tpm2_create"), 0o775);
+    const error = untrusted(() => walk(join(tree.bin, "tpm2_create")));
+    expect(error.detail).toContain(join(tree.bin, "tpm2_create"));
+  });
+
+  test.skipIf(root0)(
+    "reject: another uid's file (this user is not trusted)",
+    () => {
+      const tree = trustedTree("otheruid");
+      const error = untrusted(() =>
+        detect({ path: tree.bin, device: DEVICE }, [0]),
+      );
+      expect(error.detail).toContain(`uid ${process.getuid?.()}`);
+      expect(error.detail).toContain("untrusted owner");
+    },
+  );
+
+  test("reject: a symlink loop, and a path through a file", () => {
+    const { bin } = trustedTree("loop");
+    symlinkSync(join(bin, "b"), join(bin, "a"));
+    symlinkSync(join(bin, "a"), join(bin, "b"));
+    expect(untrusted(() => walk(join(bin, "a"))).detail).toContain(
+      "too many symlinks",
+    );
+    expect(
+      untrusted(() => walk(join(bin, "tpm2_create", "x"))).detail,
+    ).toContain("not a directory");
+  });
+
+  test("the refusal names the tool, the first offender with owner and mode, and the remedy", () => {
+    const tree = trustedTree("message");
+    chmodSync(tree.bin, 0o775);
+    const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+    expect(error.message).toContain("not trusted to receive the vault key");
+    expect(error.detail).toContain(join(tree.bin, "tpm2_createprimary"));
+    expect(error.detail).toContain(`uid ${process.getuid?.()}`);
+    expect(error.detail).toContain("put a trusted tpm2-tools first on PATH");
+  });
+
+  test("the walk refuses before the device check, and after presence", () => {
+    const tree = trustedTree("order");
+    chmodSync(tree.bin, 0o775);
+    expect(
+      reasonOf(() =>
+        detect({ path: tree.bin, device: DEVICE, openCheck: denied }),
+      ),
+    ).toBe("tool_untrusted");
+    expect(
+      reasonOf(() =>
+        detect({
+          path: tree.bin,
+          device: join(tree.base, "no-such-device"),
+        }),
+      ),
+    ).toBe("tpm_absent");
+  });
+
+  test("a directory above the trust root is not examined, one below is", () => {
+    const outer = dir(join(fresh().base, "outer"), 0o777);
+    const inner = dir(join(outer, "inner"), 0o755);
+    const bin = dir(join(inner, "bin"), 0o755);
+    writeFileSync(join(bin, "t"), "x");
+    chmodSync(join(bin, "t"), 0o755);
+    expect(() =>
+      walkToolTrustForTest(join(bin, "t"), { trustRoot: inner }),
+    ).not.toThrow();
+    const error = untrusted(() =>
+      walkToolTrustForTest(join(bin, "t"), { trustRoot: outer }),
+    );
+    expect(error.detail).toContain(`${outer} is owned by`);
+    expect(error.detail).toContain("0777");
+  });
+
+  test("a missing element is refused by name with its errno", () => {
+    const { bin } = trustedTree("missing");
+    const error = untrusted(() => walk(join(bin, "nope")));
+    expect(error.detail).toContain(join(bin, "nope"));
+    expect(error.detail).toContain("ENOENT");
+  });
+
+  // Relative link targets resolve against the link's own directory (DEC-262).
+  test("accept: a relative link to a tool beside it", () => {
+    const { bin } = trustedTree("rel-ok");
+    symlinkSync("tpm2_create", join(bin, "alias"));
+    expect(() => walk(join(bin, "alias"))).not.toThrow();
+  });
+
+  test("reject: a relative link whose ../ target sits in a writable directory", () => {
+    const tree = trustedTree("rel-bad");
+    const loose = dir(join(tree.base, "loose"), 0o777);
+    writeFileSync(join(loose, "t"), "x");
+    chmodSync(join(loose, "t"), 0o755);
+    symlinkSync("../loose/t", join(tree.bin, "viaparent"));
+    const error = untrusted(() => walk(join(tree.bin, "viaparent")));
+    expect(error.detail).toContain(`${loose} is owned by`);
+    expect(error.detail).toContain("0777");
+  });
+
+  // The production default, with no test policy: the whole chain to / counts.
+  // Both production cases build under the checkout, whose ancestors the tests
+  // assert are clean, so neither depends on how the host's temp directory is set.
+  const topmostOffender = (path: string): string | undefined => {
+    const trusted = [0, process.getuid?.() ?? 0];
+    let offender: string | undefined;
+    for (let at = realpathSync(path); ; at = dirname(at)) {
+      const stats = lstatSync(at);
+      if ((stats.mode & 0o022) !== 0 || !trusted.includes(stats.uid))
+        offender = at;
+      if (at === "/") return offender;
+    }
+  };
+
+  test("reject: the production detectTpm2 refuses a tree under a world-writable ancestor", () => {
+    // A 0777 directory inside the checkout stands in for a sticky /tmp, so the
+    // reject runs on every host; the checkout's own ancestors are asserted clean.
+    const loose = mkdtempSync(join(process.cwd(), ".ward-trust-test-"));
+    try {
+      expect(topmostOffender(dirname(loose))).toBeUndefined();
+      chmodSync(loose, 0o777);
+      const bin = dir(join(loose, "bin"), 0o755);
+      installFakeTools(bin, join(loose, "records"));
+      const error = untrusted(() => detectTpm2({ path: bin, device: DEVICE }));
+      expect(error.detail).toContain(`${realpathSync(loose)} is owned by`);
+      expect(error.detail).toContain("0777");
+    } finally {
+      rmSync(loose, { recursive: true, force: true });
+    }
+  });
+
+  test("accept: the production detectTpm2 passes a clean owned tree inside the checkout", () => {
+    const base = mkdtempSync(join(process.cwd(), ".ward-trust-test-"));
+    try {
+      chmodSync(base, 0o755);
+      const bin = dir(join(base, "bin"), 0o755);
+      installFakeTools(bin, join(base, "records"));
+      expect(topmostOffender(base)).toBeUndefined();
+      expect(detectTpm2({ path: bin, device: DEVICE }).tools.tpm2_create).toBe(
+        join(bin, "tpm2_create"),
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 
@@ -294,7 +542,7 @@ describe("the default device check really opens the device", () => {
         } catch {
           refused++;
           // A mode-denied device is always refused with EACCES.
-          expect(reasonOf(() => detectTpm2({ path: bin, device }))).toBe(
+          expect(reasonOf(() => detect({ path: bin, device }))).toBe(
             "tpm_not_accessible",
           );
         }
@@ -319,6 +567,8 @@ describe("the module has no fallback path to disk, the keyring or systemd-creds"
     "mkdirSync",
     "openSync",
     "readFileSync",
+    "readlinkSync",
+    "realpathSync",
     "statSync",
     "type Stats",
   ]);
@@ -375,7 +625,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
   test("the child sees the search path and the device and nothing else", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records);
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const key = "WARD_PROBE_ENV_SECRET";
     process.env[key] = "synthetic-env-value";
     process.env.TPM2TOOLS_TCTI = "swtpm:host=attacker";
@@ -395,7 +645,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
   test("stdin carries bytes to the tool and argv carries none of them", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records);
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const bytes = Uint8Array.from({ length: 32 }, (_, i) => 0xa0 + i);
     await runTool(presence, "tpm2_create", ["-i", "-"], { stdin: bytes });
     const seen = record(records, "tpm2_create");
@@ -406,7 +656,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
   test("a failing tool is tool_failed", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_load: "fail" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     expect(
       await runTool(presence, "tpm2_load", []).catch((e) => e.reason),
     ).toBe("tool_failed");
@@ -415,7 +665,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
   test("output past the cap is refused, not buffered", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_unseal: "flood" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     expect(maxToolOutputBytes).toBeLessThan(64 * 1024);
     expect(
       await runTool(presence, "tpm2_unseal", []).catch((e) => e.reason),
@@ -425,7 +675,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
   test("a tool that exits without reading a large stdin raises nothing unhandled", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_create: "no-read" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const unhandled: unknown[] = [];
     const listener = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", listener);
@@ -443,7 +693,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
   test("a hung tool is killed at the bound and refused as tool_timeout", async () => {
     const { bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_unseal: "hang" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const timers = createImmediateTimers();
     const started = performance.now();
     try {
@@ -465,7 +715,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     async () => {
       const { bin, records } = fresh();
       installFakeTools(bin, records, { tpm2_unseal: "grandchild" });
-      const presence = detectTpm2({ path: bin, device: DEVICE });
+      const presence = detect({ path: bin, device: DEVICE });
       const pidFile = join(records, "grandchild.pid");
       const started = performance.now();
       try {
@@ -534,7 +784,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     expect(defaultToolTimeoutMs).toBe(10_000);
     const { bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_unseal: "hang" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const timers = createImmediateTimers();
     try {
       await runTool(presence, "tpm2_unseal", []).catch(() => undefined);
@@ -649,7 +899,7 @@ console.log(statSync(process.argv[2]).isFIFO());`,
   test("a file a tool wrote 0660 is made 0600 and verified", async () => {
     const { bin, records, base } = fresh();
     installFakeTools(bin, records, { tpm2_create: "touch-wide" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const blob = join(base, "seal.priv");
     await runTool(presence, "tpm2_create", [blob]);
     expect(statSync(blob).mode & 0o777).toBe(0o660);
@@ -777,7 +1027,7 @@ describe("the setup lock is not inherited by a spawned tool", () => {
   test("a tool spawned through the adapter does not hold a released lock", async () => {
     const { base, bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_unseal: "hang" });
-    const presence = detectTpm2({ path: bin, device: DEVICE });
+    const presence = detect({ path: bin, device: DEVICE });
     const directory = join(base, "ward");
     const session = acquireSetupSession(directory);
     const child = spawnTool(presence, "tpm2_unseal", []);
@@ -792,5 +1042,33 @@ describe("the setup lock is not inherited by a spawned tool", () => {
       child.kill(9);
       await child.exited;
     }
+  });
+});
+
+describe("the trust-policy seam is test-only", () => {
+  test("no production source outside the adapter names the seam, and Tpm2Host cannot carry a policy", () => {
+    const own = "tpm2-tools.ts";
+    const files = (readdirSync("src", { recursive: true }) as string[]).filter(
+      (file) => file.endsWith(".ts"),
+    );
+    // Positive control: the scan really read the adapter and the CLI.
+    expect(files).toContain(join("adapters", own));
+    expect(files.length).toBeGreaterThan(5);
+    const leaks = files.filter(
+      (file) =>
+        !file.endsWith(own) &&
+        /ForTest|walkToolTrust|trustedUids|trustRoot/.test(
+          readFileSync(join("src", file), "utf8"),
+        ),
+    );
+    expect(leaks).toEqual([]);
+    const host = readFileSync(join("src", "adapters", own), "utf8");
+    const start = host.indexOf("export interface Tpm2Host");
+    const end = host.indexOf("export interface Tpm2Presence");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(host.slice(start, end)).not.toMatch(
+      /trustedUids|trustRoot|ToolTrustPolicy/,
+    );
   });
 });

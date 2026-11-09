@@ -14,10 +14,12 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   statSync,
   type Stats,
 } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { isPrivateEntry } from "./sqlite-vault-store.ts";
 
 export const tpmDevicePath = "/dev/tpmrm0";
@@ -48,6 +50,7 @@ export type Tpm2Reason =
   | "directory_unusable"
   | "platform_unsupported"
   | "blob_not_user_private"
+  | "tool_untrusted"
   | "tool_timeout"
   | "tool_output_too_large"
   | "tool_failed";
@@ -61,6 +64,7 @@ const remedies: Record<Tpm2Reason, string> = {
   directory_unusable: "the blob directory could not be created",
   platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
+  tool_untrusted: "a tpm2 tool is not trusted to receive the vault key",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
   tool_failed: "a tpm2 tool failed",
@@ -150,11 +154,139 @@ export function accessRemedy(
   return "a host configuration change is needed (the device mode grants no group access)";
 }
 
+const maxLinkHops = 40;
+
+function modeText(mode: number): string {
+  return (mode & 0o7777).toString(8).padStart(4, "0");
+}
+
+// DEC-262 (a10): a tool receives the vault key on its stdin, so a tool is
+// trusted only after a walk of everything that decides which file runs. Every
+// element on the way from the resolved tpm2_* path to the final regular file is
+// checked: each directory component, each symlink hop and the final file, with
+// every symlink's target resolved component by component (a relative target
+// against its link's directory). Each must be owned by a trusted uid and must
+// not be group- or other-writable; a sticky bit does NOT excuse a writable
+// directory. A symlink is checked for its owner only, since its own mode is
+// meaningless (Linux always reports 0777): who can replace it is decided by
+// the directory that holds it, which is checked. A failure refuses by name
+// before any spawn, and is never answered by trying a later PATH entry.
+export function assertToolTrusted(toolPath: string): void {
+  walkToolTrust(toolPath, {});
+}
+
+// TEST SEAM, not a production entry point: the only way to narrow the walk.
+// trustedUids replaces the trusted owners (production: root and the invoking
+// user); trustRoot starts the ancestor check at a test's private directory,
+// since a temp directory is sticky and world-writable. Nothing in src/ may
+// call a ForTest or walkToolTrust name outside this file; a test enforces it.
+export interface ToolTrustPolicy {
+  readonly trustedUids?: readonly number[];
+  readonly trustRoot?: string;
+}
+
+export function walkToolTrustForTest(
+  toolPath: string,
+  policy: ToolTrustPolicy,
+): void {
+  walkToolTrust(toolPath, policy);
+}
+
+function walkToolTrust(toolPath: string, policy: ToolTrustPolicy): void {
+  const trusted = policy.trustedUids ?? [0, uid() ?? 0];
+  const root =
+    policy.trustRoot === undefined ? undefined : realpathSync(policy.trustRoot);
+  const remedy =
+    "the owner must be root or this user, and the mode neither group- nor world-writable; fix the install, or put a trusted tpm2-tools first on PATH";
+  const refuse = (element: string, stats: Stats, why: string): never => {
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${toolPath}: ${element} is owned by uid ${stats.uid} with mode ${modeText(stats.mode)} (${why}); ${remedy}`,
+    );
+  };
+  // Directories that are strict ancestors of the trust root are not examined.
+  const above = (path: string): boolean =>
+    root !== undefined &&
+    (path === "/" || (root !== path && root.startsWith(`${path}/`)));
+  const check = (path: string, stats: Stats): void => {
+    if (above(path)) return;
+    if (!trusted.includes(stats.uid)) refuse(path, stats, "untrusted owner");
+    if (!stats.isSymbolicLink() && (stats.mode & 0o022) !== 0)
+      refuse(path, stats, "group- or world-writable");
+  };
+
+  if (!isAbsolute(toolPath)) throw new Tpm2Error("tool_untrusted", toolPath);
+  let resolved = "/";
+  check("/", lstatSync("/"));
+  let pending = toolPath.split("/").filter((part) => part !== "");
+  let hops = 0;
+  while (pending.length > 0) {
+    const [part, ...rest] = pending;
+    pending = rest;
+    if (part === ".") continue;
+    if (part === "..") {
+      resolved = dirname(resolved);
+      continue;
+    }
+    const candidate = join(resolved, part as string);
+    let stats: Stats;
+    try {
+      stats = lstatSync(candidate);
+    } catch (error) {
+      throw new Tpm2Error(
+        "tool_untrusted",
+        `${toolPath}: ${candidate} cannot be examined (${String(errnoCode(error) ?? "unknown")})`,
+      );
+    }
+    check(candidate, stats);
+    if (stats.isSymbolicLink()) {
+      if (++hops > maxLinkHops)
+        throw new Tpm2Error("tool_untrusted", `${toolPath}: too many symlinks`);
+      let target: string;
+      try {
+        target = readlinkSync(candidate);
+      } catch (error) {
+        throw new Tpm2Error(
+          "tool_untrusted",
+          `${toolPath}: ${candidate} cannot be read as a link (${String(errnoCode(error) ?? "unknown")})`,
+        );
+      }
+      if (isAbsolute(target)) resolved = "/";
+      pending = [...target.split("/").filter((p) => p !== ""), ...pending];
+      continue;
+    }
+    if (pending.length > 0 && !stats.isDirectory())
+      throw new Tpm2Error(
+        "tool_untrusted",
+        `${toolPath}: ${candidate} is not a directory`,
+      );
+    if (pending.length === 0 && !stats.isFile())
+      throw new Tpm2Error(
+        "tool_untrusted",
+        `${toolPath}: ${candidate} is not a regular file`,
+      );
+    resolved = candidate;
+  }
+}
+
 // Presence, not version. The order of refusals is part of the contract, since
 // a host can fail several at once: no TPM2 device first (installing a package
 // cannot help, so the host is unsupported), then missing tools, then a device
-// this user cannot open.
+// this user cannot open. Between the last two, every tool must pass the trust
+// walk (assertToolTrusted).
 export function detectTpm2(host: Tpm2Host = {}): Tpm2Presence {
+  return detectWith(host, {});
+}
+
+// TEST SEAM: detectTpm2 with a narrowed trust policy (see ToolTrustPolicy).
+export function detectTpm2ForTest(
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+): Tpm2Presence {
+  return detectWith(host, policy);
+}
+
+function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
   const device = host.device ?? tpmDevicePath;
   const path = host.path ?? process.env.PATH ?? "";
   let stats: Stats;
@@ -173,6 +305,11 @@ export function detectTpm2(host: Tpm2Host = {}): Tpm2Presence {
   }
   if (missing.length > 0)
     throw new Tpm2Error("tools_absent", missing.join(", "));
+  // The trust walk comes after presence and before the device check: a tool
+  // that fails it is refused whatever else is true of the host, and a later
+  // PATH entry is never tried in its place.
+  for (const tool of requiredTools)
+    walkToolTrust(found[tool] as string, policy);
   try {
     (host.openCheck ?? defaultOpenCheck)(device);
   } catch (error) {
