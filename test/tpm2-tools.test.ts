@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -26,9 +27,10 @@ import {
   accessRemedy,
   adoptToolFile,
   assertToolTrusted,
+  walkToolTrustForTest,
   defaultOpenCheck,
   defaultToolTimeoutMs,
-  detectTpm2,
+  detectTpm2ForTest,
   maxToolOutputBytes,
   preparePrivateDirectory,
   requiredTools,
@@ -48,8 +50,8 @@ const root = createTempRoot("ward-tpm2-");
 // The test files live under a temp directory the test does not own (a
 // sticky, world-writable /tmp on Linux), so the trust walk starts at the
 // test's private root. Production leaves trustRoot unset and walks to /.
-function detect(host: Tpm2Host = {}) {
-  return detectTpm2({ trustRoot: root, ...host });
+function detect(host: Tpm2Host = {}, trustedUids?: readonly number[]) {
+  return detectTpm2ForTest(host, { trustRoot: root, trustedUids });
 }
 let cases = 0;
 function fresh() {
@@ -259,7 +261,8 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     installFakeTools(bin, records);
     return { base, bin, records };
   }
-  const walk = (path: string) => assertToolTrusted(path, { trustRoot: root });
+  const walk = (path: string) =>
+    walkToolTrustForTest(path, { trustRoot: root });
   function untrusted(action: () => unknown): Tpm2Error {
     const error = refusal(action);
     expect(error.reason).toBe("tool_untrusted");
@@ -339,7 +342,7 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     () => {
       const tree = trustedTree("otheruid");
       const error = untrusted(() =>
-        detect({ path: tree.bin, device: DEVICE, trustedUids: [0] }),
+        detect({ path: tree.bin, device: DEVICE }, [0]),
       );
       expect(error.detail).toContain(`uid ${process.getuid?.()}`);
       expect(error.detail).toContain("untrusted owner");
@@ -393,10 +396,10 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     writeFileSync(join(bin, "t"), "x");
     chmodSync(join(bin, "t"), 0o755);
     expect(() =>
-      assertToolTrusted(join(bin, "t"), { trustRoot: inner }),
+      walkToolTrustForTest(join(bin, "t"), { trustRoot: inner }),
     ).not.toThrow();
     expect(() =>
-      assertToolTrusted(join(bin, "t"), { trustRoot: outer }),
+      walkToolTrustForTest(join(bin, "t"), { trustRoot: outer }),
     ).toThrow();
   });
 });
@@ -962,5 +965,31 @@ describe("the setup lock is not inherited by a spawned tool", () => {
       child.kill(9);
       await child.exited;
     }
+  });
+});
+
+describe("the trust-policy seam is test-only", () => {
+  test("no production source outside the adapter names the seam, and Tpm2Host cannot carry a policy", () => {
+    const own = "tpm2-tools.ts";
+    const files = (readdirSync("src", { recursive: true }) as string[]).filter(
+      (file) => file.endsWith(".ts"),
+    );
+    // Positive control: the scan really read the adapter and the CLI.
+    expect(files).toContain(join("adapters", own));
+    expect(files.length).toBeGreaterThan(5);
+    const leaks = files.filter(
+      (file) =>
+        !file.endsWith(own) &&
+        /ForTest|walkToolTrust|trustedUids|trustRoot/.test(
+          readFileSync(join("src", file), "utf8"),
+        ),
+    );
+    expect(leaks).toEqual([]);
+    const host = readFileSync(join("src", "adapters", own), "utf8");
+    const iface = host.slice(
+      host.indexOf("export interface Tpm2Host"),
+      host.indexOf("export interface Tpm2Presence"),
+    );
+    expect(iface).not.toMatch(/trustedUids|trustRoot/);
   });
 });

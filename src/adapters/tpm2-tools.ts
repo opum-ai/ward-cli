@@ -94,13 +94,6 @@ export interface Tpm2Host {
   // The default really opens it (O_RDWR, no O_CREAT) and closes it at once:
   // access(2) would pass where a mandatory-access profile refuses the open.
   readonly openCheck?: (device: string) => void;
-  // The uids that may own a tool, every link it passes through and every
-  // directory above them. Defaults to root and the invoking user.
-  readonly trustedUids?: readonly number[];
-  // Where the ancestor check starts: directories above it are not examined.
-  // Production leaves it unset (the walk reaches /). A test whose files live
-  // under a world-writable temp directory sets it to its own private root.
-  readonly trustRoot?: string;
 }
 
 export interface Tpm2Presence {
@@ -178,10 +171,28 @@ function modeText(mode: number): string {
 // meaningless (Linux always reports 0777): who can replace it is decided by
 // the directory that holds it, which is checked. A failure refuses by name
 // before any spawn, and is never answered by trying a later PATH entry.
-export function assertToolTrusted(
+export function assertToolTrusted(toolPath: string): void {
+  walkToolTrust(toolPath, {});
+}
+
+// TEST SEAM, not a production entry point: the only way to narrow the walk.
+// trustedUids replaces the trusted owners (production: root and the invoking
+// user); trustRoot starts the ancestor check at a test's private directory,
+// since a temp directory is sticky and world-writable. Nothing in src/ may
+// call a ForTest or walkToolTrust name outside this file; a test enforces it.
+export interface ToolTrustPolicy {
+  readonly trustedUids?: readonly number[];
+  readonly trustRoot?: string;
+}
+
+export function walkToolTrustForTest(
   toolPath: string,
-  policy: { trustedUids?: readonly number[]; trustRoot?: string } = {},
+  policy: ToolTrustPolicy,
 ): void {
+  walkToolTrust(toolPath, policy);
+}
+
+function walkToolTrust(toolPath: string, policy: ToolTrustPolicy): void {
   const trusted = policy.trustedUids ?? [0, uid() ?? 0];
   const root =
     policy.trustRoot === undefined ? undefined : realpathSync(policy.trustRoot);
@@ -256,6 +267,18 @@ export function assertToolTrusted(
 // this user cannot open. Between the last two, every tool must pass the trust
 // walk (assertToolTrusted).
 export function detectTpm2(host: Tpm2Host = {}): Tpm2Presence {
+  return detectWith(host, {});
+}
+
+// TEST SEAM: detectTpm2 with a narrowed trust policy (see ToolTrustPolicy).
+export function detectTpm2ForTest(
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+): Tpm2Presence {
+  return detectWith(host, policy);
+}
+
+function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
   const device = host.device ?? tpmDevicePath;
   const path = host.path ?? process.env.PATH ?? "";
   let stats: Stats;
@@ -278,7 +301,7 @@ export function detectTpm2(host: Tpm2Host = {}): Tpm2Presence {
   // that fails it is refused whatever else is true of the host, and a later
   // PATH entry is never tried in its place.
   for (const tool of requiredTools)
-    assertToolTrusted(found[tool] as string, host);
+    walkToolTrust(found[tool] as string, policy);
   try {
     (host.openCheck ?? defaultOpenCheck)(device);
   } catch (error) {
