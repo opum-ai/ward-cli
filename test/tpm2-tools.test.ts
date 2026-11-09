@@ -44,7 +44,9 @@ import {
   sealedPrivateName,
   sealedPublicName,
   sealKey,
-  sessionAttributesOnForTest,
+  classifySessionPrintoutForTest,
+  tpm2ErrorCodes,
+  wardErrorFor,
   unsealKey,
   withLoadedKey,
   spawnTool,
@@ -52,6 +54,7 @@ import {
   type Tpm2Host,
   tpmDevicePath,
 } from "../src/adapters/tpm2-tools.ts";
+import { errorCatalog } from "../src/contract/errors.ts";
 import { installFakeTools } from "./fixtures/fake-tpm2/install.ts";
 import { createImmediateTimers } from "./support/immediate-timers.ts";
 import { createTempRoot } from "./support/temp-root.ts";
@@ -789,6 +792,7 @@ describe("the module has no fallback path to disk, the keyring or systemd-creds"
     "unlinkSync",
   ]);
   const allowedModules = new Set([
+    "../contract/errors.ts",
     "node:fs",
     "node:path",
     "./sqlite-vault-store.ts",
@@ -1698,7 +1702,7 @@ describe("loading the sealed key", () => {
     const absent = join(base, "absent");
     await expect(
       withLoadedKey(presence, absent, async () => 1),
-    ).rejects.toMatchObject({ reason: "blob_not_user_private" });
+    ).rejects.toMatchObject({ reason: "key_not_sealed" });
     expect(existsSync(absent)).toBe(false);
     // A relative path to a real, sealed, private directory is refused by the
     // absolute-path guard itself (its own detail), not by a later step:
@@ -1714,6 +1718,23 @@ describe("loading the sealed key", () => {
     expect(relativeError).toMatchObject({ reason: "blob_not_user_private" });
     expect((relativeError as Error).message).toContain("not an absolute path");
     expect(existsSync(join(records, "tpm2_load.json"))).toBe(false);
+    expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
+  });
+
+  test("only a missing directory is not sealed: a wider one is not user-private and an unreadable path is directory_unusable", async () => {
+    const { base, records, directory, presence } = await sealed();
+    rmSync(join(records, "tpm2_createprimary.json"), { force: true });
+    chmodSync(directory, 0o755);
+    await expect(
+      withLoadedKey(presence, directory, async () => 1),
+    ).rejects.toMatchObject({ reason: "blob_not_user_private" });
+    chmodSync(directory, 0o700);
+    // A path under a regular file is ENOTDIR, which is not ENOENT.
+    const file = join(base, "a-file");
+    writeFileSync(file, "x");
+    await expect(
+      withLoadedKey(presence, join(file, "ward-tpm"), async () => 1),
+    ).rejects.toMatchObject({ reason: "directory_unusable" });
     expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
   });
 
@@ -1857,14 +1878,14 @@ describe("unsealing the sealed key", () => {
     expect(unseal?.sessionMode).toBe(0o600);
   });
 
-  test("a session that does not encrypt stops before any unseal", async () => {
+  test("a session that does not encrypt stops before any unseal, flushed and cleaned up", async () => {
     for (const mode of ["session-off", "session-zero"]) {
       const { records, directory, presence } = await sealed({
         tpm2_sessionconfig: mode,
       });
-      await expect(unsealKey(presence, directory)).rejects.toMatchObject({
-        reason: "session_not_encrypted",
-      });
+      await expect(unsealKey(presence, directory)).rejects.toBeInstanceOf(
+        Tpm2Error,
+      );
       const tools = calls(records).map((call) => call.tool);
       expect(tools).not.toContain("tpm2_unseal");
       // The session started is still flushed, and the scratch removed.
@@ -1904,22 +1925,29 @@ describe("unsealing the sealed key", () => {
     expect(scratches(directory)).toEqual([]);
   });
 
-  test("only the measured printout shape passes the encrypt/decrypt check", () => {
+  // DEC-262 (a15) NB6. on = the measured shape with decrypt and encrypt listed;
+  // off = the measured shape (every token in the tpm2-tools vocabulary) without
+  // one of them: the AC2 stop; unparsed = anything else: tool compatibility.
+  // Both refuse; only "on" unseals.
+  test("the printout is classified on, off or unparsed, and only on unseals", () => {
     const real =
       "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n";
-    expect(sessionAttributesOnForTest(real)).toBe(true);
-    expect(sessionAttributesOnForTest(real.replaceAll("\n", "\r\n"))).toBe(
-      true,
-    );
-    expect(
-      sessionAttributesOnForTest(
-        "Session-Attributes: encrypt|decrypt|continuesession",
-      ),
-    ).toBe(true);
-    const refused = [
+    const on = [
+      real,
+      real.replaceAll("\n", "\r\n"),
+      "Session-Attributes: encrypt|decrypt|continuesession",
+      "Session-Attributes: continuesession|decrypt|encrypt|audit\n",
+    ];
+    const off = [
+      "Session-Attributes: continuesession|decrypt\n",
+      "Session-Attributes: continuesession|encrypt\n",
+      "Session-Attributes: continuesession\n",
+      "Session-Handle: 0x02000000\nSession-Attributes: continuesession\n",
+    ];
+    const unparsed = [
       "",
       "Session-Handle: 0x02000000\n",
-      // Lookalike names.
+      // Lookalike names: a token outside the vocabulary means it changed.
       "Session-Attributes: continuesession|decrypt|encrypt_x\n",
       "Session-Attributes: continuesession|decrypt|encrypt-off\n",
       "Session-Attributes: continuesession|decrypt|no-encrypt\n",
@@ -1935,10 +1963,6 @@ describe("unsealing the sealed key", () => {
       "encrypt: disabled\ndecrypt: 1\n",
       "encrypt: n\ndecrypt: 1\n",
       "encrypt: 0x0\ndecrypt: 1\n",
-      // One name missing.
-      "Session-Attributes: continuesession|decrypt\n",
-      "Session-Attributes: continuesession|encrypt\n",
-      "Session-Attributes: continuesession\n",
       // A line that merely mentions the words.
       "Session-Attributes: continuesession\nWARNING: decrypt/encrypt not supported\n",
       // Duplicates: first match must not win.
@@ -1951,11 +1975,36 @@ describe("unsealing the sealed key", () => {
       " Session-Attributes: continuesession|decrypt|encrypt\n",
       "session-attributes: continuesession|decrypt|encrypt\n",
     ];
-    for (const printout of refused)
-      expect([printout, sessionAttributesOnForTest(printout)]).toEqual([
-        printout,
-        false,
-      ]);
+    const verdicts = (inputs: string[]) =>
+      inputs.map((input) => [input, classifySessionPrintoutForTest(input)]);
+    expect(verdicts(on)).toEqual(on.map((input) => [input, "on"]));
+    expect(verdicts(off)).toEqual(off.map((input) => [input, "off"]));
+    expect(verdicts(unparsed)).toEqual(
+      unparsed.map((input) => [input, "unparsed"]),
+    );
+    expect([on.length, off.length, unparsed.length]).toEqual([4, 4, 24]);
+  });
+
+  test("a printout that says encryption is off is session_not_encrypted; one that does not parse is tool_incompatible naming the tpm2-tools version", async () => {
+    const off = await sealed({ tpm2_sessionconfig: "session-off" });
+    await expect(unsealKey(off.presence, off.directory)).rejects.toMatchObject({
+      reason: "session_not_encrypted",
+    });
+    // "session-zero" prints a shape that is not the measured one.
+    const odd = await sealed({ tpm2_sessionconfig: "session-zero" });
+    const error = await unsealKey(odd.presence, odd.directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      reason: "tool_incompatible",
+      detail: "tpm2-tools 5.6",
+    });
+    // Both refuse: no unseal ran in either.
+    for (const { records } of [off, odd])
+      expect(calls(records).map((call) => call.tool)).not.toContain(
+        "tpm2_unseal",
+      );
   });
 
   test("a tool that rewrites the session file wide is re-adopted to 0600 before the unseal", async () => {
@@ -1992,6 +2041,20 @@ describe("unsealing the sealed key", () => {
     expect(scratches(directory)).toEqual([]);
   });
 
+  test("a startauthsession that fails without saving a session gets no flush", async () => {
+    const { records, directory, presence } = await sealed({
+      tpm2_startauthsession: "fail-no-output",
+    });
+    await expect(unsealKey(presence, directory)).rejects.toMatchObject({
+      reason: "tool_failed",
+    });
+    // No -S file exists, so there is nothing of ours to flush.
+    expect(calls(records).map((call) => call.tool)).not.toContain(
+      "tpm2_flushcontext",
+    );
+    expect(scratches(directory)).toEqual([]);
+  });
+
   test("no sealed key runs no tool at all", async () => {
     const { base, records, presence } = await sealed();
     const empty = join(base, "empty");
@@ -2000,5 +2063,47 @@ describe("unsealing the sealed key", () => {
       reason: "key_not_sealed",
     });
     expect(existsSync(join(records, "calls.jsonl"))).toBe(false);
+  });
+});
+
+// DEC-262 (a15): each Tpm2Reason maps to exactly ONE contract code, never
+// merged. The Record type makes a new reason fail to compile; these hold the
+// values distinct and real, and the text fixed.
+describe("every Tpm2Reason has its own contract code", () => {
+  test("the codes are pairwise distinct and each is in the error catalog", () => {
+    const codes = Object.values(tpm2ErrorCodes);
+    expect(codes.length).toBeGreaterThanOrEqual(14);
+    expect(new Set(codes).size).toBe(codes.length);
+    for (const code of codes) expect(code in errorCatalog).toBe(true);
+  });
+
+  test("the ruled mappings", () => {
+    expect(tpm2ErrorCodes.platform_unsupported).toBe(
+      "tpm_platform_unsupported",
+    );
+    expect(tpm2ErrorCodes.tpm_absent).toBe("tpm_absent");
+    expect(tpm2ErrorCodes.tpm_not_accessible).toBe("tpm_access_refused");
+    expect(tpm2ErrorCodes.blob_not_user_private).toBe(
+      "tpm_blob_not_user_private",
+    );
+    expect(tpm2ErrorCodes.key_not_sealed).toBe("tpm_key_not_sealed");
+    expect(tpm2ErrorCodes.tool_untrusted).toBe("tpm_tool_untrusted");
+    // NB6: not-encrypted and not-recognised are two codes.
+    expect(tpm2ErrorCodes.session_not_encrypted).not.toBe(
+      tpm2ErrorCodes.tool_incompatible,
+    );
+  });
+
+  test("the contract error carries the catalog's fixed text, never a path or a tool version", () => {
+    const secret = "/home/someone/ward-tpm tpm2-tools 5.6";
+    for (const reason of Object.keys(tpm2ErrorCodes) as Array<
+      keyof typeof tpm2ErrorCodes
+    >) {
+      const error = wardErrorFor(new Tpm2Error(reason, secret));
+      expect(error.code).toBe(tpm2ErrorCodes[reason]);
+      expect(error.message).toBe(errorCatalog[error.code].message);
+      expect(error.message).not.toContain("/home/someone");
+      expect(error.message).not.toContain("5.6");
+    }
   });
 });

@@ -51,6 +51,15 @@ writeFileSync(
     stdinHex: stdin.toString("hex"),
   }),
 );
+// `--version` prints the measured one-line shape and does nothing else.
+if (args[0] === "--version") {
+  process.stdout.write(
+    `tool="${tool}" version="5.6" tctis="libtss2-tctildr" tcti-default=tcti-device\n`,
+  );
+  process.exit(0);
+}
+// `fail-no-output`: exits 1 before writing any output file.
+if (mode === "fail-no-output") process.exit(1);
 const sessionPath = (() => {
   const given = args.find((arg) => arg.startsWith("session:"));
   if (given !== undefined) return given.slice("session:".length);

@@ -26,6 +26,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import { type ErrorCode, WardError } from "../contract/errors.ts";
 import { isPrivateEntry } from "./sqlite-vault-store.ts";
 
 export const tpmDevicePath = "/dev/tpmrm0";
@@ -58,6 +59,7 @@ export type Tpm2Reason =
   | "blob_not_user_private"
   | "key_not_sealed"
   | "session_not_encrypted"
+  | "tool_incompatible"
   | "tool_untrusted"
   | "tool_timeout"
   | "tool_output_too_large"
@@ -75,6 +77,8 @@ const remedies: Record<Tpm2Reason, string> = {
   key_not_sealed: "no sealed vault key is present",
   session_not_encrypted:
     "the TPM session does not encrypt the unsealed key in transit",
+  tool_incompatible:
+    "a tpm2 tool printed something Ward does not recognise about the session",
   tool_untrusted: "a tpm2 tool is not trusted to receive the vault key",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
@@ -94,6 +98,36 @@ export class Tpm2Error extends Error {
     this.reason = reason;
     this.detail = detail;
   }
+}
+
+// DEC-262 (a15): each Tpm2Reason maps to exactly ONE contract code, never
+// merged. The Record type makes a new reason fail to compile until it has a
+// code, and a test holds the values pairwise distinct. A doctor state may group
+// codes (the unsupported state is both tpm_absent and tpm_platform_unsupported);
+// the codes themselves are never shared. A missing state directory is
+// key_not_sealed (no blob exists); an existing directory or blob that is not
+// 0700 or 0600 is blob_not_user_private (a2 s3).
+export const tpm2ErrorCodes: Record<Tpm2Reason, ErrorCode> = {
+  tpm_absent: "tpm_absent",
+  tools_absent: "tpm_tools_absent",
+  tpm_not_accessible: "tpm_access_refused",
+  tpm_unusable: "tpm_unusable",
+  directory_unusable: "tpm_state_directory_unusable",
+  platform_unsupported: "tpm_platform_unsupported",
+  blob_not_user_private: "tpm_blob_not_user_private",
+  key_not_sealed: "tpm_key_not_sealed",
+  tool_untrusted: "tpm_tool_untrusted",
+  tool_timeout: "tpm_tool_timeout",
+  tool_output_too_large: "tpm_tool_output_too_large",
+  tool_failed: "tpm_tool_failed",
+  session_not_encrypted: "tpm_session_not_encrypted",
+  tool_incompatible: "tpm_tool_incompatible",
+};
+
+// The contract error for a TPM failure. The text is the catalog's fixed text:
+// the reason's detail (a path, a tool version) is not carried into it.
+export function wardErrorFor(error: Tpm2Error): WardError {
+  return new WardError(tpm2ErrorCodes[error.reason]);
 }
 
 export interface Tpm2Host {
@@ -518,6 +552,8 @@ async function readCapped(
       if (done) break;
       if (size + value.length > maxToolOutputBytes) {
         if (overflow === "refuse") {
+          // The chunk that crosses the cap is not kept in `chunks`: zero it.
+          value.fill(0);
           await reader.cancel().catch(() => undefined);
           throw new Tpm2Error("tool_output_too_large", tool);
         }
@@ -567,11 +603,29 @@ export async function runTool(
       // Judged by the exit status below.
     }
     try {
-      const [stdout, stderr, code] = await Promise.all([
-        readCapped(child.stdout, tool),
-        readCapped(child.stderr, tool, "truncate"),
-        child.exited,
-      ]);
+      // allSettled, not all: a stderr that errors after stdout has resolved
+      // must not drop a stdout that may be an unsealed key unzeroed.
+      const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled(
+        [
+          readCapped(child.stdout, tool),
+          readCapped(child.stderr, tool, "truncate"),
+          child.exited,
+        ],
+      );
+      if (
+        stdoutResult.status !== "fulfilled" ||
+        stderrResult.status !== "fulfilled" ||
+        exitResult.status !== "fulfilled"
+      ) {
+        if (stdoutResult.status === "fulfilled") stdoutResult.value.fill(0);
+        const failed = [stdoutResult, stderrResult, exitResult].find(
+          (result) => result.status === "rejected",
+        );
+        throw (failed as PromiseRejectedResult).reason;
+      }
+      const stdout = stdoutResult.value;
+      const stderr = stderrResult.value;
+      const code = exitResult.value;
       // Nobody receives this stdout when the tool failed or the call already
       // timed out: it may be an unsealed key, so it is zeroed, not dropped.
       if (code !== 0 || abandoned) {
@@ -891,6 +945,9 @@ export async function withLoadedKey<T>(
 ): Promise<T> {
   if (!isAbsolute(directory))
     throw new Tpm2Error("blob_not_user_private", "not an absolute path");
+  // No state directory means no blob exists: not sealed. Only ENOENT reads so;
+  // any other failure to look is a refusal, never "not sealed".
+  if (!exists(directory)) throw new Tpm2Error("key_not_sealed", directory);
   requirePrivate(directory, "directory");
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
@@ -939,33 +996,69 @@ export async function withLoadedKey<T>(
   }
 }
 
-// True only when the session-config printout is EXACTLY the measured shape
-// (tpm2-tools 5.6, jetson, 2026-11-09) and its attribute list has both decrypt
-// and encrypt on:
+// DEC-262 (a15) NB6: what a session-config printout says. "on" and "off" are
+// the two parsed answers; everything else is "unparsed", and none of the three
+// lets an unseal through unless it is "on".
+//   on       the measured shape and decrypt AND encrypt are both listed;
+//   off      the measured shape, and decrypt or encrypt is not listed (a
+//            security failure: the AC2 stop, session_not_encrypted);
+//   unparsed anything else, including a token outside the known tpm2-tools
+//            attribute vocabulary (the tool changed: tool_incompatible).
+// The measured shape (tpm2-tools 5.6, jetson, 2026-11-09) is
 //   Session-Handle: 0x02000000
 //   Session-Attributes: continuesession|decrypt|encrypt
-// Fail-closed: exactly one Session-Attributes line (a trailing \r tolerated)
-// whose value is one token split on "|" containing the exact names decrypt and
-// encrypt; the only other line allowed is a Session-Handle line. Zero or two
-// attribute lines, an extra line, a different separator or any other shape is
-// refused, so a tool build that prints something new stops the unseal instead
-// of letting it through unencrypted.
-function sessionAttributesOn(printout: string): boolean {
+// exactly one Session-Attributes line (a trailing \r tolerated) whose value is
+// one token split on "|"; the only other line allowed is a Session-Handle line.
+const sessionAttributeVocabulary = new Set([
+  "continuesession",
+  "decrypt",
+  "encrypt",
+  "audit",
+  "auditexclusive",
+  "auditreset",
+]);
+export type SessionPrintout = "on" | "off" | "unparsed";
+
+function classifySessionPrintout(printout: string): SessionPrintout {
   const lines = printout.split("\n").map((line) => line.replace(/\r$/, ""));
   if (lines.at(-1) === "") lines.pop();
   let attributes: string | undefined;
   for (const line of lines) {
     if (/^Session-Handle: 0x[0-9a-fA-F]+$/.test(line)) continue;
     const match = /^Session-Attributes: (\S+)$/.exec(line);
-    if (match === null || attributes !== undefined) return false;
+    if (match === null || attributes !== undefined) return "unparsed";
     attributes = match[1];
   }
-  if (attributes === undefined) return false;
+  if (attributes === undefined) return "unparsed";
   const names = attributes.split("|");
-  return names.includes("decrypt") && names.includes("encrypt");
+  if (!names.every((name) => sessionAttributeVocabulary.has(name)))
+    return "unparsed";
+  return names.includes("decrypt") && names.includes("encrypt") ? "on" : "off";
 }
 
-export const sessionAttributesOnForTest = sessionAttributesOn;
+export const classifySessionPrintoutForTest = classifySessionPrintout;
+
+// The tpm2-tools version, for a doctor state's display only: never a capability
+// check (presence is the capability, condition iii). Read from the measured
+// `--version` line, allowlisted and capped, "unknown" otherwise.
+async function toolsVersion(
+  presence: Tpm2Presence,
+  directory: string,
+  timeoutMs: number | undefined,
+): Promise<string> {
+  try {
+    const run = await runTool(presence, "tpm2_sessionconfig", ["--version"], {
+      cwd: directory,
+      timeoutMs,
+    });
+    const match = /version="([0-9A-Za-z.+~-]{1,32})"/.exec(
+      Buffer.from(run.stdout).toString("utf8"),
+    );
+    return match?.[1] ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 // Unseals the vault key (DEC-262 a9, opum-doc's slice-2 rules). Every call
 // loads the key in its own scratch (withLoadedKey), starts a FRESH salted HMAC
@@ -1013,8 +1106,14 @@ export async function unsealKey(
         const printout = Buffer.from(
           (await run("tpm2_sessionconfig", [session])).stdout,
         ).toString("utf8");
-        if (!sessionAttributesOn(printout))
+        const verdict = classifySessionPrintout(printout);
+        if (verdict === "off")
           throw new Tpm2Error("session_not_encrypted", "session");
+        if (verdict === "unparsed")
+          throw new Tpm2Error(
+            "tool_incompatible",
+            `tpm2-tools ${await toolsVersion(presence, loaded.directory, options.timeoutMs)}`,
+          );
         // Verified, never repaired, at the moment before the tool reads it.
         requirePrivateFile(session);
         const result = await run("tpm2_unseal", [

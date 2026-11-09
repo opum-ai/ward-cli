@@ -134,6 +134,79 @@ export const errorCatalog = {
     message:
       "Ward does not yet support a credential store on this platform. The developer preview supports macOS only.",
   },
+  // TPM2 vault-key custody on Linux (DEC-262 a15). One code per Tpm2Reason, never
+  // merged: the map in src/adapters/tpm2-tools.ts is exhaustive and a test holds
+  // the codes pairwise distinct. The text is fixed; a path or a tool version
+  // reaches a developer only through a doctor state, never through this text.
+  tpm_absent: {
+    type: "validation",
+    message:
+      "This machine has no TPM2 resource manager device (/dev/tpmrm0), so Ward cannot keep the vault key in a TPM here.",
+  },
+  tpm_platform_unsupported: {
+    type: "validation",
+    message:
+      "This runtime cannot open the TPM key files safely, so Ward cannot keep the vault key in a TPM here.",
+  },
+  tpm_tools_absent: {
+    type: "validation",
+    message:
+      "The tpm2-tools commands Ward needs to seal and unseal the vault key are not installed.",
+    hint: "Install the tpm2-tools package.",
+  },
+  tpm_access_refused: {
+    type: "denied",
+    message:
+      "The TPM2 device is present but this user cannot use it, so Ward did not touch it.",
+    hint: "Join the group that owns /dev/tpmrm0 (usually tss) and sign in again. If the device mode grants its group nothing, that is a host configuration change.",
+  },
+  tpm_unusable: {
+    type: "indeterminate",
+    message: "The TPM2 device could not be opened.",
+  },
+  tpm_state_directory_unusable: {
+    type: "validation",
+    message:
+      "Ward could not use its TPM key directory. Ward did not change a sealed key.",
+  },
+  tpm_blob_not_user_private: {
+    type: "validation",
+    message:
+      "A TPM key file or its directory is not private to this user (the directory must be mode 0700 and the files mode 0600, owned by you, and none a link). Ward will not use it and did not repair it.",
+  },
+  tpm_key_not_sealed: {
+    type: "not_found",
+    message: "No sealed vault key was found.",
+    hint: "If Ward was never set up, run `ward setup` in a trusted terminal. If a vault already exists, a missing key is a recovery condition, and Ward will not create a new key for it.",
+  },
+  tpm_tool_untrusted: {
+    type: "validation",
+    message:
+      "A tpm2 tool is not in a location Ward trusts to receive the vault key, so Ward did not run it.",
+  },
+  tpm_tool_timeout: {
+    type: "indeterminate",
+    message: "A tpm2 tool did not finish in time.",
+  },
+  tpm_tool_output_too_large: {
+    type: "validation",
+    message:
+      "A tpm2 tool wrote more output than any of them should, so Ward refused it.",
+  },
+  tpm_tool_failed: {
+    type: "indeterminate",
+    message: "A tpm2 tool failed. Its output is not shown.",
+  },
+  tpm_session_not_encrypted: {
+    type: "validation",
+    message:
+      "The TPM session reports that it does not encrypt the unsealed key in transit, so Ward refused to unseal the vault key.",
+  },
+  tpm_tool_incompatible: {
+    type: "validation",
+    message:
+      "A tpm2 tool printed something Ward does not recognise when it was asked whether the session encrypts the unsealed key, so Ward refused to unseal. This is a tool compatibility problem, not a report that encryption is off.",
+  },
   vault_authentication_failed: {
     type: "validation",
     message:
