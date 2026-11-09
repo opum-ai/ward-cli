@@ -8,7 +8,9 @@
 // exits; `touch-wide` also writes a 0660 file named by its first argument;
 // `flood` writes far more output than any tool should; `no-read` exits at once
 // without reading stdin; `flood-stderr` writes far more than the cap to stderr
-// and exits 0; `grandchild` leaves a process holding its stdout open
+// and exits 0; `flood-stderr-fail` does that and exits 1; `race-final`
+// also creates the final name (the -r path without its ".partial" suffix), as
+// a second writer would between the check and the publish; `grandchild` leaves a process holding its stdout open
 // (its pid in <record-dir>/grandchild.pid) and exits 0.
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,11 +35,14 @@ for (const [index, flag] of args.entries()) {
   if ((flag === "-c" || flag === "-u" || flag === "-r") && path !== undefined) {
     writeFileSync(path, `${tool} ${flag}`);
     chmodSync(path, 0o660);
+    if (mode === "race-final" && flag === "-r" && path.endsWith(".partial"))
+      writeFileSync(path.slice(0, -".partial".length), "planted");
   }
 }
-if (mode === "flood-stderr") process.stderr.write("e".repeat(64 * 1024));
+if (mode === "flood-stderr" || mode === "flood-stderr-fail")
+  process.stderr.write("e".repeat(64 * 1024));
 if (mode === "hang") await new Promise(() => {});
-if (mode === "fail") process.exit(1);
+if (mode === "fail" || mode === "flood-stderr-fail") process.exit(1);
 if (mode === "flood") process.stdout.write("x".repeat(64 * 1024));
 if (mode === "grandchild") {
   const held = Bun.spawn(["/bin/sleep", "60"], {

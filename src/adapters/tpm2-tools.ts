@@ -10,6 +10,8 @@ import {
   constants as fileConstants,
   fchmodSync,
   fstatSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -17,7 +19,6 @@ import {
   readlinkSync,
   readSync,
   realpathSync,
-  renameSync,
   statSync,
   type Stats,
   unlinkSync,
@@ -512,7 +513,8 @@ async function readCapped(
         await reader.cancel().catch(() => undefined);
         throw new Tpm2Error("tool_output_too_large", tool);
       }
-      chunks.push(value.subarray(0, Math.max(0, maxToolOutputBytes - size)));
+      if (size < maxToolOutputBytes)
+        chunks.push(value.subarray(0, maxToolOutputBytes - size));
       size = maxToolOutputBytes;
       continue;
     }
@@ -649,6 +651,8 @@ export function adoptToolFile(path: string): void {
     fchmodSync(fd, 0o600);
     if (!isPrivateEntry(fstatSync(fd), "file", uid()))
       throw new Tpm2Error("blob_not_user_private");
+    // The file's contents are on disk before anything is published by name.
+    fsyncSync(fd);
   } catch (error) {
     if (error instanceof Tpm2Error) throw error;
     throw new Tpm2Error("blob_not_user_private");
@@ -659,37 +663,35 @@ export function adoptToolFile(path: string): void {
 
 // DEC-262 (a9): sealing. The 32-byte vault key reaches tpm2_create only on its
 // stdin ("-i -"); it is never in argv, a file or the environment. The primary
-// is the owner-hierarchy storage key, recreated from the same template at each
-// use (a saved context does not survive a reboot), and the sealed object has
-// no PCR binding (a policy would stop it unsealing after the host restarts
-// with nobody present). -Q keeps the tools' YAML off stdout (WCLI-157).
+// is recreated from one pinned template at each use (a saved context does not
+// survive a reboot, and a changed tpm2-tools default would orphan the blob),
+// and the sealed object has no PCR binding (a policy would stop it unsealing
+// after the host restarts with nobody present). -Q keeps the tools' YAML off
+// stdout (WCLI-157). The template and the attributes are part of the on-disk
+// contract: the blob loads only under the primary it was created under.
 export const vaultKeyBytes = 32;
 export const sealedPublicName = "vault-key.pub";
 export const sealedPrivateName = "vault-key.priv";
 const primaryName = "primary.ctx";
 const partialSuffix = ".partial";
+export const primaryArgs = (context: string): string[] => [
+  "-C",
+  "o",
+  "-g",
+  "sha256",
+  "-G",
+  "ecc256:aes128cfb",
+  "-a",
+  "restricted|decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda",
+  "-c",
+  context,
+  "-Q",
+];
+export const sealedObjectAttributes = "fixedtpm|fixedparent|noda|userwithauth";
 
 export interface SealedKey {
   readonly publicBlob: string;
   readonly privateBlob: string;
-}
-
-// Creates the storage primary into a user-private context file in directory
-// and returns its path. Seal and unseal both use it, so the template is one.
-export async function createPrimary(
-  presence: Tpm2Presence,
-  directory: string,
-  options: { timeoutMs?: number } = {},
-): Promise<string> {
-  const context = join(directory, primaryName);
-  await runTool(
-    presence,
-    "tpm2_createprimary",
-    ["-C", "o", "-G", "ecc", "-g", "sha256", "-c", context, "-Q"],
-    { cwd: directory, timeoutMs: options.timeoutMs },
-  );
-  adoptToolFile(context);
-  return context;
 }
 
 function removeIfPresent(path: string): void {
@@ -701,10 +703,58 @@ function removeIfPresent(path: string): void {
   }
 }
 
-// Seals the vault key to the TPM into directory (0700, this user's). The two
-// blobs are written under partial names, made 0600 and verified, and renamed
-// only when both exist, so a failure leaves no half-sealed key behind. An
-// existing sealed key is never replaced: that would destroy the only copy.
+function fsyncDirectory(directory: string): void {
+  let fd: number;
+  try {
+    fd = openSync(directory, fileConstants.O_RDONLY);
+  } catch (error) {
+    throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
+  }
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Creates the storage primary into a user-private context file in directory
+// and returns its path. Seal and unseal both use it, so the template is one,
+// and it needs no preamble from its caller.
+export async function createPrimary(
+  presence: Tpm2Presence,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<string> {
+  preparePrivateDirectory(directory);
+  const context = join(directory, primaryName);
+  removeIfPresent(context);
+  await runTool(presence, "tpm2_createprimary", primaryArgs(context), {
+    cwd: directory,
+    timeoutMs: options.timeoutMs,
+  });
+  adoptToolFile(context);
+  return context;
+}
+
+function exists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false;
+    throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
+  }
+}
+
+// Seals the vault key to the TPM into directory (0700, this user's). These
+// blobs are the only copy of the key, so the order is the safety: both are
+// written under partial names, made 0600, verified and fsynced, then
+// published by name with link(2), which refuses to replace, the public blob
+// first and the private blob LAST. The private blob is the single commit
+// marker: it is present only when the whole seal completed. A lone public
+// blob is an interrupted earlier seal (a public area holds no key) and is
+// removed; a private blob is a sealed key and is never replaced. A failure
+// removes only what this call created.
 export async function sealKey(
   presence: Tpm2Presence,
   key: Uint8Array,
@@ -714,26 +764,22 @@ export async function sealKey(
   if (key.length !== vaultKeyBytes)
     throw new RangeError(`the vault key is ${vaultKeyBytes} bytes`);
   preparePrivateDirectory(directory);
-  const finals = [sealedPublicName, sealedPrivateName].map((name) =>
-    join(directory, name),
-  ) as [string, string];
-  for (const path of finals) {
-    try {
-      lstatSync(path);
-    } catch (error) {
-      if (errnoCode(error) === "ENOENT") continue;
-      throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
-    }
+  const publicBlob = join(directory, sealedPublicName);
+  const privateBlob = join(directory, sealedPrivateName);
+  if (exists(privateBlob))
     throw new Tpm2Error(
       "directory_unusable",
-      `${path} already holds a sealed key; it is not replaced`,
+      `${privateBlob} already holds a sealed key; it is not replaced`,
     );
-  }
-  const partials = finals.map((path) => `${path}${partialSuffix}`) as [
-    string,
-    string,
+  // The commit marker is absent, so a public blob is a leftover.
+  removeIfPresent(publicBlob);
+  const partials = [
+    `${publicBlob}${partialSuffix}`,
+    `${privateBlob}${partialSuffix}`,
   ];
+  const [publicPartial, privatePartial] = partials as [string, string];
   for (const path of partials) removeIfPresent(path);
+  const published: string[] = [];
   try {
     const primary = await createPrimary(presence, directory, options);
     await runTool(
@@ -745,22 +791,37 @@ export async function sealKey(
         "-g",
         "sha256",
         "-a",
-        "fixedtpm|fixedparent|noda|userwithauth",
+        sealedObjectAttributes,
         "-i",
         "-",
         "-u",
-        partials[0],
+        publicPartial,
         "-r",
-        partials[1],
+        privatePartial,
         "-Q",
       ],
       { cwd: directory, stdin: key, timeoutMs: options.timeoutMs },
     );
     for (const path of partials) adoptToolFile(path);
-    renameSync(partials[0], finals[0]);
-    renameSync(partials[1], finals[1]);
+    for (const [partial, final] of [
+      [publicPartial, publicBlob],
+      [privatePartial, privateBlob],
+    ] as const) {
+      try {
+        linkSync(partial, final);
+      } catch (error) {
+        throw new Tpm2Error(
+          "directory_unusable",
+          `${final} could not be published (${String(errnoCode(error) ?? "unknown")}); another writer may be sealing here`,
+        );
+      }
+      published.push(final);
+      unlinkSync(partial);
+      // The public blob is durable before the private one can name the seal.
+      fsyncDirectory(directory);
+    }
   } catch (error) {
-    for (const path of [...partials, ...finals]) {
+    for (const path of [...partials, ...published]) {
       try {
         unlinkSync(path);
       } catch {
@@ -769,5 +830,5 @@ export async function sealKey(
     }
     throw error;
   }
-  return { publicBlob: finals[0], privateBlob: finals[1] };
+  return { publicBlob, privateBlob };
 }
