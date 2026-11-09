@@ -32,6 +32,7 @@ import {
   requiredTools,
   requirePrivateFile,
   runTool,
+  safeOpenFlags,
   spawnTool,
   Tpm2Error,
   tpmDevicePath,
@@ -63,8 +64,12 @@ const denied = () => {
 // process group, so only a positive integer is ever signalled.
 function killGrandchild(pidFile: string): void {
   try {
-    const pid = Number(readFileSync(pidFile, "utf8").trim());
-    if (Number.isInteger(pid) && pid > 0) process.kill(pid, 9);
+    const text = readFileSync(pidFile, "utf8").trim();
+    const pid = Number(text);
+    // Digits only and within a signed 32-bit pid: a larger value could wrap to
+    // 0 or a negative number in a coercion and signal a process group.
+    if (/^\d+$/.test(text) && pid > 0 && pid <= 0x7fffffff)
+      process.kill(pid, 9);
   } catch {
     // No pid file, or the grandchild is already gone.
   }
@@ -474,7 +479,11 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
           timeoutMs: 2_500,
         }).catch((e) => e.reason);
         const elapsed = performance.now() - started;
+        // The file exists and holds a positive integer: in the window where
+        // the fake was killed between creating it and writing it, the file is
+        // present but empty and the grandchild was never started.
         expect(existsSync(pidFile)).toBe(true);
+        expect(readFileSync(pidFile, "utf8")).toMatch(/^[1-9]\d*$/);
         expect(reason).toBe("tool_timeout");
         expect(elapsed).toBeLessThan(15_000);
       } finally {
@@ -496,7 +505,15 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
       // A pid file the fake had created but not yet written, a zero (which
       // process.kill would send to the runner's whole process group), a
       // negative one, and text: none may signal anything, or throw.
-      for (const [index, content] of ["", "0", "-1", "abc", "1.5"].entries()) {
+      for (const [index, content] of [
+        "",
+        "0",
+        "-1",
+        "abc",
+        "1.5",
+        "4294967296",
+        "2147483648",
+      ].entries()) {
         const file = join(base, `pid-${index}`);
         writeFileSync(file, content);
         killGrandchild(file);
@@ -529,15 +546,24 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
 });
 
 describe("Ward sets and verifies user-private modes itself", () => {
-  test("the open flags adoptToolFile relies on exist on this platform", () => {
-    // An undefined flag would be dropped silently by the bitwise or.
-    for (const name of ["O_RDONLY", "O_NOFOLLOW", "O_NONBLOCK", "O_NOCTTY"])
-      expect(typeof (constants as Record<string, unknown>)[name]).toBe(
-        "number",
+  test("a runtime lacking an open flag refuses instead of dropping it", () => {
+    const real = { ...constants } as Record<string, number>;
+    for (const flag of ["O_NOFOLLOW", "O_NONBLOCK", "O_NOCTTY", "O_RDONLY"]) {
+      const lacking = { ...real };
+      delete lacking[flag];
+      expect(reasonOf(() => safeOpenFlags(lacking))).toBe(
+        "platform_unsupported",
       );
-    expect(constants.O_NOFOLLOW).toBeGreaterThan(0);
-    expect(constants.O_NONBLOCK).toBeGreaterThan(0);
-    expect(constants.O_NOCTTY).toBeGreaterThan(0);
+    }
+    // The control, and the CI witness for the platform actually running: every
+    // flag is defined here and the combined mask carries each of them.
+    const mask = safeOpenFlags();
+    for (const flag of [
+      constants.O_NOFOLLOW,
+      constants.O_NONBLOCK,
+      constants.O_NOCTTY,
+    ])
+      expect(mask & flag).toBe(flag);
   });
 
   test(
@@ -572,8 +598,7 @@ console.log(statSync(process.argv[2]).isFIFO());`,
       const deadline = setTimeout(() => child.kill(9), 8_000);
       try {
         const out = await new Response(child.stdout).text();
-        // Refused as not user-private, and the path really was a FIFO, so the
-        // refusal is not some other open failure.
+        // Refused as not user-private, and the path was really a FIFO.
         expect(out.trim().split("\n")).toEqual([
           "blob_not_user_private",
           "true",
