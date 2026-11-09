@@ -46,6 +46,7 @@ export type Tpm2Reason =
   | "tpm_not_accessible"
   | "tpm_unusable"
   | "directory_unusable"
+  | "platform_unsupported"
   | "blob_not_user_private"
   | "tool_timeout"
   | "tool_output_too_large"
@@ -58,6 +59,7 @@ const remedies: Record<Tpm2Reason, string> = {
   tpm_not_accessible: "the TPM2 device is not accessible to this user",
   tpm_unusable: "the TPM2 device could not be opened",
   directory_unusable: "the blob directory could not be created",
+  platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
@@ -318,23 +320,39 @@ export function requirePrivateFile(path: string): void {
   requirePrivate(path, "file");
 }
 
+// The open flags adoptToolFile depends on. An undefined one would be dropped
+// silently by the bitwise or (a symlink followed, a FIFO blocking the open),
+// so a runtime lacking any of them refuses instead of opening.
+export function safeOpenFlags(
+  constants: Partial<Record<string, number>> = fileConstants,
+): number {
+  const flags = [
+    constants.O_RDONLY,
+    constants.O_NOFOLLOW,
+    constants.O_NONBLOCK,
+    constants.O_NOCTTY,
+  ];
+  let combined = 0;
+  for (const flag of flags) {
+    if (typeof flag !== "number") throw new Tpm2Error("platform_unsupported");
+    combined |= flag;
+  }
+  return combined;
+}
+
 // A file a tool just wrote is made 0600 by Ward and then verified, because
 // the tools' own modes cannot be trusted: tpm2-tools wrote a 0660 context
 // under umask 077 (WCLI-153). Everything runs on one descriptor opened
 // O_NOFOLLOW, so a symlink swapped in after the check is refused and a path
 // swap cannot redirect the chmod.
 export function adoptToolFile(path: string): void {
+  // O_NOFOLLOW refuses a symlink; O_NONBLOCK and O_NOCTTY keep a FIFO or device
+  // at the path from blocking the open or gaining a terminal. The fstat below
+  // refuses anything that is not a regular file.
+  const flags = safeOpenFlags();
   let fd: number;
   try {
-    fd = openSync(
-      path,
-      fileConstants.O_RDONLY |
-        fileConstants.O_NOFOLLOW |
-        // A FIFO or device at the path must neither block the open nor gain a
-        // controlling terminal; the fstat below refuses anything not a file.
-        fileConstants.O_NONBLOCK |
-        fileConstants.O_NOCTTY,
-    );
+    fd = openSync(path, flags);
   } catch {
     throw new Tpm2Error("blob_not_user_private");
   }
