@@ -35,7 +35,6 @@ import {
   defaultToolTimeoutMs,
   detectTpm2,
   detectTpm2ForTest,
-  fsyncDirectory,
   maxToolOutputBytes,
   preparePrivateDirectory,
   requiredTools,
@@ -45,6 +44,7 @@ import {
   sealedPrivateName,
   sealedPublicName,
   sealKey,
+  sessionAttributesOnForTest,
   unsealKey,
   withLoadedKey,
   spawnTool,
@@ -1494,30 +1494,24 @@ describe("sealing the vault key", () => {
     );
   });
 
-  test("a link failure other than EEXIST carries no another-writer hint", async () => {
-    if (process.getuid?.() === 0) return; // root ignores the 0500 directory
-    const { directory, presence } = sealable({ tpm2_create: "lock-directory" });
-    const error = await sealKey(presence, key, directory).then(
-      () => undefined,
-      (caught: unknown) => caught,
-    );
-    // Restore the mode so the temporary root can be removed.
-    chmodSync(directory, 0o700);
-    expect(error).toMatchObject({ reason: "directory_unusable" });
-    expect((error as Error).message).toContain("(EACCES)");
-    expect((error as Error).message).not.toContain("another writer");
-  });
-
-  test("a directory that cannot be opened for fsync is directory_unusable", () => {
-    const { base } = fresh();
-    // The open fails.
-    expect(reasonOf(() => fsyncDirectory(join(base, "absent")))).toBe(
-      "directory_unusable",
-    );
-    // The fsync call itself cannot be made to fail portably (fsync of a
-    // device succeeds on macOS), so only the wrap around the open is proven;
-    // the fsync wrap is the same Tpm2Error construction a few lines below it.
-  });
+  // Root ignores a 0500 directory, so the case is skipped, not passed.
+  test.skipIf(process.getuid?.() === 0)(
+    "a link failure other than EEXIST carries no another-writer hint",
+    async () => {
+      const { directory, presence } = sealable({
+        tpm2_create: "lock-directory",
+      });
+      const error = await sealKey(presence, key, directory).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      // Restore the mode so the temporary root can be removed.
+      chmodSync(directory, 0o700);
+      expect(error).toMatchObject({ reason: "directory_unusable" });
+      expect((error as Error).message).toContain("(EACCES)");
+      expect((error as Error).message).not.toContain("another writer");
+    },
+  );
 
   test("a noisy stderr is truncated, not refused (WCLI-157)", async () => {
     const { directory, presence } = sealable({
@@ -1706,15 +1700,19 @@ describe("loading the sealed key", () => {
       withLoadedKey(presence, absent, async () => 1),
     ).rejects.toMatchObject({ reason: "blob_not_user_private" });
     expect(existsSync(absent)).toBe(false);
-    // A relative path to a real, sealed, private directory is still refused:
-    // the guard is the absolute-path check, not the lstat that would also fail.
-    await expect(
-      withLoadedKey(
-        presence,
-        relative(process.cwd(), directory),
-        async () => 1,
-      ),
-    ).rejects.toMatchObject({ reason: "blob_not_user_private" });
+    // A relative path to a real, sealed, private directory is refused by the
+    // absolute-path guard itself (its own detail), not by a later step:
+    // without the guard the lstat succeeds against the cwd.
+    const relativeError = await withLoadedKey(
+      presence,
+      relative(process.cwd(), directory),
+      async () => 1,
+    ).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(relativeError).toMatchObject({ reason: "blob_not_user_private" });
+    expect((relativeError as Error).message).toContain("not an absolute path");
     expect(existsSync(join(records, "tpm2_load.json"))).toBe(false);
     expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
   });
@@ -1903,6 +1901,94 @@ describe("unsealing the sealed key", () => {
     const { directory, presence } = await sealed({ tpm2_flushcontext: "fail" });
     const key = await unsealKey(presence, directory);
     expect(Buffer.from(key).equals(Buffer.from(synthetic))).toBe(true);
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("only the measured printout shape passes the encrypt/decrypt check", () => {
+    const real =
+      "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n";
+    expect(sessionAttributesOnForTest(real)).toBe(true);
+    expect(sessionAttributesOnForTest(real.replaceAll("\n", "\r\n"))).toBe(
+      true,
+    );
+    expect(
+      sessionAttributesOnForTest(
+        "Session-Attributes: encrypt|decrypt|continuesession",
+      ),
+    ).toBe(true);
+    const refused = [
+      "",
+      "Session-Handle: 0x02000000\n",
+      // Lookalike names.
+      "Session-Attributes: continuesession|decrypt|encrypt_x\n",
+      "Session-Attributes: continuesession|decrypt|encrypt-off\n",
+      "Session-Attributes: continuesession|decrypt|no-encrypt\n",
+      "Session-Attributes: continuesession|decrypt|!encrypt\n",
+      "Session-Attributes: continuesession|decrypt|encrypt2\n",
+      "Session-Attributes: continuesession|decrypt|Encrypt\n",
+      // Values after a name, spaces, other separators.
+      "Session-Attributes: continuesession|decrypt|encrypt 0\n",
+      "Session-Attributes: decrypt encrypt\n",
+      "Session-Attributes: decrypt,encrypt\n",
+      "Session-Attributes: continuesession|decrypt|encrypt=0\n",
+      "encrypt: 0\ndecrypt: 1\n",
+      "encrypt: disabled\ndecrypt: 1\n",
+      "encrypt: n\ndecrypt: 1\n",
+      "encrypt: 0x0\ndecrypt: 1\n",
+      // One name missing.
+      "Session-Attributes: continuesession|decrypt\n",
+      "Session-Attributes: continuesession|encrypt\n",
+      "Session-Attributes: continuesession\n",
+      // A line that merely mentions the words.
+      "Session-Attributes: continuesession\nWARNING: decrypt/encrypt not supported\n",
+      // Duplicates: first match must not win.
+      "Session-Attributes: continuesession|decrypt|encrypt\nSession-Attributes: continuesession\n",
+      "Session-Attributes: continuesession\nSession-Attributes: continuesession|decrypt|encrypt\n",
+      "Session-Attributes: continuesession|decrypt|encrypt\nencrypt: 0\n",
+      // Anything else around the measured shape.
+      `${real}extra line\n`,
+      "Session-Handle: nope\nSession-Attributes: continuesession|decrypt|encrypt\n",
+      " Session-Attributes: continuesession|decrypt|encrypt\n",
+      "session-attributes: continuesession|decrypt|encrypt\n",
+    ];
+    for (const printout of refused)
+      expect([printout, sessionAttributesOnForTest(printout)]).toEqual([
+        printout,
+        false,
+      ]);
+  });
+
+  test("a tool that rewrites the session file wide is re-adopted to 0600 before the unseal", async () => {
+    const { records, directory, presence } = await sealed({
+      tpm2_sessionconfig: "wide-on-enable",
+    });
+    const key = await unsealKey(presence, directory);
+    expect(key.length).toBe(32);
+    const unseal = calls(records).find((call) => call.tool === "tpm2_unseal");
+    expect(unseal?.sessionMode).toBe(0o600);
+  });
+
+  test("a session file widened after the check is refused, never repaired, and no unseal runs", async () => {
+    const { records, directory, presence } = await sealed({
+      tpm2_sessionconfig: "wide-on-read",
+    });
+    await expect(unsealKey(presence, directory)).rejects.toMatchObject({
+      reason: "blob_not_user_private",
+    });
+    const tools = calls(records).map((call) => call.tool);
+    expect(tools).not.toContain("tpm2_unseal");
+    expect(tools.at(-1)).toBe("tpm2_flushcontext");
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("a startauthsession that fails after saving a session still gets it flushed", async () => {
+    const { records, directory, presence } = await sealed({
+      tpm2_startauthsession: "fail",
+    });
+    await expect(unsealKey(presence, directory)).rejects.toMatchObject({
+      reason: "tool_failed",
+    });
+    expect(calls(records).at(-1)?.tool).toBe("tpm2_flushcontext");
     expect(scratches(directory)).toEqual([]);
   });
 

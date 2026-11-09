@@ -21,7 +21,8 @@
 // a test can assert the ORDER of calls and what a tool saw. tpm2_unseal writes
 // the 32-byte synthetic key 0x5a to stdout (`short-unseal`: 31 bytes);
 // tpm2_sessionconfig with no --enable/--disable prints the attributes
-// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"). The default
+// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"; `wide-on-enable` and
+// `wide-on-read` widen the session file to 0660 at that call). The default
 // printout is the real tpm2-tools 5.6 output, measured on the jetson on
 // 2026-11-09; the two off modes are inventions that exercise the fail-closed
 // parse.
@@ -29,10 +30,11 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 const [tool, recordDirectory, mode, ...args] = process.argv.slice(2);
 if (tool === undefined || recordDirectory === undefined || mode === undefined)
@@ -108,12 +110,31 @@ for (const [index, flag] of args.entries()) {
       writeFileSync(path.slice(0, -".partial".length), "planted");
   }
 }
-if (mode === "lock-directory") chmodSync(process.cwd(), 0o500);
+if (mode === "lock-directory") {
+  // Refuse to chmod anything outside this case's own directory.
+  const inside = relative(
+    realpathSync(dirname(recordDirectory)),
+    realpathSync(process.cwd()),
+  );
+  if (inside === "" || inside.startsWith("..") || inside.startsWith("/"))
+    throw new Error("lock-directory: cwd is outside the test case directory");
+  chmodSync(process.cwd(), 0o500);
+}
 if (mode === "flood-stderr" || mode === "flood-stderr-fail")
   process.stderr.write("e".repeat(64 * 1024));
 if (mode === "hang") await new Promise(() => {});
 if (mode === "fail" || mode === "flood-stderr-fail") process.exit(1);
 if (mode === "flood") process.stdout.write("x".repeat(64 * 1024));
+// `wide-on-enable`: the enable call rewrites the session file 0660.
+// `wide-on-read`: the bare read widens it to 0660 first.
+if (tool === "tpm2_sessionconfig" && sessionPath !== undefined) {
+  const enabling = args.some((arg) => /^--(en|dis)able-/.test(arg));
+  if (
+    (mode === "wide-on-enable" && enabling) ||
+    (mode === "wide-on-read" && !enabling)
+  )
+    chmodSync(sessionPath, 0o660);
+}
 if (tool === "tpm2_unseal")
   process.stdout.write(Buffer.alloc(mode === "short-unseal" ? 31 : 32, 0x5a));
 if (
