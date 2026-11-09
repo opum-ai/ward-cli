@@ -57,6 +57,7 @@ export type Tpm2Reason =
   | "platform_unsupported"
   | "blob_not_user_private"
   | "key_not_sealed"
+  | "session_not_encrypted"
   | "tool_untrusted"
   | "tool_timeout"
   | "tool_output_too_large"
@@ -72,6 +73,8 @@ const remedies: Record<Tpm2Reason, string> = {
   platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
   key_not_sealed: "no sealed vault key is present",
+  session_not_encrypted:
+    "the TPM session does not encrypt the unsealed key in transit",
   tool_untrusted: "a tpm2 tool is not trusted to receive the vault key",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
@@ -509,23 +512,29 @@ async function readCapped(
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (size + value.length > maxToolOutputBytes) {
-      if (overflow === "refuse") {
-        await reader.cancel().catch(() => undefined);
-        throw new Tpm2Error("tool_output_too_large", tool);
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (size + value.length > maxToolOutputBytes) {
+        if (overflow === "refuse") {
+          await reader.cancel().catch(() => undefined);
+          throw new Tpm2Error("tool_output_too_large", tool);
+        }
+        if (size < maxToolOutputBytes)
+          chunks.push(value.subarray(0, maxToolOutputBytes - size));
+        size = maxToolOutputBytes;
+        continue;
       }
-      if (size < maxToolOutputBytes)
-        chunks.push(value.subarray(0, maxToolOutputBytes - size));
-      size = maxToolOutputBytes;
-      continue;
+      size += value.length;
+      chunks.push(value);
     }
-    size += value.length;
-    chunks.push(value);
+    return Buffer.concat(chunks);
+  } finally {
+    // stdout can be an unsealed key: the stream's own chunks are zeroed once
+    // the result is copied out (or the read is refused).
+    for (const chunk of chunks) chunk.fill(0);
   }
-  return Buffer.concat(chunks);
 }
 
 // Runs one tool to completion within the bound. The bound is a plain
@@ -540,8 +549,10 @@ export async function runTool(
 ): Promise<ToolRun> {
   const child = spawnTool(presence, tool, args, { cwd: options.cwd });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let abandoned = false;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      abandoned = true;
       child.kill(9);
       reject(new Tpm2Error("tool_timeout", tool));
     }, options.timeoutMs ?? defaultToolTimeoutMs);
@@ -561,7 +572,12 @@ export async function runTool(
         readCapped(child.stderr, tool, "truncate"),
         child.exited,
       ]);
-      if (code !== 0) throw new Tpm2Error("tool_failed", tool);
+      // Nobody receives this stdout when the tool failed or the call already
+      // timed out: it may be an unsealed key, so it is zeroed, not dropped.
+      if (code !== 0 || abandoned) {
+        stdout.fill(0);
+        throw new Tpm2Error(code !== 0 ? "tool_failed" : "tool_timeout", tool);
+      }
       return { stdout, stderr: Buffer.from(stderr).toString("utf8") };
     } catch (error) {
       child.kill(9);
@@ -707,7 +723,7 @@ function removeIfPresent(path: string): void {
   }
 }
 
-export function fsyncDirectory(directory: string): void {
+function fsyncDirectory(directory: string): void {
   let fd: number;
   try {
     fd = openSync(directory, fileConstants.O_RDONLY);
@@ -873,7 +889,8 @@ export async function withLoadedKey<T>(
   use: (loaded: LoadedKey) => Promise<T>,
   options: { timeoutMs?: number } = {},
 ): Promise<T> {
-  if (!isAbsolute(directory)) throw new Tpm2Error("blob_not_user_private");
+  if (!isAbsolute(directory))
+    throw new Tpm2Error("blob_not_user_private", "not an absolute path");
   requirePrivate(directory, "directory");
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
@@ -914,8 +931,121 @@ export async function withLoadedKey<T>(
     } catch {
       // A leftover key.ctx can be unsealed, with the empty auth, by anyone who
       // can open /dev/tpmrm0 as this user, until a TPM reset. That is no more
-      // than the blobs beside it in this same 0700 directory already allow. Re-check
-      // this when 2b-2 adds session files to the scratch.
+      // than the blobs beside it in this same 0700 directory already allow.
+      // unsealKey (2b-2) adds session.ctx here: a leftover one lets a same-user
+      // process continue that session, which on its own unseals nothing and is
+      // inside the same boundary.
     }
   }
+}
+
+// True only when the session-config printout is EXACTLY the measured shape
+// (tpm2-tools 5.6, jetson, 2026-11-09) and its attribute list has both decrypt
+// and encrypt on:
+//   Session-Handle: 0x02000000
+//   Session-Attributes: continuesession|decrypt|encrypt
+// Fail-closed: exactly one Session-Attributes line (a trailing \r tolerated)
+// whose value is one token split on "|" containing the exact names decrypt and
+// encrypt; the only other line allowed is a Session-Handle line. Zero or two
+// attribute lines, an extra line, a different separator or any other shape is
+// refused, so a tool build that prints something new stops the unseal instead
+// of letting it through unencrypted.
+function sessionAttributesOn(printout: string): boolean {
+  const lines = printout.split("\n").map((line) => line.replace(/\r$/, ""));
+  if (lines.at(-1) === "") lines.pop();
+  let attributes: string | undefined;
+  for (const line of lines) {
+    if (/^Session-Handle: 0x[0-9a-fA-F]+$/.test(line)) continue;
+    const match = /^Session-Attributes: (\S+)$/.exec(line);
+    if (match === null || attributes !== undefined) return false;
+    attributes = match[1];
+  }
+  if (attributes === undefined) return false;
+  const names = attributes.split("|");
+  return names.includes("decrypt") && names.includes("encrypt");
+}
+
+export const sessionAttributesOnForTest = sessionAttributesOn;
+
+// Unseals the vault key (DEC-262 a9, opum-doc's slice-2 rules). Every call
+// loads the key in its own scratch (withLoadedKey), starts a FRESH salted HMAC
+// session (never a saved or reused one), requires the session's encrypt and
+// decrypt attributes on before the unseal (off is the AC2 stop:
+// session_not_encrypted), reads the 32 bytes from tpm2_unseal's stdout and
+// nowhere else, and flushes the session at the end. Ward sets and verifies
+// 0600 on the session file itself: the tools write it wider. stderr is never
+// surfaced. The caller owns the returned bytes and should zero them after use.
+export async function unsealKey(
+  presence: Tpm2Presence,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<Uint8Array> {
+  return await withLoadedKey(
+    presence,
+    directory,
+    async (loaded) => {
+      const session = join(loaded.directory, "session.ctx");
+      const run = (tool: Tpm2Tool, args: readonly string[]) =>
+        runTool(presence, tool, args, {
+          cwd: loaded.directory,
+          timeoutMs: options.timeoutMs,
+        });
+      // A fresh session in a fresh scratch: nothing to reuse and nothing to
+      // replace, so a leftover file is refused rather than overwritten.
+      if (exists(session)) throw new Tpm2Error("directory_unusable", "session");
+      try {
+        await run("tpm2_startauthsession", [
+          "--hmac-session",
+          "-c",
+          loaded.primary,
+          "-S",
+          session,
+          "-Q",
+        ]);
+        adoptToolFile(session);
+        await run("tpm2_sessionconfig", [
+          "--enable-decrypt",
+          "--enable-encrypt",
+          session,
+        ]);
+        // A tool may rewrite the file wider: set 0600 again before reading it.
+        adoptToolFile(session);
+        const printout = Buffer.from(
+          (await run("tpm2_sessionconfig", [session])).stdout,
+        ).toString("utf8");
+        if (!sessionAttributesOn(printout))
+          throw new Tpm2Error("session_not_encrypted", "session");
+        // Verified, never repaired, at the moment before the tool reads it.
+        requirePrivateFile(session);
+        const result = await run("tpm2_unseal", [
+          "-c",
+          loaded.keyContext,
+          "-p",
+          `session:${session}`,
+        ]);
+        const output = result.stdout;
+        try {
+          if (output.length !== vaultKeyBytes)
+            throw new Tpm2Error("tool_failed", "tpm2_unseal");
+          return Uint8Array.from(output);
+        } finally {
+          output.fill(0);
+        }
+      } finally {
+        // Flush whenever a session file exists, including after a
+        // startauthsession that failed or timed out having saved one. Ward
+        // holds no /dev/tpmrm0 connection and a saved session survives into
+        // another process (measured 2026-11-08), so a flush that fails leaks a
+        // session slot in the TPM until it resets. That is swallowed here so it
+        // cannot mask the unseal's outcome; a signal for it is slice 3's
+        // design (WCLI-21).
+        try {
+          if (exists(session)) await run("tpm2_flushcontext", [session]);
+        } catch {
+          // Leaked, not reported: see above.
+        }
+      }
+    },
+    options,
+  );
 }
