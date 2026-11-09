@@ -405,7 +405,7 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     const error = untrusted(() =>
       walkToolTrustForTest(join(bin, "t"), { trustRoot: outer }),
     );
-    expect(error.detail).toContain(outer);
+    expect(error.detail).toContain(`${outer} is owned by`);
     expect(error.detail).toContain("0777");
   });
 
@@ -430,13 +430,13 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     chmodSync(join(loose, "t"), 0o755);
     symlinkSync("../loose/t", join(tree.bin, "viaparent"));
     const error = untrusted(() => walk(join(tree.bin, "viaparent")));
-    expect(error.detail).toContain(loose);
+    expect(error.detail).toContain(`${loose} is owned by`);
     expect(error.detail).toContain("0777");
   });
 
   // The production default, with no test policy: the whole chain to / counts.
-  // The temp directory is the offender where it is group- or world-writable
-  // (a sticky /tmp on Linux); where it is not (macOS), the reject is skipped.
+  // Both production cases build under the checkout, whose ancestors the tests
+  // assert are clean, so neither depends on how the host's temp directory is set.
   const topmostOffender = (path: string): string | undefined => {
     const trusted = [0, process.getuid?.() ?? 0];
     let offender: string | undefined;
@@ -450,9 +450,10 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
 
   test("reject: the production detectTpm2 refuses a tree under a world-writable ancestor", () => {
     // A 0777 directory inside the checkout stands in for a sticky /tmp, so the
-    // reject runs on every host. Its own ancestors are clean (precondition).
+    // reject runs on every host; the checkout's own ancestors are asserted clean.
     const loose = mkdtempSync(join(process.cwd(), ".ward-trust-test-"));
     try {
+      expect(topmostOffender(dirname(loose))).toBeUndefined();
       chmodSync(loose, 0o777);
       const bin = dir(join(loose, "bin"), 0o755);
       installFakeTools(bin, join(loose, "records"));
@@ -470,7 +471,7 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
       chmodSync(base, 0o755);
       const bin = dir(join(base, "bin"), 0o755);
       installFakeTools(bin, join(base, "records"));
-      if (topmostOffender(base) !== undefined) return; // precondition not met
+      expect(topmostOffender(base)).toBeUndefined();
       expect(detectTpm2({ path: bin, device: DEVICE }).tools.tpm2_create).toBe(
         join(bin, "tpm2_create"),
       );
