@@ -106,6 +106,7 @@ function refusal(action: () => unknown): Tpm2Error {
 
 function record(records: string, tool: string) {
   return JSON.parse(readFileSync(join(records, `${tool}.json`), "utf8")) as {
+    tool: string;
     args: string[];
     env: Record<string, string>;
     stdinHex: string;
