@@ -15,6 +15,7 @@ import {
   openSync,
   readFileSync,
   readlinkSync,
+  readSync,
   realpathSync,
   statSync,
   type Stats,
@@ -172,7 +173,7 @@ function modeText(mode: number): string {
 // the directory that holds it, which is checked. A failure refuses by name
 // before any spawn, and is never answered by trying a later PATH entry.
 export function assertToolTrusted(toolPath: string): void {
-  walkToolTrust(toolPath, {});
+  checkExecutable(toolPath, {});
 }
 
 // TEST SEAM, not a production entry point: the only way to narrow the walk.
@@ -189,10 +190,60 @@ export function walkToolTrustForTest(
   toolPath: string,
   policy: ToolTrustPolicy,
 ): void {
-  walkToolTrust(toolPath, policy);
+  checkExecutable(toolPath, policy);
 }
 
-function walkToolTrust(toolPath: string, policy: ToolTrustPolicy): void {
+// DEC-262 (a12): an executable is the walked file plus whatever its shebang
+// names. A script's interpreter must be an absolute path that passes the same
+// walk (a relative one is refused); "#!/usr/bin/env X" is accepted by walking
+// env, and the child's confined PATH (toolSearchPath) bounds where X is found.
+// An interpreter that is itself a script is followed, to the kernel's depth.
+// Shared libraries are a recorded residual and are not examined.
+const maxShebangDepth = 4;
+
+function checkExecutable(
+  toolPath: string,
+  policy: ToolTrustPolicy,
+  depth = 0,
+): void {
+  const finalPath = walkToolTrust(toolPath, policy, "file");
+  const buffer = Buffer.alloc(256);
+  const descriptor = openSync(finalPath, "r");
+  let read: number;
+  try {
+    read = readSync(descriptor, buffer, 0, buffer.length, 0);
+  } finally {
+    closeSync(descriptor);
+  }
+  if (read < 2 || buffer[0] !== 0x23 || buffer[1] !== 0x21) return;
+  const line = buffer.subarray(2, read).toString("latin1").split("\n")[0];
+  const interpreter = (line ?? "").trim().split(/\s+/)[0] ?? "";
+  if (!isAbsolute(interpreter))
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${toolPath}: its shebang interpreter "${interpreter}" is not an absolute path`,
+    );
+  if (depth >= maxShebangDepth)
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${toolPath}: shebang interpreters nest too deep`,
+    );
+  checkExecutable(interpreter, policy, depth + 1);
+}
+
+// The directories a child may search, and the only ones: the tool's own, then
+// /usr/bin and /bin. Each passes the walk before anything runs.
+function toolSearchPath(toolPath: string): string[] {
+  return [...new Set([dirname(toolPath), "/usr/bin", "/bin"])];
+}
+
+// Returns the final regular file (or, for kind "dir", the final directory)
+// the path resolves to.
+function walkToolTrust(
+  toolPath: string,
+  policy: ToolTrustPolicy,
+  kind: "file" | "dir" = "file",
+): string {
   const trusted = policy.trustedUids ?? [0, uid() ?? 0];
   const root =
     policy.trustRoot === undefined ? undefined : realpathSync(policy.trustRoot);
@@ -218,6 +269,7 @@ function walkToolTrust(toolPath: string, policy: ToolTrustPolicy): void {
   if (!isAbsolute(toolPath)) throw new Tpm2Error("tool_untrusted", toolPath);
   let resolved = "/";
   check("/", lstatSync("/"));
+  if (toolPath === "/") return "/";
   let pending = toolPath.split("/").filter((part) => part !== "");
   let hops = 0;
   while (pending.length > 0) {
@@ -260,13 +312,14 @@ function walkToolTrust(toolPath: string, policy: ToolTrustPolicy): void {
         "tool_untrusted",
         `${toolPath}: ${candidate} is not a directory`,
       );
-    if (pending.length === 0 && !stats.isFile())
+    if (pending.length === 0 && kind === "file" && !stats.isFile())
       throw new Tpm2Error(
         "tool_untrusted",
         `${toolPath}: ${candidate} is not a regular file`,
       );
     resolved = candidate;
   }
+  return resolved;
 }
 
 // Presence, not version. The order of refusals is part of the contract, since
@@ -308,8 +361,11 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
   // The trust walk comes after presence and before the device check: a tool
   // that fails it is refused whatever else is true of the host, and a later
   // PATH entry is never tried in its place.
-  for (const tool of requiredTools)
-    walkToolTrust(found[tool] as string, policy);
+  for (const tool of requiredTools) {
+    checkExecutable(found[tool] as string, policy);
+    for (const directory of toolSearchPath(found[tool] as string))
+      walkToolTrust(directory, policy, "dir");
+  }
   try {
     (host.openCheck ?? defaultOpenCheck)(device);
   } catch (error) {
@@ -326,13 +382,21 @@ export interface ToolRun {
   readonly stderr: string;
 }
 
-// The environment a tool runs in: the search path and the device, nothing
-// else. The key never travels here, and an inherited TPM2TOOLS_TCTI cannot
-// point the tools at some other TPM.
-function toolEnvironment(presence: Tpm2Presence): Record<string, string> {
+// DEC-262 (a12): the environment a tool runs in is built, never inherited:
+// the confined search path, the device Ward chose and a C locale. No LD_*,
+// DYLD_*, HOME or parent PATH reaches it, so a trusted tool that runs a helper
+// by name finds it only in a directory the walk examined. The key never
+// travels here, and an inherited TPM2TOOLS_TCTI cannot point the tools at
+// some other TPM.
+function toolEnvironment(
+  presence: Tpm2Presence,
+  tool: Tpm2Tool,
+): Record<string, string> {
   return {
-    PATH: presence.path,
+    PATH: toolSearchPath(presence.tools[tool]).join(delimiter),
     TPM2TOOLS_TCTI: `device:${presence.device}`,
+    LANG: "C",
+    LC_ALL: "C",
   };
 }
 
@@ -345,7 +409,7 @@ export function spawnTool(
   options: { cwd?: string } = {},
 ) {
   return Bun.spawn([presence.tools[tool], ...args], {
-    env: toolEnvironment(presence),
+    env: toolEnvironment(presence, tool),
     cwd: options.cwd,
     stdin: "pipe",
     stdout: "pipe",

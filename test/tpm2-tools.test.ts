@@ -409,6 +409,84 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     expect(error.detail).toContain("0777");
   });
 
+  // DEC-262 (a12): a script tool's shebang interpreter is walked too.
+  const script = (path: string, text: string) => {
+    writeFileSync(path, text);
+    chmodSync(path, 0o755);
+  };
+
+  test("accept: a script tool whose interpreter is a walked absolute path, and env", () => {
+    const tree = trustedTree("shebang-ok");
+    script(join(tree.bin, "tpm2_create"), "#!/bin/sh\nexit 0\n");
+    expect(() => detect({ path: tree.bin, device: DEVICE })).not.toThrow();
+    script(join(tree.bin, "tpm2_create"), "#!/usr/bin/env sh\nexit 0\n");
+    expect(() => detect({ path: tree.bin, device: DEVICE })).not.toThrow();
+  });
+
+  test("reject: an interpreter in a writable directory", () => {
+    const tree = trustedTree("shebang-writable");
+    const loose = dir(join(tree.base, "loose"), 0o777);
+    script(join(loose, "sh"), "#!/bin/sh\nexit 0\n");
+    script(join(tree.bin, "tpm2_create"), `#!${join(loose, "sh")}\n`);
+    const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+    expect(error.detail).toContain(`${loose} is owned by`);
+  });
+
+  test("reject: a relative interpreter, and an empty one", () => {
+    const tree = trustedTree("shebang-relative");
+    for (const line of ["#!sh", "#!./sh", "#! ", "#!"]) {
+      script(join(tree.bin, "tpm2_create"), `${line}\n`);
+      const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+      expect(error.detail).toContain("not an absolute path");
+    }
+  });
+
+  test("an interpreter that is itself a script is followed, to a bound", () => {
+    const tree = trustedTree("shebang-chain");
+    const loose = dir(join(tree.base, "loose"), 0o777);
+    script(join(loose, "sh"), "#!/bin/sh\n");
+    script(join(tree.bin, "inner"), `#!${join(loose, "sh")}\n`);
+    script(join(tree.bin, "tpm2_create"), `#!${join(tree.bin, "inner")}\n`);
+    expect(
+      untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
+    ).toContain(`${loose} is owned by`);
+    for (let i = 0; i < 6; i++)
+      script(join(tree.bin, `hop${i}`), `#!${join(tree.bin, `hop${i + 1}`)}\n`);
+    script(join(tree.bin, "hop6"), "#!/bin/sh\n");
+    script(join(tree.bin, "tpm2_create"), `#!${join(tree.bin, "hop0")}\n`);
+    expect(
+      untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
+    ).toContain("nest too deep");
+  });
+
+  test("a helper findable only on the parent's PATH is not found by a tool", async () => {
+    const tree = trustedTree("helper");
+    const elsewhere = dir(join(tree.base, "elsewhere"), 0o755);
+    script(join(elsewhere, "ward-helper-probe"), "#!/bin/sh\nexit 0\n");
+    script(
+      join(tree.bin, "tpm2_create"),
+      "#!/bin/sh\nexec ward-helper-probe\n",
+    );
+    const presence = detect({ path: tree.bin, device: DEVICE });
+    const before = process.env.PATH;
+    process.env.PATH = `${elsewhere}:${before ?? ""}`;
+    try {
+      // Positive control: the helper really is on the parent's PATH.
+      expect(Bun.which("ward-helper-probe", { PATH: process.env.PATH })).toBe(
+        join(elsewhere, "ward-helper-probe"),
+      );
+      await expect(runTool(presence, "tpm2_create", [])).rejects.toMatchObject({
+        reason: "tool_failed",
+      });
+      // The same helper beside the tool is found: the tool's own directory
+      // is on the built PATH.
+      script(join(tree.bin, "ward-helper-probe"), "#!/bin/sh\nexit 0\n");
+      await runTool(presence, "tpm2_create", []);
+    } finally {
+      process.env.PATH = before;
+    }
+  });
+
   test("a missing element is refused by name with its errno", () => {
     const { bin } = trustedTree("missing");
     const error = untrusted(() => walk(join(bin, "nope")));
@@ -568,6 +646,7 @@ describe("the module has no fallback path to disk, the keyring or systemd-creds"
     "openSync",
     "readFileSync",
     "readlinkSync",
+    "readSync",
     "realpathSync",
     "statSync",
     "type Stats",
@@ -629,17 +708,26 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     const key = "WARD_PROBE_ENV_SECRET";
     process.env[key] = "synthetic-env-value";
     process.env.TPM2TOOLS_TCTI = "swtpm:host=attacker";
+    process.env.LD_PRELOAD = "/nonexistent/ward-probe.so";
+    process.env.DYLD_INSERT_LIBRARIES = "/nonexistent/ward-probe.dylib";
     try {
       await runTool(presence, "tpm2_create", ["-i", "-"]);
     } finally {
       delete process.env[key];
       delete process.env.TPM2TOOLS_TCTI;
+      delete process.env.LD_PRELOAD;
+      delete process.env.DYLD_INSERT_LIBRARIES;
     }
     const { env } = record(records, "tpm2_create");
-    expect(env.PATH).toBe(bin);
+    expect(env.PATH).toBe(`${bin}:/usr/bin:/bin`);
     expect(env.TPM2TOOLS_TCTI).toBe(`device:${DEVICE}`);
+    expect(env.LANG).toBe("C");
+    expect(env.LC_ALL).toBe("C");
     expect(env).not.toHaveProperty(key);
     expect(env).not.toHaveProperty("HOME");
+    expect(
+      Object.keys(env).filter((name) => /^(LD_|DYLD_)/.test(name)),
+    ).toEqual([]);
   });
 
   test("stdin carries bytes to the tool and argv carries none of them", async () => {
