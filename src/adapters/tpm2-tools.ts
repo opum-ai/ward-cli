@@ -707,7 +707,7 @@ function removeIfPresent(path: string): void {
   }
 }
 
-function fsyncDirectory(directory: string): void {
+export function fsyncDirectory(directory: string): void {
   let fd: number;
   try {
     fd = openSync(directory, fileConstants.O_RDONLY);
@@ -828,7 +828,14 @@ export async function sealKey(
         );
       }
       published.push(final);
-      unlinkSync(partial);
+      try {
+        unlinkSync(partial);
+      } catch (error) {
+        throw new Tpm2Error(
+          "directory_unusable",
+          `${partial} could not be removed after publication (${String(errnoCode(error) ?? "unknown")})`,
+        );
+      }
       // The public blob is durable before the private one can name the seal.
       fsyncDirectory(directory);
     }
@@ -866,6 +873,7 @@ export async function withLoadedKey<T>(
   use: (loaded: LoadedKey) => Promise<T>,
   options: { timeoutMs?: number } = {},
 ): Promise<T> {
+  if (!isAbsolute(directory)) throw new Tpm2Error("blob_not_user_private");
   requirePrivate(directory, "directory");
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
@@ -904,7 +912,10 @@ export async function withLoadedKey<T>(
     try {
       rmSync(scratch, { recursive: true, force: true });
     } catch {
-      // Contexts only: a leftover scratch directory holds no key.
+      // A leftover key.ctx can be unsealed, with the empty auth, by anyone who
+      // can open /dev/tpmrm0 as this user, until a TPM reset. That is no more
+      // than the blobs beside it in this same 0700 directory already allow. Re-check
+      // this when 2b-2 adds session files to the scratch.
     }
   }
 }

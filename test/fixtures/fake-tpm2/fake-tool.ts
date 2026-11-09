@@ -13,7 +13,9 @@
 // and exits 0; `flood-stderr-fail` does that and exits 1; `race-final`
 // also creates the final name (the -r path without its ".partial" suffix), as
 // a second writer would between the check and the publish; `grandchild` leaves a process holding its stdout open
-// (its pid in <record-dir>/grandchild.pid) and exits 0.
+// (its pid in <record-dir>/grandchild.pid) and exits 0; `lock-directory` makes
+// its working directory read-only (0500) once its outputs exist, so a later
+// link(2) into it fails with EACCES for any non-root user.
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -62,6 +64,7 @@ for (const [index, flag] of args.entries()) {
       writeFileSync(path.slice(0, -".partial".length), "planted");
   }
 }
+if (mode === "lock-directory") chmodSync(process.cwd(), 0o500);
 if (mode === "flood-stderr" || mode === "flood-stderr-fail")
   process.stderr.write("e".repeat(64 * 1024));
 if (mode === "hang") await new Promise(() => {});

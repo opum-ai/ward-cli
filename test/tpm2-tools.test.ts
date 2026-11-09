@@ -24,7 +24,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, relative } from "node:path";
 import { acquireSetupSession } from "../src/adapters/setup-session.ts";
 import {
   accessRemedy,
@@ -35,6 +35,7 @@ import {
   defaultToolTimeoutMs,
   detectTpm2,
   detectTpm2ForTest,
+  fsyncDirectory,
   maxToolOutputBytes,
   preparePrivateDirectory,
   requiredTools,
@@ -1479,13 +1480,42 @@ describe("sealing the vault key", () => {
     expect(seal.indexOf("[publicPartial, publicBlob]")).toBeLessThan(
       seal.indexOf("[privatePartial, privateBlob]"),
     );
-    // fsyncDirectory sits INSIDE the publish loop: after each name is
-    // published and before the loop closes into the failure handler.
-    const loop = seal.slice(
-      seal.indexOf("published.push(final);"),
-      seal.indexOf("} catch (error) {\n    for (const path of [...partials"),
+    // fsyncDirectory sits INSIDE the publish loop: after a name is published
+    // and immediately before the loop closes into the failure handler, so
+    // hoisting it to one call after the loop must go red.
+    const published = seal.indexOf("published.push(final);");
+    expect(published).toBeGreaterThanOrEqual(0);
+    const call = "fsyncDirectory(directory);";
+    const fsync = seal.indexOf(call, published);
+    expect(fsync).toBeGreaterThanOrEqual(0);
+    expect(seal.slice(fsync + call.length)).toStartWith(
+      "\n    }\n  } catch (error) {",
     );
-    expect(loop).toContain("fsyncDirectory(directory)");
+  });
+
+  test("a link failure other than EEXIST carries no another-writer hint", async () => {
+    if (process.getuid?.() === 0) return; // root ignores the 0500 directory
+    const { directory, presence } = sealable({ tpm2_create: "lock-directory" });
+    const error = await sealKey(presence, key, directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    // Restore the mode so the temporary root can be removed.
+    chmodSync(directory, 0o700);
+    expect(error).toMatchObject({ reason: "directory_unusable" });
+    expect((error as Error).message).toContain("(EACCES)");
+    expect((error as Error).message).not.toContain("another writer");
+  });
+
+  test("a directory that cannot be opened for fsync is directory_unusable", () => {
+    const { base } = fresh();
+    // The open fails.
+    expect(reasonOf(() => fsyncDirectory(join(base, "absent")))).toBe(
+      "directory_unusable",
+    );
+    // The fsync call itself cannot be made to fail portably (fsync of a
+    // device succeeds on macOS), so only the wrap around the open is proven;
+    // the fsync wrap is the same Tpm2Error construction a few lines below it.
   });
 
   test("a noisy stderr is truncated, not refused (WCLI-157)", async () => {
@@ -1526,18 +1556,19 @@ describe("the fake tools' input and output flags", () => {
     await expect(
       runTool(presence, "tpm2_unseal", ["-c", missing]),
     ).rejects.toMatchObject({ reason: "tool_failed" });
-    await expect(
-      runTool(presence, "tpm2_load", [
-        "-C",
-        missing,
-        "-u",
-        missing,
-        "-r",
-        missing,
-        "-c",
-        join(base, "out.ctx"),
-      ]),
-    ).rejects.toMatchObject({ reason: "tool_failed" });
+    // Each tpm2_load input is checked on its own: the other two are real.
+    const real = join(base, "real.ctx");
+    writeFileSync(real, "x");
+    const flags = ["-C", "-u", "-r"] as const;
+    for (const absent of flags) {
+      const args = flags.flatMap((flag) => [
+        flag,
+        flag === absent ? missing : real,
+      ]);
+      await expect(
+        runTool(presence, "tpm2_load", [...args, "-c", join(base, "out.ctx")]),
+      ).rejects.toMatchObject({ reason: "tool_failed" });
+    }
     expect(existsSync(join(base, "out.ctx"))).toBe(false);
     // -c is an output of load and createprimary, never of unseal.
     const out = join(base, "made.ctx");
@@ -1564,9 +1595,26 @@ describe("loading the sealed key", () => {
   }
   const scratches = (directory: string) =>
     readdirSync(directory).filter((name) => name.startsWith("unseal-"));
+  // The pinned template, literally, with -c in the given scratch: a changed
+  // template orphans every sealed blob.
+  const primaryArgs = (scratch: string) => [
+    "-C",
+    "o",
+    "-g",
+    "sha256",
+    "-G",
+    "ecc256:aes128cfb",
+    "-a",
+    "restricted|decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda",
+    "-c",
+    join(scratch, "primary.ctx"),
+    "-Q",
+  ];
 
   test("createprimary then load under that primary, in a private scratch that is removed", async () => {
     const { records, directory, presence } = await sealed();
+    // The seal's record must not stand in for this load's.
+    rmSync(join(records, "tpm2_createprimary.json"), { force: true });
     let seen:
       | { directory: string; primary: string; keyContext: string }
       | undefined;
@@ -1578,6 +1626,14 @@ describe("loading the sealed key", () => {
     });
     if (seen === undefined) throw new Error("use() did not run");
     expect(dirname(seen.directory)).toBe(directory);
+    // Both contexts are named in this call's own scratch, and the primary is
+    // the one createprimary just made there, never sealKey's leftover.
+    expect(seen.primary).toBe(join(seen.directory, "primary.ctx"));
+    expect(seen.keyContext).toBe(join(seen.directory, "key.ctx"));
+    expect(seen.primary).not.toBe(join(directory, "primary.ctx"));
+    expect(record(records, "tpm2_createprimary").args).toEqual(
+      primaryArgs(seen.directory),
+    );
     expect(existsSync(seen.directory)).toBe(false);
     expect(scratches(directory)).toEqual([]);
     expect(record(records, "tpm2_load").args).toEqual([
@@ -1605,26 +1661,37 @@ describe("loading the sealed key", () => {
     expect(scratches(directory)).toEqual([]);
   });
 
-  test("two loads at once use different scratch directories", async () => {
+  test("two loads at once use different scratch directories, each with its own primary", async () => {
     const { directory, presence } = await sealed();
-    const seen: string[] = [];
-    const hold = (loaded: { directory: string }) => {
-      seen.push(loaded.directory);
+    const seen: { directory: string; primary: string; keyContext: string }[] =
+      [];
+    const hold = (loaded: {
+      directory: string;
+      primary: string;
+      keyContext: string;
+    }) => {
+      seen.push(loaded);
       return new Promise<void>((resolve) => setTimeout(resolve, 50));
     };
     await Promise.all([
       withLoadedKey(presence, directory, hold),
       withLoadedKey(presence, directory, hold),
     ]);
-    expect(new Set(seen).size).toBe(2);
+    expect(new Set(seen.map((loaded) => loaded.directory)).size).toBe(2);
+    expect(new Set(seen.map((loaded) => loaded.primary)).size).toBe(2);
+    for (const loaded of seen) {
+      expect(loaded.primary).toBe(join(loaded.directory, "primary.ctx"));
+      expect(loaded.keyContext).toBe(join(loaded.directory, "key.ctx"));
+    }
     expect(scratches(directory)).toEqual([]);
   });
 
   test("no sealed key, a missing directory, and a lone public blob run no tool", async () => {
-    const { base, records, presence } = await sealed();
+    const { base, records, directory, presence } = await sealed();
     const empty = join(base, "empty");
     preparePrivateDirectory(empty);
     rmSync(join(records, "tpm2_load.json"), { force: true });
+    rmSync(join(records, "tpm2_createprimary.json"), { force: true });
     await expect(
       withLoadedKey(presence, empty, async () => 1),
     ).rejects.toMatchObject({ reason: "key_not_sealed" });
@@ -1638,20 +1705,33 @@ describe("loading the sealed key", () => {
       withLoadedKey(presence, absent, async () => 1),
     ).rejects.toMatchObject({ reason: "blob_not_user_private" });
     expect(existsSync(absent)).toBe(false);
+    // A relative path to a real, sealed, private directory is still refused:
+    // the guard is the absolute-path check, not the lstat that would also fail.
+    await expect(
+      withLoadedKey(
+        presence,
+        relative(process.cwd(), directory),
+        async () => 1,
+      ),
+    ).rejects.toMatchObject({ reason: "blob_not_user_private" });
     expect(existsSync(join(records, "tpm2_load.json"))).toBe(false);
+    expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
   });
 
   test("a blob wider than 0600 is refused before any tool reads it, never repaired", async () => {
-    const { records, directory, presence } = await sealed();
-    rmSync(join(records, "tpm2_load.json"), { force: true });
-    chmodSync(join(directory, sealedPrivateName), 0o640);
-    await expect(
-      withLoadedKey(presence, directory, async () => 1),
-    ).rejects.toMatchObject({ reason: "blob_not_user_private" });
-    expect(statSync(join(directory, sealedPrivateName)).mode & 0o777).toBe(
-      0o640,
-    );
-    expect(existsSync(join(records, "tpm2_load.json"))).toBe(false);
+    for (const name of [sealedPrivateName, sealedPublicName]) {
+      const { records, directory, presence } = await sealed();
+      rmSync(join(records, "tpm2_load.json"), { force: true });
+      rmSync(join(records, "tpm2_createprimary.json"), { force: true });
+      chmodSync(join(directory, name), 0o640);
+      await expect(
+        withLoadedKey(presence, directory, async () => 1),
+      ).rejects.toMatchObject({ reason: "blob_not_user_private" });
+      expect(statSync(join(directory, name)).mode & 0o777).toBe(0o640);
+      expect(existsSync(join(records, "tpm2_load.json"))).toBe(false);
+      expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
+      expect(scratches(directory)).toEqual([]);
+    }
   });
 
   test("a failing load is tool_failed, leaves no scratch, and its stderr is never surfaced", async () => {
