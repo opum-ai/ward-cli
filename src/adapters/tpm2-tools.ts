@@ -232,17 +232,25 @@ function walkToolTrust(toolPath: string, policy: ToolTrustPolicy): void {
     let stats: Stats;
     try {
       stats = lstatSync(candidate);
-    } catch {
+    } catch (error) {
       throw new Tpm2Error(
         "tool_untrusted",
-        `${toolPath}: ${candidate} is missing`,
+        `${toolPath}: ${candidate} cannot be examined (${String(errnoCode(error) ?? "unknown")})`,
       );
     }
     check(candidate, stats);
     if (stats.isSymbolicLink()) {
       if (++hops > maxLinkHops)
         throw new Tpm2Error("tool_untrusted", `${toolPath}: too many symlinks`);
-      const target = readlinkSync(candidate);
+      let target: string;
+      try {
+        target = readlinkSync(candidate);
+      } catch (error) {
+        throw new Tpm2Error(
+          "tool_untrusted",
+          `${toolPath}: ${candidate} cannot be read as a link (${String(errnoCode(error) ?? "unknown")})`,
+        );
+      }
       if (isAbsolute(target)) resolved = "/";
       pending = [...target.split("/").filter((p) => p !== ""), ...pending];
       continue;

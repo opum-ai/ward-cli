@@ -12,7 +12,10 @@ import {
   closeSync,
   constants,
   existsSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
+  realpathSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -21,7 +24,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { acquireSetupSession } from "../src/adapters/setup-session.ts";
 import {
   accessRemedy,
@@ -30,6 +33,7 @@ import {
   walkToolTrustForTest,
   defaultOpenCheck,
   defaultToolTimeoutMs,
+  detectTpm2,
   detectTpm2ForTest,
   maxToolOutputBytes,
   preparePrivateDirectory,
@@ -398,9 +402,81 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     expect(() =>
       walkToolTrustForTest(join(bin, "t"), { trustRoot: inner }),
     ).not.toThrow();
-    expect(() =>
+    const error = untrusted(() =>
       walkToolTrustForTest(join(bin, "t"), { trustRoot: outer }),
-    ).toThrow();
+    );
+    expect(error.detail).toContain(outer);
+    expect(error.detail).toContain("0777");
+  });
+
+  test("a missing element is refused by name with its errno", () => {
+    const { bin } = trustedTree("missing");
+    const error = untrusted(() => walk(join(bin, "nope")));
+    expect(error.detail).toContain(join(bin, "nope"));
+    expect(error.detail).toContain("ENOENT");
+  });
+
+  // Relative link targets resolve against the link's own directory (DEC-262).
+  test("accept: a relative link to a tool beside it", () => {
+    const { bin } = trustedTree("rel-ok");
+    symlinkSync("tpm2_create", join(bin, "alias"));
+    expect(() => walk(join(bin, "alias"))).not.toThrow();
+  });
+
+  test("reject: a relative link whose ../ target sits in a writable directory", () => {
+    const tree = trustedTree("rel-bad");
+    const loose = dir(join(tree.base, "loose"), 0o777);
+    writeFileSync(join(loose, "t"), "x");
+    chmodSync(join(loose, "t"), 0o755);
+    symlinkSync("../loose/t", join(tree.bin, "viaparent"));
+    const error = untrusted(() => walk(join(tree.bin, "viaparent")));
+    expect(error.detail).toContain(loose);
+    expect(error.detail).toContain("0777");
+  });
+
+  // The production default, with no test policy: the whole chain to / counts.
+  // The temp directory is the offender where it is group- or world-writable
+  // (a sticky /tmp on Linux); where it is not (macOS), the reject is skipped.
+  const topmostOffender = (path: string): string | undefined => {
+    const trusted = [0, process.getuid?.() ?? 0];
+    let offender: string | undefined;
+    for (let at = realpathSync(path); ; at = dirname(at)) {
+      const stats = lstatSync(at);
+      if ((stats.mode & 0o022) !== 0 || !trusted.includes(stats.uid))
+        offender = at;
+      if (at === "/") return offender;
+    }
+  };
+
+  test("reject: the production detectTpm2 refuses a tree under a world-writable ancestor", () => {
+    // A 0777 directory inside the checkout stands in for a sticky /tmp, so the
+    // reject runs on every host. Its own ancestors are clean (precondition).
+    const loose = mkdtempSync(join(process.cwd(), ".ward-trust-test-"));
+    try {
+      chmodSync(loose, 0o777);
+      const bin = dir(join(loose, "bin"), 0o755);
+      installFakeTools(bin, join(loose, "records"));
+      const error = untrusted(() => detectTpm2({ path: bin, device: DEVICE }));
+      expect(error.detail).toContain(`${realpathSync(loose)} is owned by`);
+      expect(error.detail).toContain("0777");
+    } finally {
+      rmSync(loose, { recursive: true, force: true });
+    }
+  });
+
+  test("accept: the production detectTpm2 passes a clean owned tree inside the checkout", () => {
+    const base = mkdtempSync(join(process.cwd(), ".ward-trust-test-"));
+    try {
+      chmodSync(base, 0o755);
+      const bin = dir(join(base, "bin"), 0o755);
+      installFakeTools(bin, join(base, "records"));
+      if (topmostOffender(base) !== undefined) return; // precondition not met
+      expect(detectTpm2({ path: bin, device: DEVICE }).tools.tpm2_create).toBe(
+        join(bin, "tpm2_create"),
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 
@@ -986,10 +1062,12 @@ describe("the trust-policy seam is test-only", () => {
     );
     expect(leaks).toEqual([]);
     const host = readFileSync(join("src", "adapters", own), "utf8");
-    const iface = host.slice(
-      host.indexOf("export interface Tpm2Host"),
-      host.indexOf("export interface Tpm2Presence"),
+    const start = host.indexOf("export interface Tpm2Host");
+    const end = host.indexOf("export interface Tpm2Presence");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(host.slice(start, end)).not.toMatch(
+      /trustedUids|trustRoot|ToolTrustPolicy/,
     );
-    expect(iface).not.toMatch(/trustedUids|trustRoot/);
   });
 });
