@@ -924,9 +924,12 @@ export async function withLoadedKey<T>(
 }
 
 // True when the session-config printout shows the named attribute on. The real
-// printout's format is unmeasured on hardware (T26 pins it), so this accepts
-// the attribute named in a list or as "name: value" and fails closed on
-// anything else: a missing name, or a value that reads as off, is not on.
+// tpm2-tools 5.6 printout (measured on the jetson, 2026-11-09) is
+//   Session-Handle: 0x02000000
+//   Session-Attributes: continuesession|decrypt|encrypt
+// This accepts the attribute named in a list or as "name: value" and fails
+// closed on anything else: a missing name, or a value that reads as off, is
+// not on.
 function sessionAttributeOn(printout: string, name: string): boolean {
   const match = new RegExp(
     `(?<![a-z])${name}(?![a-z])\\s*(?::\\s*([^\\s|,]+))?`,

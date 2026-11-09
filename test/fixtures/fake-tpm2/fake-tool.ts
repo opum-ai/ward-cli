@@ -21,8 +21,10 @@
 // a test can assert the ORDER of calls and what a tool saw. tpm2_unseal writes
 // the 32-byte synthetic key 0x5a to stdout (`short-unseal`: 31 bytes);
 // tpm2_sessionconfig with no --enable/--disable prints the attributes
-// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"). The real
-// printout's format is unmeasured, so this one is a guess T26 replaces.
+// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"). The default
+// printout is the real tpm2-tools 5.6 output, measured on the jetson on
+// 2026-11-09; the two off modes are inventions that exercise the fail-closed
+// parse.
 import {
   appendFileSync,
   chmodSync,
@@ -123,7 +125,7 @@ if (
       ? "Session-Attributes: continuesession\n"
       : mode === "session-zero"
         ? "decrypt: 1\nencrypt: 0\n"
-        : "Session-Attributes: continuesession|decrypt|encrypt\n",
+        : "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
   );
 if (mode === "grandchild") {
   const held = Bun.spawn(["/bin/sleep", "60"], {
