@@ -57,6 +57,19 @@ const denied = () => {
   throw Object.assign(new Error("denied"), { code: "EACCES" });
 };
 
+// Kills the grandchild a fake left running, from the pid file the fake wrote.
+// The file can be absent, empty (the fake killed between creating it and
+// writing it) or garbled, and process.kill(0, 9) would signal the runner's own
+// process group, so only a positive integer is ever signalled.
+function killGrandchild(pidFile: string): void {
+  try {
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    if (Number.isInteger(pid) && pid > 0) process.kill(pid, 9);
+  } catch {
+    // No pid file, or the grandchild is already gone.
+  }
+}
+
 function reasonOf(action: () => unknown): string {
   try {
     action();
@@ -262,7 +275,8 @@ describe("the default device check really opens the device", () => {
     "a device this user cannot open is refused by the default path",
     () => {
       const candidates = unopenableDevices();
-      // Linux CI must have one (/dev/mem and /dev/kmsg are root-only):
+      // Linux CI must have one (/dev/mem is root-only; /dev/kmsg is mode 0644, so only
+      // the O_RDWR open is denied):
       // finding none there means the check proved nothing, so it fails.
       if (candidates.length === 0 && process.platform !== "linux") return;
       expect(candidates.length).toBeGreaterThan(0);
@@ -450,9 +464,12 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
       const pidFile = join(records, "grandchild.pid");
       const started = performance.now();
       try {
-        // The bound has headroom over the fake's cold start, which must reach
-        // the grandchild before the kill; the grandchild sleeps 60 s, so a
-        // runTool that waited for EOF would run far past the ceiling.
+        // The 2.5 s bound is a budget, not a measurement: the fake's cold
+        // start, its stdin read, the grandchild spawn and the pid write must
+        // all finish inside it, about 5x the 474 ms WCLI-53 saw under load, and
+        // the test fails loudly (no pid file) if they do not. The grandchild
+        // sleeps 60 s, so a runTool that waited for EOF would run far past
+        // the ceiling.
         const reason = await runTool(presence, "tpm2_unseal", [], {
           timeoutMs: 2_500,
         }).catch((e) => e.reason);
@@ -461,12 +478,40 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
         expect(reason).toBe("tool_timeout");
         expect(elapsed).toBeLessThan(15_000);
       } finally {
-        if (existsSync(pidFile))
-          process.kill(Number(readFileSync(pidFile, "utf8")), 9);
+        killGrandchild(pidFile);
       }
     },
     { timeout: 30_000 },
   );
+
+  test("the grandchild cleanup never signals pid 0 or a garbled pid", () => {
+    const { base } = fresh();
+    const real = process.kill;
+    const signalled: Array<[number, unknown]> = [];
+    process.kill = ((pid: number, signal?: string | number) => {
+      signalled.push([pid, signal]);
+      return true;
+    }) as typeof process.kill;
+    try {
+      // A pid file the fake had created but not yet written, a zero (which
+      // process.kill would send to the runner's whole process group), a
+      // negative one, and text: none may signal anything, or throw.
+      for (const [index, content] of ["", "0", "-1", "abc", "1.5"].entries()) {
+        const file = join(base, `pid-${index}`);
+        writeFileSync(file, content);
+        killGrandchild(file);
+      }
+      killGrandchild(join(base, "absent"));
+      expect(signalled).toEqual([]);
+      // The control: a real pid is signalled with SIGKILL.
+      const file = join(base, "pid-real");
+      writeFileSync(file, "4242\n");
+      killGrandchild(file);
+      expect(signalled).toEqual([[4242, 9]]);
+    } finally {
+      process.kill = real;
+    }
+  });
 
   test("the default bound is 10 s and is the one applied", async () => {
     expect(defaultToolTimeoutMs).toBe(10_000);
@@ -484,6 +529,17 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
 });
 
 describe("Ward sets and verifies user-private modes itself", () => {
+  test("the open flags adoptToolFile relies on exist on this platform", () => {
+    // An undefined flag would be dropped silently by the bitwise or.
+    for (const name of ["O_RDONLY", "O_NOFOLLOW", "O_NONBLOCK", "O_NOCTTY"])
+      expect(typeof (constants as Record<string, unknown>)[name]).toBe(
+        "number",
+      );
+    expect(constants.O_NOFOLLOW).toBeGreaterThan(0);
+    expect(constants.O_NONBLOCK).toBeGreaterThan(0);
+    expect(constants.O_NOCTTY).toBeGreaterThan(0);
+  });
+
   test(
     "a FIFO at the path is refused at once and never blocks the open",
     async () => {
@@ -503,9 +559,11 @@ describe("Ward sets and verifies user-private modes itself", () => {
         [
           process.execPath,
           "-e",
-          `const m = await import(process.argv[1]);
+          `import { statSync } from "node:fs";
+const m = await import(process.argv[1]);
 try { m.adoptToolFile(process.argv[2]); console.log("accepted"); }
-catch (e) { console.log(e.reason); }`,
+catch (e) { console.log(e.reason); }
+console.log(statSync(process.argv[2]).isFIFO());`,
           adapter,
           fifo,
         ],
@@ -514,7 +572,12 @@ catch (e) { console.log(e.reason); }`,
       const deadline = setTimeout(() => child.kill(9), 8_000);
       try {
         const out = await new Response(child.stdout).text();
-        expect(out.trim()).toBe("blob_not_user_private");
+        // Refused as not user-private, and the path really was a FIFO, so the
+        // refusal is not some other open failure.
+        expect(out.trim().split("\n")).toEqual([
+          "blob_not_user_private",
+          "true",
+        ]);
       } finally {
         clearTimeout(deadline);
         child.kill(9);
