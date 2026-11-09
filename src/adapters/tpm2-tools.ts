@@ -10,6 +10,8 @@ import {
   constants as fileConstants,
   fchmodSync,
   fstatSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -19,6 +21,7 @@ import {
   realpathSync,
   statSync,
   type Stats,
+  unlinkSync,
 } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { isPrivateEntry } from "./sqlite-vault-store.ts";
@@ -100,7 +103,6 @@ export interface Tpm2Host {
 export interface Tpm2Presence {
   readonly device: string;
   readonly tools: Readonly<Record<Tpm2Tool, string>>;
-  readonly path: string;
 }
 
 function errnoCode(error: unknown): unknown {
@@ -229,8 +231,8 @@ function shebangLine(label: string, path: string): string | undefined {
 // The interpreter as the kernel reads it: after any spaces and tabs, up to the
 // next space, tab or the end of the line; what follows (leading and trailing
 // spaces and tabs trimmed, as Linux does) is passed as ONE argument. A "\r" is
-// not stripped, so a CRLF script names an interpreter that does not exist, and
-// a byte outside printable ASCII is refused rather than interpreted.
+// not stripped; it is outside printable ASCII, so a CRLF script is refused by
+// that check, which refuses any such byte rather than interpreting it.
 function shebangParts(
   toolPath: string,
   line: string,
@@ -273,10 +275,10 @@ function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
     if (!(error instanceof Tpm2Error)) throw error;
     throw new Tpm2Error(
       "tool_untrusted",
-      `${toolPath}: its shebang interpreter ${interpreter}: ${error.detail}`,
+      `${toolPath}: its shebang interpreter: ${error.detail}`,
     );
   }
-  if (shebangLine(toolPath, final) !== undefined)
+  if (shebangLine(`${toolPath}: its shebang interpreter`, final) !== undefined)
     throw new Tpm2Error(
       "tool_untrusted",
       `${toolPath}: its shebang interpreter ${interpreter} (${final}) is itself a "#!" script`,
@@ -334,7 +336,6 @@ function walkToolTrust(
   if (!isAbsolute(toolPath)) throw new Tpm2Error("tool_untrusted", toolPath);
   let resolved = "/";
   check("/", lstatSync("/"));
-  if (toolPath === "/") return "/";
   let pending = toolPath.split("/").filter((part) => part !== "");
   let hops = 0;
   while (pending.length > 0) {
@@ -431,14 +432,17 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
   // The trust walk comes after presence and before the device check: a tool
   // that fails it is refused whatever else is true of the host, and a later
   // PATH entry is never tried in its place.
+  // Each tool, then each directory its child may search, once per detection.
+  const directories = new Set<string>();
   for (const tool of requiredTools) {
     checkExecutable(found[tool] as string, policy);
     for (const directory of toolSearchPath(
       found[tool] as string,
       policy.systemDirectories,
     ))
-      walkToolTrust(directory, policy, "dir");
+      directories.add(directory);
   }
+  for (const directory of directories) walkToolTrust(directory, policy, "dir");
   try {
     (host.openCheck ?? defaultOpenCheck)(device);
   } catch (error) {
@@ -447,7 +451,7 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
       throw new Tpm2Error("tpm_not_accessible", accessRemedy(stats));
     throw new Tpm2Error("tpm_unusable", String(code ?? "unknown"));
   }
-  return { device, tools: found as Record<Tpm2Tool, string>, path };
+  return { device, tools: found as Record<Tpm2Tool, string> };
 }
 
 export interface ToolRun {
@@ -490,9 +494,13 @@ export function spawnTool(
   });
 }
 
+// stdout is the tool's result, so a stream past the cap is refused. stderr is
+// diagnostic only (verbose TSS2 logging can pass the cap on a failing or noisy
+// tool, WCLI-157): it is truncated to the cap and drained, never refused.
 async function readCapped(
   stream: ReadableStream<Uint8Array>,
   tool: string,
+  overflow: "refuse" | "truncate" = "refuse",
 ): Promise<Uint8Array> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -500,11 +508,17 @@ async function readCapped(
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
-    size += value.length;
-    if (size > maxToolOutputBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Tpm2Error("tool_output_too_large", tool);
+    if (size + value.length > maxToolOutputBytes) {
+      if (overflow === "refuse") {
+        await reader.cancel().catch(() => undefined);
+        throw new Tpm2Error("tool_output_too_large", tool);
+      }
+      if (size < maxToolOutputBytes)
+        chunks.push(value.subarray(0, maxToolOutputBytes - size));
+      size = maxToolOutputBytes;
+      continue;
     }
+    size += value.length;
     chunks.push(value);
   }
   return Buffer.concat(chunks);
@@ -540,7 +554,7 @@ export async function runTool(
     try {
       const [stdout, stderr, code] = await Promise.all([
         readCapped(child.stdout, tool),
-        readCapped(child.stderr, tool),
+        readCapped(child.stderr, tool, "truncate"),
         child.exited,
       ]);
       if (code !== 0) throw new Tpm2Error("tool_failed", tool);
@@ -637,10 +651,184 @@ export function adoptToolFile(path: string): void {
     fchmodSync(fd, 0o600);
     if (!isPrivateEntry(fstatSync(fd), "file", uid()))
       throw new Tpm2Error("blob_not_user_private");
+    // The file's contents are on disk before anything is published by name.
+    fsyncSync(fd);
   } catch (error) {
     if (error instanceof Tpm2Error) throw error;
     throw new Tpm2Error("blob_not_user_private");
   } finally {
     closeSync(fd);
   }
+}
+
+// DEC-262 (a9): sealing. The 32-byte vault key reaches tpm2_create only on its
+// stdin ("-i -"); it is never in argv, a file or the environment. The primary
+// is recreated from one pinned template at each use (a saved context does not
+// survive a reboot, and a changed tpm2-tools default would orphan the blob),
+// and the sealed object has no PCR binding (a policy would stop it unsealing
+// after the host restarts with nobody present). -Q keeps the tools' YAML off
+// stdout (WCLI-157). The template and the attributes are part of the on-disk
+// contract: the blob loads only under the primary it was created under.
+export const vaultKeyBytes = 32;
+export const sealedPublicName = "vault-key.pub";
+export const sealedPrivateName = "vault-key.priv";
+const primaryName = "primary.ctx";
+const partialSuffix = ".partial";
+export const primaryArgs = (context: string): string[] => [
+  "-C",
+  "o",
+  "-g",
+  "sha256",
+  "-G",
+  "ecc256:aes128cfb",
+  "-a",
+  "restricted|decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda",
+  "-c",
+  context,
+  "-Q",
+];
+export const sealedObjectAttributes = "fixedtpm|fixedparent|noda|userwithauth";
+
+export interface SealedKey {
+  readonly publicBlob: string;
+  readonly privateBlob: string;
+}
+
+function removeIfPresent(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if (errnoCode(error) !== "ENOENT")
+      throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
+  }
+}
+
+function fsyncDirectory(directory: string): void {
+  let fd: number;
+  try {
+    fd = openSync(directory, fileConstants.O_RDONLY);
+  } catch (error) {
+    throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
+  }
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Creates the storage primary into a user-private context file in directory
+// and returns its path. Seal and unseal both use it, so the template is one,
+// and it needs no preamble from its caller.
+export async function createPrimary(
+  presence: Tpm2Presence,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<string> {
+  preparePrivateDirectory(directory);
+  const context = join(directory, primaryName);
+  removeIfPresent(context);
+  await runTool(presence, "tpm2_createprimary", primaryArgs(context), {
+    cwd: directory,
+    timeoutMs: options.timeoutMs,
+  });
+  adoptToolFile(context);
+  return context;
+}
+
+function exists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false;
+    throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
+  }
+}
+
+// Seals the vault key to the TPM into directory (0700, this user's). These
+// blobs are the only copy of the key, so the order is the safety: both are
+// written under partial names, made 0600, verified and fsynced, then
+// published by name with link(2), which refuses to replace, the public blob
+// first and the private blob LAST. The private blob is the single commit
+// marker: it is present only when the whole seal completed. A lone public
+// blob is an interrupted earlier seal (a public area holds no key) and is
+// removed; a private blob is a sealed key and is never replaced. A failure
+// removes only what this call created.
+export async function sealKey(
+  presence: Tpm2Presence,
+  key: Uint8Array,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<SealedKey> {
+  if (key.length !== vaultKeyBytes)
+    throw new RangeError(`the vault key is ${vaultKeyBytes} bytes`);
+  preparePrivateDirectory(directory);
+  const publicBlob = join(directory, sealedPublicName);
+  const privateBlob = join(directory, sealedPrivateName);
+  if (exists(privateBlob))
+    throw new Tpm2Error(
+      "directory_unusable",
+      `${privateBlob} already holds a sealed key; it is not replaced`,
+    );
+  // The commit marker is absent, so a public blob is a leftover.
+  removeIfPresent(publicBlob);
+  const partials = [
+    `${publicBlob}${partialSuffix}`,
+    `${privateBlob}${partialSuffix}`,
+  ];
+  const [publicPartial, privatePartial] = partials as [string, string];
+  for (const path of partials) removeIfPresent(path);
+  const published: string[] = [];
+  try {
+    const primary = await createPrimary(presence, directory, options);
+    await runTool(
+      presence,
+      "tpm2_create",
+      [
+        "-C",
+        primary,
+        "-g",
+        "sha256",
+        "-a",
+        sealedObjectAttributes,
+        "-i",
+        "-",
+        "-u",
+        publicPartial,
+        "-r",
+        privatePartial,
+        "-Q",
+      ],
+      { cwd: directory, stdin: key, timeoutMs: options.timeoutMs },
+    );
+    for (const path of partials) adoptToolFile(path);
+    for (const [partial, final] of [
+      [publicPartial, publicBlob],
+      [privatePartial, privateBlob],
+    ] as const) {
+      try {
+        linkSync(partial, final);
+      } catch (error) {
+        throw new Tpm2Error(
+          "directory_unusable",
+          `${final} could not be published (${String(errnoCode(error) ?? "unknown")}); another writer may be sealing here`,
+        );
+      }
+      published.push(final);
+      unlinkSync(partial);
+      // The public blob is durable before the private one can name the seal.
+      fsyncDirectory(directory);
+    }
+  } catch (error) {
+    for (const path of [...partials, ...published]) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // Best effort: nothing here may mask the original failure.
+      }
+    }
+    throw error;
+  }
+  return { publicBlob, privateBlob };
 }

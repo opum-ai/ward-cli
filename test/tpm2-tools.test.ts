@@ -24,7 +24,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { acquireSetupSession } from "../src/adapters/setup-session.ts";
 import {
   accessRemedy,
@@ -41,6 +41,9 @@ import {
   requirePrivateFile,
   runTool,
   safeOpenFlags,
+  sealedPrivateName,
+  sealedPublicName,
+  sealKey,
   spawnTool,
   Tpm2Error,
   type Tpm2Host,
@@ -136,9 +139,9 @@ describe("presence is detected, not versioned, and refuses by name", () => {
     installFakeTools(bin, records, {}, { multicall: true });
     const presence = detect({ path: bin, device: DEVICE });
     expect(presence.tools.tpm2_unseal).toBe(join(bin, "tpm2_unseal"));
-    await runTool(presence, "tpm2_unseal", ["-c", "x"]);
+    await runTool(presence, "tpm2_unseal", ["-p", "x"]);
     // The multicall binary dispatched on the name it was spawned as.
-    expect(record(records, "tpm2_unseal").args).toEqual(["-c", "x"]);
+    expect(record(records, "tpm2_unseal").args).toEqual(["-p", "x"]);
   });
 
   test("the device is /dev/tpmrm0 unless a host says otherwise", () => {
@@ -494,7 +497,9 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     expect(
       untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
     ).toContain("one bare command name");
-    // Written name not env, final file env (an alias).
+    // Written name not env, final file env (an alias). The host's env must be
+    // named env for this to be the alias shape.
+    expect(basename(realpathSync("/usr/bin/env"))).toBe("env");
     symlinkSync("/usr/bin/env", join(tree.bin, "myenv"));
     script(
       join(tree.bin, "tpm2_create"),
@@ -765,6 +770,8 @@ describe("the module has no fallback path to disk, the keyring or systemd-creds"
     "constants",
     "fchmodSync",
     "fstatSync",
+    "fsyncSync",
+    "linkSync",
     "lstatSync",
     "mkdirSync",
     "openSync",
@@ -774,6 +781,7 @@ describe("the module has no fallback path to disk, the keyring or systemd-creds"
     "realpathSync",
     "statSync",
     "type Stats",
+    "unlinkSync",
   ]);
   const allowedModules = new Set([
     "node:fs",
@@ -1282,5 +1290,210 @@ describe("the trust-policy seam is test-only", () => {
     expect(host.slice(start, end)).not.toMatch(
       /trustedUids|trustRoot|ToolTrustPolicy/,
     );
+  });
+});
+
+// DEC-262 (a9): sealing. Synthetic key and fake tools only; nothing reaches a
+// TPM. The key must reach exactly one place, tpm2_create's stdin.
+describe("sealing the vault key", () => {
+  const key = Uint8Array.from({ length: 32 }, (_, i) => 0xc0 + i);
+  const keyHex = Buffer.from(key).toString("hex");
+  function sealable(modes: Record<string, string> = {}) {
+    const { base, bin, records } = fresh();
+    installFakeTools(bin, records, modes);
+    const directory = join(base, "ward-tpm");
+    return {
+      base,
+      directory,
+      records,
+      presence: detect({ path: bin, device: DEVICE }),
+    };
+  }
+
+  test("createprimary then create, the key on create's stdin and nowhere else", async () => {
+    const { directory, records, presence } = sealable();
+    const sealed = await sealKey(presence, key, directory);
+    expect(sealed.publicBlob).toBe(join(directory, sealedPublicName));
+    expect(sealed.privateBlob).toBe(join(directory, sealedPrivateName));
+    const primary = record(records, "tpm2_createprimary");
+    const create = record(records, "tpm2_create");
+    // The whole argv is the on-disk contract: a dropped attribute, an added
+    // -L or -p, or a changed template must go red here.
+    expect(primary.args).toEqual([
+      "-C",
+      "o",
+      "-g",
+      "sha256",
+      "-G",
+      "ecc256:aes128cfb",
+      "-a",
+      "restricted|decrypt|fixedtpm|fixedparent|sensitivedataorigin|userwithauth|noda",
+      "-c",
+      join(directory, "primary.ctx"),
+      "-Q",
+    ]);
+    expect(create.args).toEqual([
+      "-C",
+      join(directory, "primary.ctx"),
+      "-g",
+      "sha256",
+      "-a",
+      "fixedtpm|fixedparent|noda|userwithauth",
+      "-i",
+      "-",
+      "-u",
+      join(directory, `${sealedPublicName}.partial`),
+      "-r",
+      join(directory, `${sealedPrivateName}.partial`),
+      "-Q",
+    ]);
+    expect(create.stdinHex).toBe(keyHex);
+    expect(primary.stdinHex).toBe("");
+    // The key is in no argv, no environment, no other tool's stdin, and no
+    // file Ward or the tools left behind.
+    const everything = JSON.stringify([primary, { ...create, stdinHex: "" }]);
+    expect(everything).not.toContain(keyHex);
+    expect(everything).not.toContain(Buffer.from(key).toString("latin1"));
+    for (const name of readdirSync(directory))
+      expect(
+        readFileSync(join(directory, name)).includes(Buffer.from(key)),
+      ).toBe(false);
+  });
+
+  test("the sealed blobs and the context are user-private, whatever the tools wrote", async () => {
+    const { directory, presence } = sealable();
+    await sealKey(presence, key, directory);
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    for (const name of [sealedPublicName, sealedPrivateName, "primary.ctx"])
+      expect(statSync(join(directory, name)).mode & 0o777).toBe(0o600);
+    // No partial file is left once both blobs are in place.
+    expect(readdirSync(directory).sort()).toEqual(
+      ["primary.ctx", sealedPrivateName, sealedPublicName].sort(),
+    );
+  });
+
+  test("refuses a key that is not 32 bytes before running any tool", async () => {
+    const { directory, records, presence } = sealable();
+    await expect(
+      sealKey(presence, new Uint8Array(31), directory),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
+  });
+
+  test("refuses a directory that is not user-private", async () => {
+    const { directory, records, presence } = sealable();
+    mkdirSync(directory);
+    chmodSync(directory, 0o755);
+    await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
+      reason: "blob_not_user_private",
+    });
+    expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
+  });
+
+  test("never replaces a sealed key that is already there, and a lone private blob counts", async () => {
+    const { directory, records, presence } = sealable();
+    await sealKey(presence, key, directory);
+    const privatePath = join(directory, sealedPrivateName);
+    const publicPath = join(directory, sealedPublicName);
+    const before = [statSync(privatePath).ino, statSync(publicPath).ino];
+    rmSync(join(records, "tpm2_create.json"));
+    await expect(
+      sealKey(presence, new Uint8Array(32).fill(7), directory),
+    ).rejects.toMatchObject({ reason: "directory_unusable" });
+    expect([statSync(privatePath).ino, statSync(publicPath).ino]).toEqual(
+      before,
+    );
+    expect(existsSync(join(records, "tpm2_create.json"))).toBe(false);
+    // The private blob alone is the commit marker: still a sealed key.
+    rmSync(publicPath);
+    await expect(
+      sealKey(presence, new Uint8Array(32).fill(7), directory),
+    ).rejects.toMatchObject({ reason: "directory_unusable" });
+    expect(statSync(privatePath).ino).toBe(before[0] as number);
+    expect(existsSync(join(records, "tpm2_create.json"))).toBe(false);
+  });
+
+  test("a lone public blob is an interrupted seal: replaced, not reported as a sealed key", async () => {
+    const { directory, presence } = sealable();
+    preparePrivateDirectory(directory);
+    writeFileSync(join(directory, sealedPublicName), "leftover");
+    chmodSync(join(directory, sealedPublicName), 0o600);
+    await sealKey(presence, key, directory);
+    expect(readFileSync(join(directory, sealedPublicName), "utf8")).not.toBe(
+      "leftover",
+    );
+    expect(existsSync(join(directory, sealedPrivateName))).toBe(true);
+  });
+
+  test("a second writer's private blob is never replaced or removed, and our public blob is withdrawn", async () => {
+    const { directory, presence } = sealable({ tpm2_create: "race-final" });
+    await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
+      reason: "directory_unusable",
+    });
+    expect(readFileSync(join(directory, sealedPrivateName), "utf8")).toBe(
+      "planted",
+    );
+    expect(existsSync(join(directory, sealedPublicName))).toBe(false);
+    expect(
+      readdirSync(directory).filter((name) => name.endsWith(".partial")),
+    ).toEqual([]);
+  });
+
+  test("a failing create leaves no blob and no partial file, and the same directory can be sealed after", async () => {
+    const { base, directory, presence } = sealable({ tpm2_create: "fail" });
+    await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
+      reason: "tool_failed",
+    });
+    expect(
+      readdirSync(directory).filter((name) => name.startsWith("vault-key")),
+    ).toEqual([]);
+    // The same fakes, now succeeding, seal into the same directory.
+    installFakeTools(join(base, "bin"), join(base, "records"));
+    await sealKey(presence, key, directory);
+    expect(existsSync(join(directory, sealedPrivateName))).toBe(true);
+  });
+
+  test("the contents are fsynced before publication, and the directory after each name", () => {
+    // A power-cut ordering cannot be observed from a test; this pins that the
+    // calls exist where the ordering needs them.
+    const source = readFileSync("src/adapters/tpm2-tools.ts", "utf8");
+    const adopt = source.slice(source.indexOf("export function adoptToolFile"));
+    expect(adopt.slice(0, adopt.indexOf("\n}\n"))).toContain("fsyncSync(fd)");
+    const seal = source.slice(source.indexOf("export async function sealKey"));
+    expect(seal.indexOf("[publicPartial, publicBlob]")).toBeGreaterThan(0);
+    // The private blob is published last: it is the commit marker.
+    expect(seal.indexOf("[publicPartial, publicBlob]")).toBeLessThan(
+      seal.indexOf("[privatePartial, privateBlob]"),
+    );
+    const publish = seal.slice(seal.indexOf("linkSync(partial, final)"));
+    expect(publish.indexOf("fsyncDirectory(directory)")).toBeGreaterThan(0);
+    expect(publish.indexOf("fsyncDirectory(directory)")).toBeLessThan(
+      publish.indexOf("return {"),
+    );
+  });
+
+  test("a noisy stderr is truncated, not refused (WCLI-157)", async () => {
+    const { directory, presence } = sealable({
+      tpm2_createprimary: "flood-stderr",
+    });
+    await sealKey(presence, key, directory);
+    const run = await runTool(presence, "tpm2_createprimary", [], {});
+    expect(run.stderr.length).toBe(maxToolOutputBytes);
+  });
+
+  test("a noisy stderr on a failing tool is tool_failed, not output-too-large (WCLI-157)", async () => {
+    const { directory, presence } = sealable({
+      tpm2_create: "flood-stderr-fail",
+    });
+    await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
+      reason: "tool_failed",
+    });
+  });
+
+  test("a noisy stdout is still refused", async () => {
+    const { directory, presence } = sealable({ tpm2_createprimary: "flood" });
+    await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
+      reason: "tool_output_too_large",
+    });
   });
 });
