@@ -184,6 +184,9 @@ export function assertToolTrusted(toolPath: string): void {
 export interface ToolTrustPolicy {
   readonly trustedUids?: readonly number[];
   readonly trustRoot?: string;
+  // Replaces /usr/bin and /bin in the walked search path, so a test can make
+  // one of them unclean. Production never sets it.
+  readonly systemDirectories?: readonly string[];
 }
 
 export function walkToolTrustForTest(
@@ -199,30 +202,70 @@ export function walkToolTrustForTest(
 // script: the chain is not followed, it is refused. "#!/usr/bin/env X" is
 // accepted by walking env; the child's confined PATH (toolSearchPath) bounds
 // where X is found. Shared libraries are a recorded residual, not examined.
-function shebangLine(path: string): string | undefined {
+// The first line after "#!", or undefined for a file that does not start with
+// one. A file this process cannot read (an execute-only tool, an I/O error) is
+// refused: the check fails closed rather than skipping the shebang.
+function shebangLine(label: string, path: string): string | undefined {
   const buffer = Buffer.alloc(256);
-  const descriptor = openSync(path, "r");
   let read: number;
   try {
-    read = readSync(descriptor, buffer, 0, buffer.length, 0);
-  } finally {
-    closeSync(descriptor);
+    const descriptor = openSync(path, "r");
+    try {
+      read = readSync(descriptor, buffer, 0, buffer.length, 0);
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch (error) {
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${label}: ${path} cannot be read (${String(errnoCode(error) ?? "unknown")})`,
+    );
   }
   if (read < 2 || buffer[0] !== 0x23 || buffer[1] !== 0x21) return undefined;
-  return buffer.subarray(2, read).toString("latin1").split("\n")[0] ?? "";
+  const text = buffer.subarray(2, read).toString("latin1");
+  const end = text.indexOf("\n");
+  if (end < 0 && read === buffer.length)
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${label}: ${path} has a shebang line longer than the kernel reads`,
+    );
+  return end < 0 ? text : text.slice(0, end);
 }
 
-function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
-  const line = shebangLine(walkToolTrust(toolPath, policy, "file"));
-  if (line === undefined) return;
-  const interpreter = line.trim().split(/\s+/)[0] ?? "";
+// The interpreter as the kernel reads it: after any spaces and tabs, up to the
+// next space, tab or the end of the line. A "\r" is not stripped, so a CRLF
+// script names an interpreter that does not exist, and a byte outside
+// printable ASCII is refused rather than interpreted.
+function shebangInterpreter(toolPath: string, line: string): string {
+  const interpreter = /^[ \t]*([^ \t]*)/.exec(line)?.[1] ?? "";
+  if (!/^[\x21-\x7e]*$/.test(interpreter))
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${toolPath}: its shebang interpreter ${JSON.stringify(interpreter)} has a byte outside printable ASCII`,
+    );
   if (!isAbsolute(interpreter))
     throw new Tpm2Error(
       "tool_untrusted",
-      `${toolPath}: its shebang interpreter "${interpreter}" is not an absolute path`,
+      `${toolPath}: its shebang interpreter ${JSON.stringify(interpreter)} is not an absolute path`,
     );
-  const final = walkToolTrust(interpreter, policy, "file");
-  if (shebangLine(final) !== undefined)
+  return interpreter;
+}
+
+function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
+  const line = shebangLine(toolPath, walkToolTrust(toolPath, policy, "file"));
+  if (line === undefined) return;
+  const interpreter = shebangInterpreter(toolPath, line);
+  let final: string;
+  try {
+    final = walkToolTrust(interpreter, policy, "file");
+  } catch (error) {
+    if (!(error instanceof Tpm2Error)) throw error;
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${toolPath}: its shebang interpreter ${interpreter}: ${error.detail}`,
+    );
+  }
+  if (shebangLine(toolPath, final) !== undefined)
     throw new Tpm2Error(
       "tool_untrusted",
       `${toolPath}: its shebang interpreter ${interpreter} is itself a script`,
@@ -231,8 +274,11 @@ function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
 
 // The directories a child may search, and the only ones: the tool's own, then
 // /usr/bin and /bin. Each passes the walk before anything runs.
-function toolSearchPath(toolPath: string): string[] {
-  return [...new Set([dirname(toolPath), "/usr/bin", "/bin"])];
+function toolSearchPath(
+  toolPath: string,
+  system: readonly string[] = ["/usr/bin", "/bin"],
+): string[] {
+  return [...new Set([dirname(toolPath), ...system])];
 }
 
 // Returns the final regular file (or, for kind "dir", the final directory)
@@ -315,6 +361,11 @@ function walkToolTrust(
         "tool_untrusted",
         `${toolPath}: ${candidate} is not a regular file`,
       );
+    if (pending.length === 0 && kind === "dir" && !stats.isDirectory())
+      throw new Tpm2Error(
+        "tool_untrusted",
+        `${toolPath}: ${candidate} is not a directory`,
+      );
     resolved = candidate;
   }
   return resolved;
@@ -361,7 +412,10 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
   // PATH entry is never tried in its place.
   for (const tool of requiredTools) {
     checkExecutable(found[tool] as string, policy);
-    for (const directory of toolSearchPath(found[tool] as string))
+    for (const directory of toolSearchPath(
+      found[tool] as string,
+      policy.systemDirectories,
+    ))
       walkToolTrust(directory, policy, "dir");
   }
   try {

@@ -24,7 +24,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { acquireSetupSession } from "../src/adapters/setup-session.ts";
 import {
   accessRemedy,
@@ -410,7 +410,7 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
   });
 
   // DEC-262 (a12): a script tool's shebang interpreter is walked too.
-  const script = (path: string, text: string) => {
+  const script = (path: string, text: string | Buffer) => {
     writeFileSync(path, text);
     chmodSync(path, 0o755);
   };
@@ -459,9 +459,14 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
       join(tree.bin, "tpm2_create"),
       "#!/bin/sh\nexec ward-helper-probe\n",
     );
-    const presence = detect({ path: tree.bin, device: DEVICE });
+    // The detection path carries the helper's directory too, so a child that
+    // were given presence.path (or the parent's PATH) would find the helper.
+    const presence = detect({
+      path: `${tree.bin}${delimiter}${elsewhere}`,
+      device: DEVICE,
+    });
     const before = process.env.PATH;
-    process.env.PATH = `${elsewhere}:${before ?? ""}`;
+    process.env.PATH = `${elsewhere}${delimiter}${before ?? ""}`;
     try {
       // Positive control: the helper really is on the parent's PATH.
       expect(Bun.which("ward-helper-probe", { PATH: process.env.PATH })).toBe(
@@ -475,8 +480,79 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
       script(join(tree.bin, "ward-helper-probe"), "#!/bin/sh\nexit 0\n");
       await runTool(presence, "tpm2_create", []);
     } finally {
-      process.env.PATH = before;
+      if (before === undefined) delete process.env.PATH;
+      else process.env.PATH = before;
     }
+  });
+
+  test("reject: /usr/bin and /bin stand-ins are walked too, and a clean one passes", () => {
+    const tree = trustedTree("system-dirs");
+    const loose = dir(join(tree.base, "loose-system"), 0o777);
+    const clean = dir(join(tree.base, "clean-system"), 0o755);
+    const host = { path: tree.bin, device: DEVICE };
+    const policy = { trustRoot: root };
+    const error = untrusted(() =>
+      detectTpm2ForTest(host, { ...policy, systemDirectories: [clean, loose] }),
+    );
+    expect(error.detail).toContain(`${loose} is owned by`);
+    expect(() =>
+      detectTpm2ForTest(host, { ...policy, systemDirectories: [clean] }),
+    ).not.toThrow();
+  });
+
+  test("reject: a system directory that is a file, not a directory", () => {
+    const tree = trustedTree("system-notdir");
+    script(join(tree.base, "afile"), "x");
+    const error = untrusted(() =>
+      detectTpm2ForTest(
+        { path: tree.bin, device: DEVICE },
+        { trustRoot: root, systemDirectories: [join(tree.base, "afile")] },
+      ),
+    );
+    expect(error.detail).toContain("is not a directory");
+  });
+
+  test.skipIf(root0)(
+    "reject: a tool this user cannot read is refused, not skipped",
+    () => {
+      const tree = trustedTree("execute-only");
+      chmodSync(join(tree.bin, "tpm2_create"), 0o111);
+      const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+      expect(error.detail).toContain("cannot be read (EACCES)");
+    },
+  );
+
+  test("reject: a shebang the kernel would read differently", () => {
+    const tree = trustedTree("shebang-bytes");
+    const cases: [string, Buffer, string][] = [
+      ["CRLF", Buffer.from("#!/bin/sh\r\nexit 0\n"), "printable ASCII"],
+      [
+        "leading 0xA0",
+        Buffer.from([0x23, 0x21, 0xa0, 0x2f, 0x73, 0x0a]),
+        "printable ASCII",
+      ],
+      [
+        "a high byte inside",
+        Buffer.from([0x23, 0x21, 0x2f, 0x62, 0xe9, 0x6e, 0x0a]),
+        "printable ASCII",
+      ],
+      [
+        "a line with no end",
+        Buffer.from(`#!/${"a".repeat(300)}`),
+        "longer than the kernel",
+      ],
+    ];
+    for (const [name, bytes, expected] of cases) {
+      script(join(tree.bin, "tpm2_create"), bytes);
+      const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+      expect([name, error.detail]).toEqual([
+        name,
+        expect.stringContaining(expected),
+      ]);
+    }
+    // Spaces and tabs before and after the interpreter are the kernel's own.
+    script(join(tree.bin, "tpm2_create"), "#! \t/bin/sh -e\nexit 0\n");
+    expect(() => detect({ path: tree.bin, device: DEVICE })).not.toThrow();
   });
 
   test("a missing element is refused by name with its errno", () => {
