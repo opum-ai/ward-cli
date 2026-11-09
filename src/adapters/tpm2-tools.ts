@@ -20,7 +20,7 @@ import {
   statSync,
   type Stats,
 } from "node:fs";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { isPrivateEntry } from "./sqlite-vault-store.ts";
 
 export const tpmDevicePath = "/dev/tpmrm0";
@@ -196,12 +196,6 @@ export function walkToolTrustForTest(
   checkExecutable(toolPath, policy);
 }
 
-// DEC-262 (a12), (a13): an executable is the walked file plus whatever its
-// shebang names. A script's interpreter must be an absolute path that passes
-// the same walk (a relative one is refused) and must not itself be a "#!"
-// script: the chain is not followed, it is refused. "#!/usr/bin/env X" is
-// accepted by walking env; the child's confined PATH (toolSearchPath) bounds
-// where X is found. Shared libraries are a recorded residual, not examined.
 // The first line after "#!", or undefined for a file that does not start with
 // one. A file this process cannot read (an execute-only tool, an I/O error) is
 // refused: the check fails closed rather than skipping the shebang.
@@ -233,11 +227,16 @@ function shebangLine(label: string, path: string): string | undefined {
 }
 
 // The interpreter as the kernel reads it: after any spaces and tabs, up to the
-// next space, tab or the end of the line. A "\r" is not stripped, so a CRLF
-// script names an interpreter that does not exist, and a byte outside
-// printable ASCII is refused rather than interpreted.
-function shebangInterpreter(toolPath: string, line: string): string {
-  const interpreter = /^[ \t]*([^ \t]*)/.exec(line)?.[1] ?? "";
+// next space, tab or the end of the line; what follows (leading and trailing
+// spaces and tabs trimmed, as Linux does) is passed as ONE argument. A "\r" is
+// not stripped, so a CRLF script names an interpreter that does not exist, and
+// a byte outside printable ASCII is refused rather than interpreted.
+function shebangParts(
+  toolPath: string,
+  line: string,
+): { interpreter: string; argument: string } {
+  const match = /^[ \t]*([^ \t]*)/.exec(line);
+  const interpreter = match?.[1] ?? "";
   if (!/^[\x21-\x7e]*$/.test(interpreter))
     throw new Tpm2Error(
       "tool_untrusted",
@@ -248,13 +247,25 @@ function shebangInterpreter(toolPath: string, line: string): string {
       "tool_untrusted",
       `${toolPath}: its shebang interpreter ${JSON.stringify(interpreter)} is not an absolute path`,
     );
-  return interpreter;
+  const argument = line
+    .slice(match?.[0].length ?? 0)
+    .replace(/^[ \t]+/, "")
+    .replace(/[ \t]+$/, "");
+  return { interpreter, argument };
 }
 
+// DEC-262 (a12), (a13), (a14): an executable is the walked file plus what its
+// shebang names. The interpreter must be an absolute path that passes the same
+// walk, and is judged by its final file, which must not itself start with
+// "#!" (refused, never followed). Shared libraries are a recorded residual.
+// When the interpreter is env, by the name written or by the final file (a
+// multicall install, an alias), the rest of the line is ONE argument and must
+// be a single bare command name, which env resolves on the child's confined
+// PATH (toolSearchPath); anything else could move the search or add a program.
 function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
   const line = shebangLine(toolPath, walkToolTrust(toolPath, policy, "file"));
   if (line === undefined) return;
-  const interpreter = shebangInterpreter(toolPath, line);
+  const { interpreter, argument } = shebangParts(toolPath, line);
   let final: string;
   try {
     final = walkToolTrust(interpreter, policy, "file");
@@ -268,7 +279,17 @@ function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
   if (shebangLine(toolPath, final) !== undefined)
     throw new Tpm2Error(
       "tool_untrusted",
-      `${toolPath}: its shebang interpreter ${interpreter} is itself a script`,
+      `${toolPath}: its shebang interpreter ${interpreter} (${final}) is itself a "#!" script`,
+    );
+  if (basename(interpreter) !== "env" && basename(final) !== "env") return;
+  if (
+    !/^[\x21-\x7e]+$/.test(argument) ||
+    /[/=]/.test(argument) ||
+    argument.startsWith("-")
+  )
+    throw new Tpm2Error(
+      "tool_untrusted",
+      `${toolPath}: its shebang line ${JSON.stringify(line)} runs env with something other than one bare command name`,
     );
 }
 

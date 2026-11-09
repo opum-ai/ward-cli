@@ -446,9 +446,65 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     script(join(tree.bin, "inner"), "#!/bin/sh\nexit 0\n");
     script(join(tree.bin, "tpm2_create"), `#!${join(tree.bin, "inner")}\n`);
     const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
-    expect(error.detail).toContain(
-      `${join(tree.bin, "inner")} is itself a script`,
+    expect(error.detail).toContain(join(tree.bin, "inner"));
+    expect(error.detail).toContain('is itself a "#!" script');
+    // Host-independent control: a real interpreter is a binary, not a script.
+    expect(readFileSync("/bin/sh").subarray(0, 2).toString()).not.toBe("#!");
+  });
+
+  // DEC-262 (a14): after env, the rest of the line is ONE bare command name.
+  const envRefused = [
+    "env /bin/sh",
+    "env -S PATH=/x sh",
+    "env A=B sh",
+    "env -i sh",
+    "env",
+    "env ",
+    "env sh\r",
+    "env sh x/y",
+  ];
+  test("reject: env given anything but one bare command name", () => {
+    const tree = trustedTree("env-args");
+    for (const line of envRefused) {
+      script(join(tree.bin, "tpm2_create"), `#!/usr/bin/env${line.slice(3)}\n`);
+      const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+      expect([line, error.detail]).toEqual([
+        line,
+        expect.stringContaining("one bare command name"),
+      ]);
+    }
+  });
+
+  test("accept: env with one bare command name, spaces and tabs around it", () => {
+    const tree = trustedTree("env-ok");
+    for (const line of ["env sh", "env \t sh \t"]) {
+      script(join(tree.bin, "tpm2_create"), `#!/usr/bin/${line}\n`);
+      expect(() => detect({ path: tree.bin, device: DEVICE })).not.toThrow();
+    }
+  });
+
+  test("reject: env by a multicall shape or an alias gets the same argument check", () => {
+    const tree = trustedTree("env-shapes");
+    // Written name env, final file not named env (busybox, uutils).
+    symlinkSync("/bin/sh", join(tree.bin, "env"));
+    script(
+      join(tree.bin, "tpm2_create"),
+      `#!${join(tree.bin, "env")} -S PATH=/x sh\n`,
     );
+    expect(
+      untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
+    ).toContain("one bare command name");
+    // Written name not env, final file env (an alias).
+    symlinkSync("/usr/bin/env", join(tree.bin, "myenv"));
+    script(
+      join(tree.bin, "tpm2_create"),
+      `#!${join(tree.bin, "myenv")} -S PATH=/x sh\n`,
+    );
+    expect(
+      untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
+    ).toContain("one bare command name");
+    script(join(tree.bin, "tpm2_create"), `#!${join(tree.bin, "myenv")} sh\n`);
+    expect(() => detect({ path: tree.bin, device: DEVICE })).not.toThrow();
   });
 
   test("a helper findable only on the parent's PATH is not found by a tool", async () => {
