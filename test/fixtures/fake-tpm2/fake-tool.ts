@@ -16,7 +16,20 @@
 // (its pid in <record-dir>/grandchild.pid) and exits 0; `lock-directory` makes
 // its working directory read-only (0500) once its outputs exist, so a later
 // link(2) into it fails with EACCES for any non-root user.
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+// Every call is also appended to <record-dir>/calls.jsonl (tool, argv, and the
+// mode of the session file the call names, as it was when the call began), so
+// a test can assert the ORDER of calls and what a tool saw. tpm2_unseal writes
+// the 32-byte synthetic key 0x5a to stdout (`short-unseal`: 31 bytes);
+// tpm2_sessionconfig with no --enable/--disable prints the attributes
+// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"). The real
+// printout's format is unmeasured, so this one is a guess T26 replaces.
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const [tool, recordDirectory, mode, ...args] = process.argv.slice(2);
@@ -34,6 +47,35 @@ writeFileSync(
     stdinHex: stdin.toString("hex"),
   }),
 );
+const sessionPath = (() => {
+  const given = args.find((arg) => arg.startsWith("session:"));
+  if (given !== undefined) return given.slice("session:".length);
+  const last = args.at(-1);
+  return (tool === "tpm2_sessionconfig" || tool === "tpm2_flushcontext") &&
+    last !== undefined &&
+    !last.startsWith("-")
+    ? last
+    : undefined;
+})();
+appendFileSync(
+  join(recordDirectory, "calls.jsonl"),
+  `${JSON.stringify({
+    tool,
+    args,
+    stdinHex: stdin.toString("hex"),
+    sessionMode:
+      sessionPath !== undefined && existsSync(sessionPath)
+        ? statSync(sessionPath).mode & 0o777
+        : null,
+  })}\n`,
+);
+// A session file named for sessionconfig or by "-p session:" must exist.
+if (
+  sessionPath !== undefined &&
+  tool !== "tpm2_flushcontext" &&
+  !existsSync(sessionPath)
+)
+  process.exit(3);
 const outputFlags: Record<string, readonly string[]> = {
   tpm2_createprimary: ["-c"],
   tpm2_create: ["-u", "-r"],
@@ -70,6 +112,19 @@ if (mode === "flood-stderr" || mode === "flood-stderr-fail")
 if (mode === "hang") await new Promise(() => {});
 if (mode === "fail" || mode === "flood-stderr-fail") process.exit(1);
 if (mode === "flood") process.stdout.write("x".repeat(64 * 1024));
+if (tool === "tpm2_unseal")
+  process.stdout.write(Buffer.alloc(mode === "short-unseal" ? 31 : 32, 0x5a));
+if (
+  tool === "tpm2_sessionconfig" &&
+  !args.some((arg) => /^--(en|dis)able-/.test(arg))
+)
+  process.stdout.write(
+    mode === "session-off"
+      ? "Session-Attributes: continuesession\n"
+      : mode === "session-zero"
+        ? "decrypt: 1\nencrypt: 0\n"
+        : "Session-Attributes: continuesession|decrypt|encrypt\n",
+  );
 if (mode === "grandchild") {
   const held = Bun.spawn(["/bin/sleep", "60"], {
     stdin: "ignore",

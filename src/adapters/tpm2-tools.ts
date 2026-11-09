@@ -57,6 +57,7 @@ export type Tpm2Reason =
   | "platform_unsupported"
   | "blob_not_user_private"
   | "key_not_sealed"
+  | "session_not_encrypted"
   | "tool_untrusted"
   | "tool_timeout"
   | "tool_output_too_large"
@@ -72,6 +73,8 @@ const remedies: Record<Tpm2Reason, string> = {
   platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
   key_not_sealed: "no sealed vault key is present",
+  session_not_encrypted:
+    "the TPM session does not encrypt the unsealed key in transit",
   tool_untrusted: "a tpm2 tool is not trusted to receive the vault key",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
@@ -918,4 +921,105 @@ export async function withLoadedKey<T>(
       // this when 2b-2 adds session files to the scratch.
     }
   }
+}
+
+// True when the session-config printout shows the named attribute on. The real
+// printout's format is unmeasured on hardware (T26 pins it), so this accepts
+// the attribute named in a list or as "name: value" and fails closed on
+// anything else: a missing name, or a value that reads as off, is not on.
+function sessionAttributeOn(printout: string, name: string): boolean {
+  const match = new RegExp(
+    `(?<![a-z])${name}(?![a-z])\\s*(?::\\s*([^\\s|,]+))?`,
+    "i",
+  ).exec(printout);
+  if (match === null) return false;
+  const value = match[1]?.toLowerCase();
+  return !(
+    value === "0" ||
+    value === "false" ||
+    value === "no" ||
+    value === "off" ||
+    value === "clear" ||
+    value === "clr"
+  );
+}
+
+// Unseals the vault key (DEC-262 a9, opum-doc's slice-2 rules). Every call
+// loads the key in its own scratch (withLoadedKey), starts a FRESH salted HMAC
+// session (never a saved or reused one), requires the session's encrypt and
+// decrypt attributes on before the unseal (off is the AC2 stop:
+// session_not_encrypted), reads the 32 bytes from tpm2_unseal's stdout and
+// nowhere else, and flushes the session at the end. Ward sets and verifies
+// 0600 on the session file itself: the tools write it wider. stderr is never
+// surfaced. The caller owns the returned bytes and should zero them after use.
+export async function unsealKey(
+  presence: Tpm2Presence,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<Uint8Array> {
+  return await withLoadedKey(
+    presence,
+    directory,
+    async (loaded) => {
+      const session = join(loaded.directory, "session.ctx");
+      const run = (tool: Tpm2Tool, args: readonly string[]) =>
+        runTool(presence, tool, args, {
+          cwd: loaded.directory,
+          timeoutMs: options.timeoutMs,
+        });
+      // A fresh session in a fresh scratch: nothing to reuse and nothing to
+      // replace, so a leftover file is refused rather than overwritten.
+      if (exists(session)) throw new Tpm2Error("directory_unusable", "session");
+      await run("tpm2_startauthsession", [
+        "--hmac-session",
+        "-c",
+        loaded.primary,
+        "-S",
+        session,
+        "-Q",
+      ]);
+      try {
+        adoptToolFile(session);
+        await run("tpm2_sessionconfig", [
+          "--enable-decrypt",
+          "--enable-encrypt",
+          session,
+        ]);
+        adoptToolFile(session);
+        const printout = Buffer.from(
+          (await run("tpm2_sessionconfig", [session])).stdout,
+        ).toString("utf8");
+        if (
+          !sessionAttributeOn(printout, "decrypt") ||
+          !sessionAttributeOn(printout, "encrypt")
+        )
+          throw new Tpm2Error("session_not_encrypted", "session");
+        // Verified, never repaired, at the moment before the tool reads it.
+        requirePrivateFile(session);
+        const result = await run("tpm2_unseal", [
+          "-c",
+          loaded.keyContext,
+          "-p",
+          `session:${session}`,
+        ]);
+        const output = result.stdout;
+        try {
+          if (output.length !== vaultKeyBytes)
+            throw new Tpm2Error("tool_failed", "tpm2_unseal");
+          return Uint8Array.from(output);
+        } finally {
+          output.fill(0);
+        }
+      } finally {
+        try {
+          // Best effort: the kernel resource manager also drops the session
+          // when this process's connection closes.
+          await run("tpm2_flushcontext", [session]);
+        } catch {
+          // Nothing here may mask the unseal's own outcome.
+        }
+      }
+    },
+    options,
+  );
 }

@@ -45,6 +45,7 @@ import {
   sealedPrivateName,
   sealedPublicName,
   sealKey,
+  unsealKey,
   withLoadedKey,
   spawnTool,
   Tpm2Error,
@@ -1744,5 +1745,174 @@ describe("loading the sealed key", () => {
     expect(error).toMatchObject({ reason: "tool_failed" });
     expect(String((error as Error).message)).not.toContain("e".repeat(16));
     expect(scratches(directory)).toEqual([]);
+  });
+});
+
+// Unsealing (DEC-262 a9; opum-doc's slice-2 rules). Fake tools only: these
+// prove the call order, the argv, the 0600 check and the stop on an
+// unencrypted session. They do NOT prove that a real TPM encrypts the unsealed
+// bytes or that the real tpm2_sessionconfig prints what the parser reads:
+// that is the T26 jetson run.
+describe("unsealing the sealed key", () => {
+  const synthetic = new Uint8Array(32).fill(0x5a);
+  async function sealed(modes: Record<string, string> = {}) {
+    const { base, bin, records } = fresh();
+    installFakeTools(bin, records, modes);
+    const directory = join(base, "ward-tpm");
+    const presence = detect({ path: bin, device: DEVICE });
+    await sealKey(presence, synthetic, directory);
+    // The seal's calls are not the unseal's.
+    rmSync(join(records, "calls.jsonl"), { force: true });
+    return { base, bin, records, directory, presence };
+  }
+  const calls = (records: string) =>
+    readFileSync(join(records, "calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            tool: string;
+            args: string[];
+            stdinHex: string;
+            sessionMode: number | null;
+          },
+      );
+  const scratches = (directory: string) =>
+    readdirSync(directory).filter((name) => name.startsWith("unseal-"));
+
+  test("loads, starts a salted session, requires encrypt and decrypt, unseals under it, flushes it", async () => {
+    const { records, directory, presence } = await sealed();
+    const key = await unsealKey(presence, directory);
+    expect(Buffer.from(key).equals(Buffer.from(synthetic))).toBe(true);
+    const made = calls(records);
+    expect(made.map((call) => call.tool)).toEqual([
+      "tpm2_createprimary",
+      "tpm2_load",
+      "tpm2_startauthsession",
+      "tpm2_sessionconfig",
+      "tpm2_sessionconfig",
+      "tpm2_unseal",
+      "tpm2_flushcontext",
+    ]);
+    const load = made[1]?.args ?? [];
+    const scratch = dirname(load[load.indexOf("-c") + 1] ?? "");
+    const session = join(scratch, "session.ctx");
+    expect(dirname(scratch)).toBe(directory);
+    expect(made[2]?.args).toEqual([
+      "--hmac-session",
+      "-c",
+      join(scratch, "primary.ctx"),
+      "-S",
+      session,
+      "-Q",
+    ]);
+    expect(made[3]?.args).toEqual([
+      "--enable-decrypt",
+      "--enable-encrypt",
+      session,
+    ]);
+    expect(made[4]?.args).toEqual([session]);
+    expect(made[5]?.args).toEqual([
+      "-c",
+      join(scratch, "key.ctx"),
+      "-p",
+      `session:${session}`,
+    ]);
+    expect(made[6]?.args).toEqual([session]);
+    // The scratch, with the session in it, is gone.
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("the key is in no argv, no stdin and no file left behind", async () => {
+    const { records, directory, presence } = await sealed();
+    await unsealKey(presence, directory);
+    const hex = Buffer.from(synthetic).toString("hex");
+    const b64 = Buffer.from(synthetic).toString("base64");
+    const log = readFileSync(join(records, "calls.jsonl"), "utf8");
+    expect(log).not.toContain(hex);
+    expect(log).not.toContain(b64);
+    for (const call of calls(records)) expect(call.stdinHex).toBe("");
+    for (const name of readdirSync(directory))
+      if (statSync(join(directory, name)).isFile())
+        expect(readFileSync(join(directory, name)).includes(0x5a)).toBe(false);
+  });
+
+  test("every unseal starts its own session, never a reused one", async () => {
+    const { records, directory, presence } = await sealed();
+    await unsealKey(presence, directory);
+    await unsealKey(presence, directory);
+    const starts = calls(records).filter(
+      (call) => call.tool === "tpm2_startauthsession",
+    );
+    expect(starts.length).toBe(2);
+    const paths = starts.map((call) => call.args[call.args.indexOf("-S") + 1]);
+    expect(new Set(paths).size).toBe(2);
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("the session file is exactly 0600 when the unseal reads it", async () => {
+    const { records, directory, presence } = await sealed();
+    await unsealKey(presence, directory);
+    // The fake writes its output files 0660, as the real tools do.
+    const unseal = calls(records).find((call) => call.tool === "tpm2_unseal");
+    expect(unseal?.sessionMode).toBe(0o600);
+  });
+
+  test("a session that does not encrypt stops before any unseal", async () => {
+    for (const mode of ["session-off", "session-zero"]) {
+      const { records, directory, presence } = await sealed({
+        tpm2_sessionconfig: mode,
+      });
+      await expect(unsealKey(presence, directory)).rejects.toMatchObject({
+        reason: "session_not_encrypted",
+      });
+      const tools = calls(records).map((call) => call.tool);
+      expect(tools).not.toContain("tpm2_unseal");
+      // The session started is still flushed, and the scratch removed.
+      expect(tools.at(-1)).toBe("tpm2_flushcontext");
+      expect(scratches(directory)).toEqual([]);
+    }
+  });
+
+  test("a wrong-length output is tool_failed and no bytes are returned", async () => {
+    const { directory, presence } = await sealed({
+      tpm2_unseal: "short-unseal",
+    });
+    await expect(unsealKey(presence, directory)).rejects.toMatchObject({
+      reason: "tool_failed",
+    });
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("a failing unseal is tool_failed, its stderr unsurfaced, and the session is flushed", async () => {
+    const { records, directory, presence } = await sealed({
+      tpm2_unseal: "flood-stderr-fail",
+    });
+    const error = await unsealKey(presence, directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ reason: "tool_failed" });
+    expect(String((error as Error).message)).not.toContain("e".repeat(16));
+    expect(calls(records).at(-1)?.tool).toBe("tpm2_flushcontext");
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("a failing flush does not take the key away", async () => {
+    const { directory, presence } = await sealed({ tpm2_flushcontext: "fail" });
+    const key = await unsealKey(presence, directory);
+    expect(Buffer.from(key).equals(Buffer.from(synthetic))).toBe(true);
+    expect(scratches(directory)).toEqual([]);
+  });
+
+  test("no sealed key runs no tool at all", async () => {
+    const { base, records, presence } = await sealed();
+    const empty = join(base, "empty");
+    preparePrivateDirectory(empty);
+    await expect(unsealKey(presence, empty)).rejects.toMatchObject({
+      reason: "key_not_sealed",
+    });
+    expect(existsSync(join(records, "calls.jsonl"))).toBe(false);
   });
 });
