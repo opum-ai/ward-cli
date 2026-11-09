@@ -179,6 +179,12 @@ export const errorCatalog = {
     message: "No sealed vault key was found.",
     hint: "If Ward was never set up, run `ward setup` in a trusted terminal. If a vault already exists, a missing key is a recovery condition, and Ward will not create a new key for it.",
   },
+  tpm_key_incomplete: {
+    type: "validation",
+    message:
+      "A sealed vault key exists but its pair is incomplete, so Ward cannot load it. Ward did not change it.",
+    hint: "Do not run `ward setup`: this is a recovery condition, and Ward will not create a new key over a sealed one.",
+  },
   tpm_tool_untrusted: {
     type: "validation",
     message:

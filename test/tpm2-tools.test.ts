@@ -1419,9 +1419,10 @@ describe("sealing the vault key", () => {
     expect(existsSync(join(records, "tpm2_create.json"))).toBe(false);
     // The private blob alone is the commit marker: still a sealed key.
     rmSync(publicPath);
+    // DEC-262 (a16): refused as key_incomplete, the recovery code.
     await expect(
       sealKey(presence, new Uint8Array(32).fill(7), directory),
-    ).rejects.toMatchObject({ reason: "directory_unusable" });
+    ).rejects.toMatchObject({ reason: "key_incomplete" });
     expect(statSync(privatePath).ino).toBe(before[0] as number);
     expect(existsSync(join(records, "tpm2_create.json"))).toBe(false);
   });
@@ -1738,6 +1739,38 @@ describe("loading the sealed key", () => {
     expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
   });
 
+  // DEC-262 (a16): the private blob is the commit marker. A lone .priv is a
+  // sealed key whose pair is gone (recovery: never a re-init, setup refuses); a
+  // lone .pub, or neither, is not sealed.
+  test("a lone private blob is key_incomplete, runs no tool, and setup refuses over it", async () => {
+    const { records, directory, presence } = await sealed();
+    rmSync(join(directory, sealedPublicName));
+    rmSync(join(records, "tpm2_createprimary.json"), { force: true });
+    rmSync(join(records, "tpm2_create.json"), { force: true });
+    const before = readFileSync(join(directory, sealedPrivateName));
+    await expect(
+      withLoadedKey(presence, directory, async () => 1),
+    ).rejects.toMatchObject({ reason: "key_incomplete" });
+    expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
+    // Setup (a seal) refuses, names the recovery code, and changes nothing.
+    await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
+      reason: "key_incomplete",
+    });
+    expect(existsSync(join(records, "tpm2_create.json"))).toBe(false);
+    expect(existsSync(join(directory, sealedPublicName))).toBe(false);
+    expect(
+      readFileSync(join(directory, sealedPrivateName)).equals(before),
+    ).toBe(true);
+  });
+
+  test("a lone public blob is key_not_sealed", async () => {
+    const { directory, presence } = await sealed();
+    rmSync(join(directory, sealedPrivateName));
+    await expect(
+      withLoadedKey(presence, directory, async () => 1),
+    ).rejects.toMatchObject({ reason: "key_not_sealed" });
+  });
+
   test("a blob wider than 0600 is refused before any tool reads it, never repaired", async () => {
     for (const name of [sealedPrivateName, sealedPublicName]) {
       const { records, directory, presence } = await sealed();
@@ -1985,26 +2018,32 @@ describe("unsealing the sealed key", () => {
     expect([on.length, off.length, unparsed.length]).toEqual([4, 4, 24]);
   });
 
+  // The a16 condition, both ways, through the whole call: a measured-shape
+  // printout with "decrypt" missing is (a), session_not_encrypted; an unknown
+  // token or an unparseable shape is (b), tool_incompatible naming the
+  // tpm2-tools version. Both refuse, and no unseal runs.
   test("a printout that says encryption is off is session_not_encrypted; one that does not parse is tool_incompatible naming the tpm2-tools version", async () => {
-    const off = await sealed({ tpm2_sessionconfig: "session-off" });
-    await expect(unsealKey(off.presence, off.directory)).rejects.toMatchObject({
-      reason: "session_not_encrypted",
-    });
-    // "session-zero" prints a shape that is not the measured one.
-    const odd = await sealed({ tpm2_sessionconfig: "session-zero" });
-    const error = await unsealKey(odd.presence, odd.directory).then(
-      () => undefined,
-      (caught: unknown) => caught,
-    );
-    expect(error).toMatchObject({
-      reason: "tool_incompatible",
-      detail: "tpm2-tools 5.6",
-    });
-    // Both refuse: no unseal ran in either.
-    for (const { records } of [off, odd])
+    const cases = [
+      ["session-off", "session_not_encrypted"],
+      ["session-no-decrypt", "session_not_encrypted"],
+      ["session-unknown-token", "tool_incompatible"],
+      ["session-zero", "tool_incompatible"],
+    ] as const;
+    for (const [mode, reason] of cases) {
+      const { records, directory, presence } = await sealed({
+        tpm2_sessionconfig: mode,
+      });
+      const error = await unsealKey(presence, directory).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect([mode, error]).toMatchObject([mode, { reason }]);
+      if (reason === "tool_incompatible")
+        expect((error as Tpm2Error).detail).toBe("tpm2-tools 5.6");
       expect(calls(records).map((call) => call.tool)).not.toContain(
         "tpm2_unseal",
       );
+    }
   });
 
   test("a tool that rewrites the session file wide is re-adopted to 0600 before the unseal", async () => {
@@ -2072,7 +2111,7 @@ describe("unsealing the sealed key", () => {
 describe("every Tpm2Reason has its own contract code", () => {
   test("the codes are pairwise distinct and each is in the error catalog", () => {
     const codes = Object.values(tpm2ErrorCodes);
-    expect(codes.length).toBeGreaterThanOrEqual(14);
+    expect(codes.length).toBeGreaterThanOrEqual(15);
     expect(new Set(codes).size).toBe(codes.length);
     for (const code of codes) expect(code in errorCatalog).toBe(true);
   });
@@ -2087,6 +2126,7 @@ describe("every Tpm2Reason has its own contract code", () => {
       "tpm_blob_not_user_private",
     );
     expect(tpm2ErrorCodes.key_not_sealed).toBe("tpm_key_not_sealed");
+    expect(tpm2ErrorCodes.key_incomplete).toBe("tpm_key_incomplete");
     expect(tpm2ErrorCodes.tool_untrusted).toBe("tpm_tool_untrusted");
     // NB6: not-encrypted and not-recognised are two codes.
     expect(tpm2ErrorCodes.session_not_encrypted).not.toBe(

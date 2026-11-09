@@ -58,6 +58,7 @@ export type Tpm2Reason =
   | "platform_unsupported"
   | "blob_not_user_private"
   | "key_not_sealed"
+  | "key_incomplete"
   | "session_not_encrypted"
   | "tool_incompatible"
   | "tool_untrusted"
@@ -75,6 +76,7 @@ const remedies: Record<Tpm2Reason, string> = {
   platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
   key_not_sealed: "no sealed vault key is present",
+  key_incomplete: "a sealed vault key exists but its pair is incomplete",
   session_not_encrypted:
     "the TPM session does not encrypt the unsealed key in transit",
   tool_incompatible:
@@ -116,6 +118,7 @@ export const tpm2ErrorCodes: Record<Tpm2Reason, ErrorCode> = {
   platform_unsupported: "tpm_platform_unsupported",
   blob_not_user_private: "tpm_blob_not_user_private",
   key_not_sealed: "tpm_key_not_sealed",
+  key_incomplete: "tpm_key_incomplete",
   tool_untrusted: "tpm_tool_untrusted",
   tool_timeout: "tpm_tool_timeout",
   tool_output_too_large: "tpm_tool_output_too_large",
@@ -847,11 +850,15 @@ export async function sealKey(
   preparePrivateDirectory(directory);
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
-  if (exists(privateBlob))
+  if (exists(privateBlob)) {
+    // A lone private blob is a sealed key whose pair is gone: a recovery
+    // condition, and setup must not run over it (DEC-262 a16).
+    if (!exists(publicBlob)) throw new Tpm2Error("key_incomplete", directory);
     throw new Tpm2Error(
       "directory_unusable",
       `${privateBlob} already holds a sealed key; it is not replaced`,
     );
+  }
   // The commit marker is absent, so a public blob is a leftover.
   removeIfPresent(publicBlob);
   const partials = [
@@ -951,8 +958,11 @@ export async function withLoadedKey<T>(
   requirePrivate(directory, "directory");
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
-  if (!exists(privateBlob) || !exists(publicBlob))
-    throw new Tpm2Error("key_not_sealed", directory);
+  // The private blob is the commit marker, so it alone says a key exists: a
+  // lone .priv is a sealed key whose pair is gone (DEC-262 a16: recovery, never
+  // a re-init), and a lone .pub or neither is not sealed.
+  if (!exists(privateBlob)) throw new Tpm2Error("key_not_sealed", directory);
+  if (!exists(publicBlob)) throw new Tpm2Error("key_incomplete", directory);
   requirePrivateFile(publicBlob);
   requirePrivateFile(privateBlob);
   let scratch: string;
@@ -1009,6 +1019,11 @@ export async function withLoadedKey<T>(
 //   Session-Attributes: continuesession|decrypt|encrypt
 // exactly one Session-Attributes line (a trailing \r tolerated) whose value is
 // one token split on "|"; the only other line allowed is a Session-Handle line.
+// The vocabulary is the six attribute names of tpm2_sessionconfig(1), the
+// --enable-/--disable- options of the tpm2-tools 5.6 man page (read on the
+// jetson, 2026-11-09): continuesession, auditexclusive, auditreset, decrypt,
+// encrypt, audit. A token not on that list is not in the set, and a printout
+// carrying one is "unparsed", never "off" (DEC-262 a15 NB6, a16 condition).
 const sessionAttributeVocabulary = new Set([
   "continuesession",
   "decrypt",

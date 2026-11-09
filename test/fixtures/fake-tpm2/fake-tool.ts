@@ -21,7 +21,9 @@
 // a test can assert the ORDER of calls and what a tool saw. tpm2_unseal writes
 // the 32-byte synthetic key 0x5a to stdout (`short-unseal`: 31 bytes);
 // tpm2_sessionconfig with no --enable/--disable prints the attributes
-// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"; `wide-on-enable` and
+// (`session-off`: no encrypt; `session-no-decrypt`: measured shape, decrypt
+// missing; `session-unknown-token`: measured shape plus a token outside the
+// vocabulary; `session-zero`: "encrypt: 0"; `wide-on-enable` and
 // `wide-on-read` widen the session file to 0660 at that call). The default
 // printout is the real tpm2-tools 5.6 output, measured on the jetson on
 // 2026-11-09; the two off modes are inventions that exercise the fail-closed
@@ -153,9 +155,13 @@ if (
   process.stdout.write(
     mode === "session-off"
       ? "Session-Attributes: continuesession\n"
-      : mode === "session-zero"
-        ? "decrypt: 1\nencrypt: 0\n"
-        : "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
+      : mode === "session-no-decrypt"
+        ? "Session-Handle: 0x02000000\nSession-Attributes: continuesession|encrypt\n"
+        : mode === "session-unknown-token"
+          ? "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt|newattr\n"
+          : mode === "session-zero"
+            ? "decrypt: 1\nencrypt: 0\n"
+            : "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
   );
 if (mode === "grandchild") {
   const held = Bun.spawn(["/bin/sleep", "60"], {
