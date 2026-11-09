@@ -415,7 +415,7 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     chmodSync(path, 0o755);
   };
 
-  test("accept: a script tool whose interpreter is a walked absolute path, and env", () => {
+  test("accept: a script tool whose interpreter is a regular binary at a walked absolute path, and env", () => {
     const tree = trustedTree("shebang-ok");
     script(join(tree.bin, "tpm2_create"), "#!/bin/sh\nexit 0\n");
     expect(() => detect({ path: tree.bin, device: DEVICE })).not.toThrow();
@@ -441,22 +441,14 @@ describe("a tool is trusted only after an ownership and mode walk", () => {
     }
   });
 
-  test("an interpreter that is itself a script is followed, to a bound", () => {
-    const tree = trustedTree("shebang-chain");
-    const loose = dir(join(tree.base, "loose"), 0o777);
-    script(join(loose, "sh"), "#!/bin/sh\n");
-    script(join(tree.bin, "inner"), `#!${join(loose, "sh")}\n`);
+  test("reject: an interpreter that is itself a script, even in a walked directory", () => {
+    const tree = trustedTree("shebang-script-interpreter");
+    script(join(tree.bin, "inner"), "#!/bin/sh\nexit 0\n");
     script(join(tree.bin, "tpm2_create"), `#!${join(tree.bin, "inner")}\n`);
-    expect(
-      untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
-    ).toContain(`${loose} is owned by`);
-    for (let i = 0; i < 6; i++)
-      script(join(tree.bin, `hop${i}`), `#!${join(tree.bin, `hop${i + 1}`)}\n`);
-    script(join(tree.bin, "hop6"), "#!/bin/sh\n");
-    script(join(tree.bin, "tpm2_create"), `#!${join(tree.bin, "hop0")}\n`);
-    expect(
-      untrusted(() => detect({ path: tree.bin, device: DEVICE })).detail,
-    ).toContain("nest too deep");
+    const error = untrusted(() => detect({ path: tree.bin, device: DEVICE }));
+    expect(error.detail).toContain(
+      `${join(tree.bin, "inner")} is itself a script`,
+    );
   });
 
   test("a helper findable only on the parent's PATH is not found by a tool", async () => {

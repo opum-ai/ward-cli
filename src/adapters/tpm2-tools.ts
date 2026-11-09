@@ -193,42 +193,40 @@ export function walkToolTrustForTest(
   checkExecutable(toolPath, policy);
 }
 
-// DEC-262 (a12): an executable is the walked file plus whatever its shebang
-// names. A script's interpreter must be an absolute path that passes the same
-// walk (a relative one is refused); "#!/usr/bin/env X" is accepted by walking
-// env, and the child's confined PATH (toolSearchPath) bounds where X is found.
-// An interpreter that is itself a script is followed, to the kernel's depth.
-// Shared libraries are a recorded residual and are not examined.
-const maxShebangDepth = 4;
-
-function checkExecutable(
-  toolPath: string,
-  policy: ToolTrustPolicy,
-  depth = 0,
-): void {
-  const finalPath = walkToolTrust(toolPath, policy, "file");
+// DEC-262 (a12), (a13): an executable is the walked file plus whatever its
+// shebang names. A script's interpreter must be an absolute path that passes
+// the same walk (a relative one is refused) and must not itself be a "#!"
+// script: the chain is not followed, it is refused. "#!/usr/bin/env X" is
+// accepted by walking env; the child's confined PATH (toolSearchPath) bounds
+// where X is found. Shared libraries are a recorded residual, not examined.
+function shebangLine(path: string): string | undefined {
   const buffer = Buffer.alloc(256);
-  const descriptor = openSync(finalPath, "r");
+  const descriptor = openSync(path, "r");
   let read: number;
   try {
     read = readSync(descriptor, buffer, 0, buffer.length, 0);
   } finally {
     closeSync(descriptor);
   }
-  if (read < 2 || buffer[0] !== 0x23 || buffer[1] !== 0x21) return;
-  const line = buffer.subarray(2, read).toString("latin1").split("\n")[0];
-  const interpreter = (line ?? "").trim().split(/\s+/)[0] ?? "";
+  if (read < 2 || buffer[0] !== 0x23 || buffer[1] !== 0x21) return undefined;
+  return buffer.subarray(2, read).toString("latin1").split("\n")[0] ?? "";
+}
+
+function checkExecutable(toolPath: string, policy: ToolTrustPolicy): void {
+  const line = shebangLine(walkToolTrust(toolPath, policy, "file"));
+  if (line === undefined) return;
+  const interpreter = line.trim().split(/\s+/)[0] ?? "";
   if (!isAbsolute(interpreter))
     throw new Tpm2Error(
       "tool_untrusted",
       `${toolPath}: its shebang interpreter "${interpreter}" is not an absolute path`,
     );
-  if (depth >= maxShebangDepth)
+  const final = walkToolTrust(interpreter, policy, "file");
+  if (shebangLine(final) !== undefined)
     throw new Tpm2Error(
       "tool_untrusted",
-      `${toolPath}: shebang interpreters nest too deep`,
+      `${toolPath}: its shebang interpreter ${interpreter} is itself a script`,
     );
-  checkExecutable(interpreter, policy, depth + 1);
 }
 
 // The directories a child may search, and the only ones: the tool's own, then
