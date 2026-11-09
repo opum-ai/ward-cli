@@ -14,11 +14,13 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readlinkSync,
   readSync,
   realpathSync,
+  rmSync,
   statSync,
   type Stats,
   unlinkSync,
@@ -54,6 +56,7 @@ export type Tpm2Reason =
   | "directory_unusable"
   | "platform_unsupported"
   | "blob_not_user_private"
+  | "key_not_sealed"
   | "tool_untrusted"
   | "tool_timeout"
   | "tool_output_too_large"
@@ -68,6 +71,7 @@ const remedies: Record<Tpm2Reason, string> = {
   directory_unusable: "the blob directory could not be created",
   platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
+  key_not_sealed: "no sealed vault key is present",
   tool_untrusted: "a tpm2 tool is not trusted to receive the vault key",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
@@ -703,7 +707,7 @@ function removeIfPresent(path: string): void {
   }
 }
 
-function fsyncDirectory(directory: string): void {
+export function fsyncDirectory(directory: string): void {
   let fd: number;
   try {
     fd = openSync(directory, fileConstants.O_RDONLY);
@@ -712,6 +716,8 @@ function fsyncDirectory(directory: string): void {
   }
   try {
     fsyncSync(fd);
+  } catch (error) {
+    throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
   } finally {
     closeSync(fd);
   }
@@ -755,6 +761,11 @@ function exists(path: string): boolean {
 // blob is an interrupted earlier seal (a public area holds no key) and is
 // removed; a private blob is a sealed key and is never replaced. A failure
 // removes only what this call created.
+//
+// Caller contract: the caller holds the setup lock (SetupSession), so only one
+// seal runs in the directory; the exclusive link(2) is the backstop, not the
+// lock. A throw means NOT sealed, and nothing may be encrypted under the key
+// until sealKey has returned.
 export async function sealKey(
   presence: Tpm2Presence,
   key: Uint8Array,
@@ -810,13 +821,21 @@ export async function sealKey(
       try {
         linkSync(partial, final);
       } catch (error) {
+        const code = errnoCode(error);
         throw new Tpm2Error(
           "directory_unusable",
-          `${final} could not be published (${String(errnoCode(error) ?? "unknown")}); another writer may be sealing here`,
+          `${final} could not be published (${String(code ?? "unknown")})${code === "EEXIST" ? "; another writer may be sealing here" : ""}`,
         );
       }
       published.push(final);
-      unlinkSync(partial);
+      try {
+        unlinkSync(partial);
+      } catch (error) {
+        throw new Tpm2Error(
+          "directory_unusable",
+          `${partial} could not be removed after publication (${String(errnoCode(error) ?? "unknown")})`,
+        );
+      }
       // The public blob is durable before the private one can name the seal.
       fsyncDirectory(directory);
     }
@@ -831,4 +850,72 @@ export async function sealKey(
     throw error;
   }
   return { publicBlob, privateBlob };
+}
+
+export interface LoadedKey {
+  // A scratch directory private to this call, holding both contexts.
+  readonly directory: string;
+  readonly primary: string;
+  readonly keyContext: string;
+}
+
+// Loads the sealed key object under the pinned primary and hands the contexts
+// to use(); the session and the unseal itself are not here (they wait on the
+// salted-session measurement). The sealed blobs are read only when they are
+// exactly 0600 and this user's. Every call works in its own scratch directory,
+// because unseals run concurrently (each Ward command needs the key) and must
+// not share a context file; the scratch holds contexts only, never the key,
+// and is removed when use() returns or throws. No seal lock is taken: a seal
+// publishes the private blob last, so a key is either absent or complete.
+export async function withLoadedKey<T>(
+  presence: Tpm2Presence,
+  directory: string,
+  use: (loaded: LoadedKey) => Promise<T>,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
+  if (!isAbsolute(directory)) throw new Tpm2Error("blob_not_user_private");
+  requirePrivate(directory, "directory");
+  const publicBlob = join(directory, sealedPublicName);
+  const privateBlob = join(directory, sealedPrivateName);
+  if (!exists(privateBlob) || !exists(publicBlob))
+    throw new Tpm2Error("key_not_sealed", directory);
+  requirePrivateFile(publicBlob);
+  requirePrivateFile(privateBlob);
+  let scratch: string;
+  try {
+    scratch = mkdtempSync(join(directory, "unseal-"));
+  } catch (error) {
+    throw new Tpm2Error("directory_unusable", String(errnoCode(error)));
+  }
+  try {
+    const primary = await createPrimary(presence, scratch, options);
+    const keyContext = join(scratch, "key.ctx");
+    await runTool(
+      presence,
+      "tpm2_load",
+      [
+        "-C",
+        primary,
+        "-u",
+        publicBlob,
+        "-r",
+        privateBlob,
+        "-c",
+        keyContext,
+        "-Q",
+      ],
+      { cwd: scratch, timeoutMs: options.timeoutMs },
+    );
+    adoptToolFile(keyContext);
+    return await use({ directory: scratch, primary, keyContext });
+  } finally {
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      // A leftover key.ctx can be unsealed, with the empty auth, by anyone who
+      // can open /dev/tpmrm0 as this user, until a TPM reset. That is no more
+      // than the blobs beside it in this same 0700 directory already allow. Re-check
+      // this when 2b-2 adds session files to the scratch.
+    }
+  }
 }

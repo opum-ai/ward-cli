@@ -2,17 +2,21 @@
 //   <tool> <record-dir> <mode> [args...]
 // It records what it actually received - argv, the whole environment, and the
 // bytes on stdin - so a test can assert what the adapter passed, and nothing
-// reaches a real TPM. Like the real tools it writes a file for each -c, -u and
-// -r argument (the real ones leave them wider than 0600: WCLI-153, so these are
-// 0660 on purpose). Modes: `record` exits 0; `fail` exits 1; `hang` never
+// reaches a real TPM. Like the real tools it writes a file for each of that
+// tool's OUTPUT flags (the real ones leave them wider than 0600: WCLI-153, so
+// these are 0660 on purpose) and, like them, exits 3 when a file named by an
+// INPUT flag does not exist. The same letter is an output for one tool and an
+// input for another (-c), so both are tables. Modes: `record` exits 0; `fail` exits 1; `hang` never
 // exits; `touch-wide` also writes a 0660 file named by its first argument;
 // `flood` writes far more output than any tool should; `no-read` exits at once
 // without reading stdin; `flood-stderr` writes far more than the cap to stderr
 // and exits 0; `flood-stderr-fail` does that and exits 1; `race-final`
 // also creates the final name (the -r path without its ".partial" suffix), as
 // a second writer would between the check and the publish; `grandchild` leaves a process holding its stdout open
-// (its pid in <record-dir>/grandchild.pid) and exits 0.
-import { chmodSync, writeFileSync } from "node:fs";
+// (its pid in <record-dir>/grandchild.pid) and exits 0; `lock-directory` makes
+// its working directory read-only (0500) once its outputs exist, so a later
+// link(2) into it fails with EACCES for any non-root user.
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [tool, recordDirectory, mode, ...args] = process.argv.slice(2);
@@ -30,15 +34,37 @@ writeFileSync(
     stdinHex: stdin.toString("hex"),
   }),
 );
+const outputFlags: Record<string, readonly string[]> = {
+  tpm2_createprimary: ["-c"],
+  tpm2_create: ["-u", "-r"],
+  tpm2_load: ["-c"],
+  tpm2_startauthsession: ["-S"],
+};
+const inputFlags: Record<string, readonly string[]> = {
+  tpm2_create: ["-C"],
+  tpm2_load: ["-C", "-u", "-r"],
+  tpm2_unseal: ["-c"],
+  tpm2_startauthsession: ["-c"],
+};
 for (const [index, flag] of args.entries()) {
   const path = args[index + 1];
-  if ((flag === "-c" || flag === "-u" || flag === "-r") && path !== undefined) {
+  if (
+    path !== undefined &&
+    inputFlags[tool]?.includes(flag) &&
+    !existsSync(path)
+  )
+    process.exit(3);
+}
+for (const [index, flag] of args.entries()) {
+  const path = args[index + 1];
+  if (path !== undefined && outputFlags[tool]?.includes(flag)) {
     writeFileSync(path, `${tool} ${flag}`);
     chmodSync(path, 0o660);
     if (mode === "race-final" && flag === "-r" && path.endsWith(".partial"))
       writeFileSync(path.slice(0, -".partial".length), "planted");
   }
 }
+if (mode === "lock-directory") chmodSync(process.cwd(), 0o500);
 if (mode === "flood-stderr" || mode === "flood-stderr-fail")
   process.stderr.write("e".repeat(64 * 1024));
 if (mode === "hang") await new Promise(() => {});
