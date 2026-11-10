@@ -59,6 +59,7 @@ export type Tpm2Reason =
   | "blob_not_user_private"
   | "key_not_sealed"
   | "key_incomplete"
+  | "key_exists"
   | "session_not_encrypted"
   | "tool_incompatible"
   | "tool_untrusted"
@@ -77,6 +78,7 @@ const remedies: Record<Tpm2Reason, string> = {
   blob_not_user_private: "blob not user-private",
   key_not_sealed: "no sealed vault key is present",
   key_incomplete: "a sealed vault key exists but its pair is incomplete",
+  key_exists: "a sealed vault key already exists and is not replaced",
   session_not_encrypted:
     "the TPM session does not encrypt the unsealed key in transit",
   tool_incompatible:
@@ -119,6 +121,7 @@ export const tpm2ErrorCodes: Record<Tpm2Reason, ErrorCode> = {
   blob_not_user_private: "tpm_blob_not_user_private",
   key_not_sealed: "tpm_key_not_sealed",
   key_incomplete: "tpm_key_incomplete",
+  key_exists: "tpm_key_exists",
   tool_untrusted: "tpm_tool_untrusted",
   tool_timeout: "tpm_tool_timeout",
   tool_output_too_large: "tpm_tool_output_too_large",
@@ -610,7 +613,12 @@ export async function runTool(
       // must not drop a stdout that may be an unsealed key unzeroed.
       const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled(
         [
-          readCapped(child.stdout, tool),
+          // A refused stdout kills the child at once: waiting for stderr EOF or
+          // the exit would turn tool_output_too_large into tool_timeout.
+          readCapped(child.stdout, tool).catch((error: unknown) => {
+            child.kill(9);
+            throw error;
+          }),
           readCapped(child.stderr, tool, "truncate"),
           child.exited,
         ],
@@ -854,10 +862,7 @@ export async function sealKey(
     // A lone private blob is a sealed key whose pair is gone: a recovery
     // condition, and setup must not run over it (DEC-262 a16).
     if (!exists(publicBlob)) throw new Tpm2Error("key_incomplete", directory);
-    throw new Tpm2Error(
-      "directory_unusable",
-      `${privateBlob} already holds a sealed key; it is not replaced`,
-    );
+    throw new Tpm2Error("key_exists", privateBlob);
   }
   // The commit marker is absent, so a public blob is a leftover.
   removeIfPresent(publicBlob);
@@ -899,8 +904,10 @@ export async function sealKey(
         linkSync(partial, final);
       } catch (error) {
         const code = errnoCode(error);
+        // EEXIST is another writer sealing here: a key now exists (key_exists);
+        // any other failure to publish is the directory (directory_unusable).
         throw new Tpm2Error(
-          "directory_unusable",
+          code === "EEXIST" ? "key_exists" : "directory_unusable",
           `${final} could not be published (${String(code ?? "unknown")})${code === "EEXIST" ? "; another writer may be sealing here" : ""}`,
         );
       }
@@ -917,7 +924,10 @@ export async function sealKey(
       fsyncDirectory(directory);
     }
   } catch (error) {
-    for (const path of [...partials, ...published]) {
+    // Reverse publication order: the private blob (the commit marker) goes
+    // first, so an interrupted cleanup never leaves a lone .priv for a key that
+    // was never committed.
+    for (const path of [...partials, ...[...published].reverse()]) {
       try {
         unlinkSync(path);
       } catch {
@@ -1017,8 +1027,8 @@ export async function withLoadedKey<T>(
 // The measured shape (tpm2-tools 5.6, jetson, 2026-11-09) is
 //   Session-Handle: 0x02000000
 //   Session-Attributes: continuesession|decrypt|encrypt
-// exactly one Session-Attributes line (a trailing \r tolerated) whose value is
-// one token split on "|"; the only other line allowed is a Session-Handle line.
+// exactly these two lines in this order (a trailing \r and a final newline
+// tolerated), the value split on "|" into vocabulary tokens, none repeated.
 // The vocabulary is the six attribute names of tpm2_sessionconfig(1), the
 // --enable-/--disable- options of the tpm2-tools 5.6 man page (read on the
 // jetson, 2026-11-09): continuesession, auditexclusive, auditreset, decrypt,
@@ -1037,16 +1047,19 @@ export type SessionPrintout = "on" | "off" | "unparsed";
 function classifySessionPrintout(printout: string): SessionPrintout {
   const lines = printout.split("\n").map((line) => line.replace(/\r$/, ""));
   if (lines.at(-1) === "") lines.pop();
-  let attributes: string | undefined;
-  for (const line of lines) {
-    if (/^Session-Handle: 0x[0-9a-fA-F]+$/.test(line)) continue;
-    const match = /^Session-Attributes: (\S+)$/.exec(line);
-    if (match === null || attributes !== undefined) return "unparsed";
-    attributes = match[1];
-  }
-  if (attributes === undefined) return "unparsed";
-  const names = attributes.split("|");
-  if (!names.every((name) => sessionAttributeVocabulary.has(name)))
+  // Exactly two lines, in this order: a changed shape is unparsed.
+  if (lines.length !== 2) return "unparsed";
+  if (!/^Session-Handle: 0x[0-9a-fA-F]+$/.test(lines[0] ?? ""))
+    return "unparsed";
+  const match = /^Session-Attributes: (\S+)$/.exec(lines[1] ?? "");
+  if (match === null) return "unparsed";
+  const names = (match[1] ?? "").split("|");
+  // Any subset of the vocabulary, each at most once: a token outside it, or a
+  // repeated one, means the tool's output changed.
+  if (
+    !names.every((name) => sessionAttributeVocabulary.has(name)) ||
+    new Set(names).size !== names.length
+  )
     return "unparsed";
   return names.includes("decrypt") && names.includes("encrypt") ? "on" : "off";
 }
@@ -1066,7 +1079,7 @@ async function toolsVersion(
       cwd: directory,
       timeoutMs,
     });
-    const match = /version="([0-9A-Za-z.+~-]{1,32})"/.exec(
+    const match = /(?:^|\s)version="([0-9A-Za-z.+~-]{1,32})"(?=\s|$)/.exec(
       Buffer.from(run.stdout).toString("utf8"),
     );
     return match?.[1] ?? "unknown";

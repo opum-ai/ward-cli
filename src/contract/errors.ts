@@ -185,6 +185,11 @@ export const errorCatalog = {
       "A sealed vault key exists but its pair is incomplete, so Ward cannot load it. Ward did not change it.",
     hint: "Do not run `ward setup`: this is a recovery condition, and Ward will not create a new key over a sealed one.",
   },
+  tpm_key_exists: {
+    type: "conflict",
+    message:
+      "A sealed vault key already exists. Ward does not replace an existing key.",
+  },
   tpm_tool_untrusted: {
     type: "validation",
     message:

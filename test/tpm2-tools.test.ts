@@ -1412,7 +1412,7 @@ describe("sealing the vault key", () => {
     rmSync(join(records, "tpm2_create.json"));
     await expect(
       sealKey(presence, new Uint8Array(32).fill(7), directory),
-    ).rejects.toMatchObject({ reason: "directory_unusable" });
+    ).rejects.toMatchObject({ reason: "key_exists" });
     expect([statSync(privatePath).ino, statSync(publicPath).ino]).toEqual(
       before,
     );
@@ -1445,7 +1445,8 @@ describe("sealing the vault key", () => {
       () => undefined,
       (caught: unknown) => caught,
     );
-    expect(error).toMatchObject({ reason: "directory_unusable" });
+    // A second writer's key exists now: key_exists, not directory_unusable.
+    expect(error).toMatchObject({ reason: "key_exists" });
     // The another-writer hint is given for EEXIST only.
     expect((error as Error).message).toContain("(EEXIST); another writer");
     expect(readFileSync(join(directory, sealedPrivateName), "utf8")).toBe(
@@ -1518,6 +1519,20 @@ describe("sealing the vault key", () => {
     },
   );
 
+  test("the failure cleanup removes the private blob (the commit marker) before the public one", () => {
+    // An interrupted cleanup must never leave a lone .priv for a key that was
+    // never committed (that reads as key_incomplete, a permanent recovery
+    // condition). A forced mid-cleanup failure is not reachable from a test, so
+    // this pins the reverse order in the source.
+    const source = readFileSync(
+      join(import.meta.dir, "..", "src", "adapters", "tpm2-tools.ts"),
+      "utf8",
+    );
+    const seal = source.slice(source.indexOf("export async function sealKey"));
+    expect(seal).toContain("...[...published].reverse()");
+    expect(seal).not.toContain("[...partials, ...published]");
+  });
+
   test("a noisy stderr is truncated, not refused (WCLI-157)", async () => {
     const { directory, presence } = sealable({
       tpm2_createprimary: "flood-stderr",
@@ -1534,6 +1549,17 @@ describe("sealing the vault key", () => {
     await expect(sealKey(presence, key, directory)).rejects.toMatchObject({
       reason: "tool_failed",
     });
+  });
+
+  test("a noisy stdout from a tool that stays alive is refused at once, not after the bound", async () => {
+    const { directory, presence } = sealable({
+      tpm2_createprimary: "flood-hang",
+    });
+    // With the child killed on the refusal this is tool_output_too_large at
+    // once; waiting for its exit would make it tool_timeout after 3 s.
+    await expect(
+      sealKey(presence, key, directory, { timeoutMs: 3000 }),
+    ).rejects.toMatchObject({ reason: "tool_output_too_large" });
   });
 
   test("a noisy stdout is still refused", async () => {
@@ -1763,6 +1789,26 @@ describe("loading the sealed key", () => {
     ).toBe(true);
   });
 
+  test.skipIf(process.getuid?.() === 0)(
+    "a path that cannot be looked at is directory_unusable, never not sealed",
+    async () => {
+      const { base, records, directory, presence } = await sealed();
+      rmSync(join(records, "tpm2_createprimary.json"), { force: true });
+      const parent = join(base, "closed");
+      mkdirSync(parent);
+      chmodSync(parent, 0o000);
+      try {
+        await expect(
+          withLoadedKey(presence, join(parent, "ward-tpm"), async () => 1),
+        ).rejects.toMatchObject({ reason: "directory_unusable" });
+      } finally {
+        chmodSync(parent, 0o700);
+      }
+      expect(existsSync(join(records, "tpm2_createprimary.json"))).toBe(false);
+      expect(existsSync(directory)).toBe(true);
+    },
+  );
+
   test("a lone public blob is key_not_sealed", async () => {
     const { directory, presence } = await sealed();
     rmSync(join(directory, sealedPrivateName));
@@ -1927,6 +1973,28 @@ describe("unsealing the sealed key", () => {
     }
   });
 
+  test("a version that does not match the measured line is shown as unknown, never echoed", async () => {
+    for (const versionMode of [
+      "version-fail",
+      "version-long",
+      "version-quote",
+      "version-ansi",
+      "version-newline",
+    ]) {
+      const { directory, presence } = await sealed({
+        tpm2_sessionconfig: `session-zero+${versionMode}`,
+      });
+      const error = await unsealKey(presence, directory).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect([versionMode, error]).toMatchObject([
+        versionMode,
+        { reason: "tool_incompatible", detail: "tpm2-tools unknown" },
+      ]);
+    }
+  });
+
   test("a wrong-length output is tool_failed and no bytes are returned", async () => {
     const { directory, presence } = await sealed({
       tpm2_unseal: "short-unseal",
@@ -1965,48 +2033,61 @@ describe("unsealing the sealed key", () => {
   test("the printout is classified on, off or unparsed, and only on unseals", () => {
     const real =
       "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n";
+    const handle = "Session-Handle: 0x02000000\n";
     const on = [
       real,
       real.replaceAll("\n", "\r\n"),
-      "Session-Attributes: encrypt|decrypt|continuesession",
-      "Session-Attributes: continuesession|decrypt|encrypt|audit\n",
+      `${handle}Session-Attributes: encrypt|decrypt|continuesession`,
+      `${handle}Session-Attributes: continuesession|decrypt|encrypt|audit\n`,
     ];
+    // The measured off shapes (probe 4): --disable-encrypt, --disable-decrypt.
     const off = [
-      "Session-Attributes: continuesession|decrypt\n",
-      "Session-Attributes: continuesession|encrypt\n",
-      "Session-Attributes: continuesession\n",
-      "Session-Handle: 0x02000000\nSession-Attributes: continuesession\n",
+      `${handle}Session-Attributes: continuesession|decrypt\n`,
+      `${handle}Session-Attributes: continuesession|encrypt\n`,
+      `${handle}Session-Attributes: continuesession\n`,
+      `${handle}Session-Attributes: audit\n`,
     ];
     const unparsed = [
       "",
-      "Session-Handle: 0x02000000\n",
+      handle,
+      // The handle line is required, once, and first.
+      "Session-Attributes: continuesession|decrypt|encrypt\n",
+      "Session-Attributes: encrypt|decrypt|continuesession\n",
+      "Session-Attributes: continuesession\n",
+      "Session-Attributes: continuesession|decrypt\n",
+      `${handle}${handle}Session-Attributes: continuesession|decrypt|encrypt\n`,
+      `Session-Attributes: continuesession|decrypt|encrypt\n${handle}`,
+      // A repeated token.
+      `${handle}Session-Attributes: continuesession|decrypt|decrypt|encrypt\n`,
+      `${handle}Session-Attributes: continuesession|encrypt|encrypt\n`,
       // Lookalike names: a token outside the vocabulary means it changed.
-      "Session-Attributes: continuesession|decrypt|encrypt_x\n",
-      "Session-Attributes: continuesession|decrypt|encrypt-off\n",
-      "Session-Attributes: continuesession|decrypt|no-encrypt\n",
-      "Session-Attributes: continuesession|decrypt|!encrypt\n",
-      "Session-Attributes: continuesession|decrypt|encrypt2\n",
-      "Session-Attributes: continuesession|decrypt|Encrypt\n",
+      `${handle}Session-Attributes: continuesession|decrypt|encrypt_x\n`,
+      `${handle}Session-Attributes: continuesession|decrypt|encrypt-off\n`,
+      `${handle}Session-Attributes: continuesession|decrypt|no-encrypt\n`,
+      `${handle}Session-Attributes: continuesession|decrypt|!encrypt\n`,
+      `${handle}Session-Attributes: continuesession|decrypt|encrypt2\n`,
+      `${handle}Session-Attributes: continuesession|decrypt|Encrypt\n`,
       // Values after a name, spaces, other separators.
-      "Session-Attributes: continuesession|decrypt|encrypt 0\n",
-      "Session-Attributes: decrypt encrypt\n",
-      "Session-Attributes: decrypt,encrypt\n",
-      "Session-Attributes: continuesession|decrypt|encrypt=0\n",
+      `${handle}Session-Attributes: continuesession|decrypt|encrypt 0\n`,
+      `${handle}Session-Attributes: decrypt encrypt\n`,
+      `${handle}Session-Attributes: decrypt,encrypt\n`,
+      `${handle}Session-Attributes: continuesession|decrypt|encrypt=0\n`,
       "encrypt: 0\ndecrypt: 1\n",
       "encrypt: disabled\ndecrypt: 1\n",
       "encrypt: n\ndecrypt: 1\n",
       "encrypt: 0x0\ndecrypt: 1\n",
       // A line that merely mentions the words.
-      "Session-Attributes: continuesession\nWARNING: decrypt/encrypt not supported\n",
+      `${handle}Session-Attributes: continuesession\nWARNING: decrypt/encrypt not supported\n`,
       // Duplicates: first match must not win.
-      "Session-Attributes: continuesession|decrypt|encrypt\nSession-Attributes: continuesession\n",
-      "Session-Attributes: continuesession\nSession-Attributes: continuesession|decrypt|encrypt\n",
-      "Session-Attributes: continuesession|decrypt|encrypt\nencrypt: 0\n",
+      `${real}Session-Attributes: continuesession\n`,
+      `${handle}Session-Attributes: continuesession\nSession-Attributes: continuesession|decrypt|encrypt\n`,
+      `${real}encrypt: 0\n`,
       // Anything else around the measured shape.
       `${real}extra line\n`,
       "Session-Handle: nope\nSession-Attributes: continuesession|decrypt|encrypt\n",
-      " Session-Attributes: continuesession|decrypt|encrypt\n",
-      "session-attributes: continuesession|decrypt|encrypt\n",
+      " Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
+      "session-handle: 0x02000000\nsession-attributes: continuesession|decrypt|encrypt\n",
+      `${handle}Session-Attributes: \n`,
     ];
     const verdicts = (inputs: string[]) =>
       inputs.map((input) => [input, classifySessionPrintoutForTest(input)]);
@@ -2015,7 +2096,7 @@ describe("unsealing the sealed key", () => {
     expect(verdicts(unparsed)).toEqual(
       unparsed.map((input) => [input, "unparsed"]),
     );
-    expect([on.length, off.length, unparsed.length]).toEqual([4, 4, 24]);
+    expect([on.length, off.length, unparsed.length]).toEqual([4, 4, 33]);
   });
 
   // The a16 condition, both ways, through the whole call: a measured-shape
@@ -2111,7 +2192,7 @@ describe("unsealing the sealed key", () => {
 describe("every Tpm2Reason has its own contract code", () => {
   test("the codes are pairwise distinct and each is in the error catalog", () => {
     const codes = Object.values(tpm2ErrorCodes);
-    expect(codes.length).toBeGreaterThanOrEqual(15);
+    expect(codes.length).toBeGreaterThanOrEqual(16);
     expect(new Set(codes).size).toBe(codes.length);
     for (const code of codes) expect(code in errorCatalog).toBe(true);
   });
@@ -2127,6 +2208,7 @@ describe("every Tpm2Reason has its own contract code", () => {
     );
     expect(tpm2ErrorCodes.key_not_sealed).toBe("tpm_key_not_sealed");
     expect(tpm2ErrorCodes.key_incomplete).toBe("tpm_key_incomplete");
+    expect(tpm2ErrorCodes.key_exists).toBe("tpm_key_exists");
     expect(tpm2ErrorCodes.tool_untrusted).toBe("tpm_tool_untrusted");
     // NB6: not-encrypted and not-recognised are two codes.
     expect(tpm2ErrorCodes.session_not_encrypted).not.toBe(
