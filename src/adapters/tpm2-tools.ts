@@ -26,6 +26,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import { type ErrorCode, WardError } from "../contract/errors.ts";
 import { isPrivateEntry } from "./sqlite-vault-store.ts";
 
 export const tpmDevicePath = "/dev/tpmrm0";
@@ -57,7 +58,10 @@ export type Tpm2Reason =
   | "platform_unsupported"
   | "blob_not_user_private"
   | "key_not_sealed"
+  | "key_incomplete"
+  | "key_exists"
   | "session_not_encrypted"
+  | "tool_incompatible"
   | "tool_untrusted"
   | "tool_timeout"
   | "tool_output_too_large"
@@ -73,8 +77,12 @@ const remedies: Record<Tpm2Reason, string> = {
   platform_unsupported: "this platform cannot open a blob file safely",
   blob_not_user_private: "blob not user-private",
   key_not_sealed: "no sealed vault key is present",
+  key_incomplete: "a sealed vault key exists but its pair is incomplete",
+  key_exists: "a sealed vault key already exists and is not replaced",
   session_not_encrypted:
     "the TPM session does not encrypt the unsealed key in transit",
+  tool_incompatible:
+    "a tpm2 tool printed something Ward does not recognise about the session",
   tool_untrusted: "a tpm2 tool is not trusted to receive the vault key",
   tool_timeout: "a tpm2 tool did not finish in time",
   tool_output_too_large: "a tpm2 tool wrote more output than any tool should",
@@ -94,6 +102,38 @@ export class Tpm2Error extends Error {
     this.reason = reason;
     this.detail = detail;
   }
+}
+
+// DEC-262 (a15): each Tpm2Reason maps to exactly ONE contract code, never
+// merged. The Record type makes a new reason fail to compile until it has a
+// code, and a test holds the values pairwise distinct. A doctor state may group
+// codes (the unsupported state is both tpm_absent and tpm_platform_unsupported);
+// the codes themselves are never shared. A missing state directory is
+// key_not_sealed (no blob exists); an existing directory or blob that is not
+// 0700 or 0600 is blob_not_user_private (a2 s3).
+export const tpm2ErrorCodes: Record<Tpm2Reason, ErrorCode> = {
+  tpm_absent: "tpm_absent",
+  tools_absent: "tpm_tools_absent",
+  tpm_not_accessible: "tpm_access_refused",
+  tpm_unusable: "tpm_unusable",
+  directory_unusable: "tpm_state_directory_unusable",
+  platform_unsupported: "tpm_platform_unsupported",
+  blob_not_user_private: "tpm_blob_not_user_private",
+  key_not_sealed: "tpm_key_not_sealed",
+  key_incomplete: "tpm_key_incomplete",
+  key_exists: "tpm_key_exists",
+  tool_untrusted: "tpm_tool_untrusted",
+  tool_timeout: "tpm_tool_timeout",
+  tool_output_too_large: "tpm_tool_output_too_large",
+  tool_failed: "tpm_tool_failed",
+  session_not_encrypted: "tpm_session_not_encrypted",
+  tool_incompatible: "tpm_tool_incompatible",
+};
+
+// The contract error for a TPM failure. The text is the catalog's fixed text:
+// the reason's detail (a path, a tool version) is not carried into it.
+export function wardErrorFor(error: Tpm2Error): WardError {
+  return new WardError(tpm2ErrorCodes[error.reason]);
 }
 
 export interface Tpm2Host {
@@ -518,6 +558,8 @@ async function readCapped(
       if (done) break;
       if (size + value.length > maxToolOutputBytes) {
         if (overflow === "refuse") {
+          // The chunk that crosses the cap is not kept in `chunks`: zero it.
+          value.fill(0);
           await reader.cancel().catch(() => undefined);
           throw new Tpm2Error("tool_output_too_large", tool);
         }
@@ -567,11 +609,34 @@ export async function runTool(
       // Judged by the exit status below.
     }
     try {
-      const [stdout, stderr, code] = await Promise.all([
-        readCapped(child.stdout, tool),
-        readCapped(child.stderr, tool, "truncate"),
-        child.exited,
-      ]);
+      // allSettled, not all: a stderr that errors after stdout has resolved
+      // must not drop a stdout that may be an unsealed key unzeroed.
+      const [stdoutResult, stderrResult, exitResult] = await Promise.allSettled(
+        [
+          // A refused stdout kills the child at once: waiting for stderr EOF or
+          // the exit would turn tool_output_too_large into tool_timeout.
+          readCapped(child.stdout, tool).catch((error: unknown) => {
+            child.kill(9);
+            throw error;
+          }),
+          readCapped(child.stderr, tool, "truncate"),
+          child.exited,
+        ],
+      );
+      if (
+        stdoutResult.status !== "fulfilled" ||
+        stderrResult.status !== "fulfilled" ||
+        exitResult.status !== "fulfilled"
+      ) {
+        if (stdoutResult.status === "fulfilled") stdoutResult.value.fill(0);
+        const failed = [stdoutResult, stderrResult, exitResult].find(
+          (result) => result.status === "rejected",
+        );
+        throw (failed as PromiseRejectedResult).reason;
+      }
+      const stdout = stdoutResult.value;
+      const stderr = stderrResult.value;
+      const code = exitResult.value;
       // Nobody receives this stdout when the tool failed or the call already
       // timed out: it may be an unsealed key, so it is zeroed, not dropped.
       if (code !== 0 || abandoned) {
@@ -793,11 +858,12 @@ export async function sealKey(
   preparePrivateDirectory(directory);
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
-  if (exists(privateBlob))
-    throw new Tpm2Error(
-      "directory_unusable",
-      `${privateBlob} already holds a sealed key; it is not replaced`,
-    );
+  if (exists(privateBlob)) {
+    // A lone private blob is a sealed key whose pair is gone: a recovery
+    // condition, and setup must not run over it (DEC-262 a16).
+    if (!exists(publicBlob)) throw new Tpm2Error("key_incomplete", directory);
+    throw new Tpm2Error("key_exists", privateBlob);
+  }
   // The commit marker is absent, so a public blob is a leftover.
   removeIfPresent(publicBlob);
   const partials = [
@@ -838,8 +904,10 @@ export async function sealKey(
         linkSync(partial, final);
       } catch (error) {
         const code = errnoCode(error);
+        // EEXIST is another writer sealing here: a key now exists (key_exists);
+        // any other failure to publish is the directory (directory_unusable).
         throw new Tpm2Error(
-          "directory_unusable",
+          code === "EEXIST" ? "key_exists" : "directory_unusable",
           `${final} could not be published (${String(code ?? "unknown")})${code === "EEXIST" ? "; another writer may be sealing here" : ""}`,
         );
       }
@@ -856,7 +924,10 @@ export async function sealKey(
       fsyncDirectory(directory);
     }
   } catch (error) {
-    for (const path of [...partials, ...published]) {
+    // Reverse publication order: the private blob (the commit marker) goes
+    // first, so an interrupted cleanup never leaves a lone .priv for a key that
+    // was never committed.
+    for (const path of [...partials, ...[...published].reverse()]) {
       try {
         unlinkSync(path);
       } catch {
@@ -891,11 +962,17 @@ export async function withLoadedKey<T>(
 ): Promise<T> {
   if (!isAbsolute(directory))
     throw new Tpm2Error("blob_not_user_private", "not an absolute path");
+  // No state directory means no blob exists: not sealed. Only ENOENT reads so;
+  // any other failure to look is a refusal, never "not sealed".
+  if (!exists(directory)) throw new Tpm2Error("key_not_sealed", directory);
   requirePrivate(directory, "directory");
   const publicBlob = join(directory, sealedPublicName);
   const privateBlob = join(directory, sealedPrivateName);
-  if (!exists(privateBlob) || !exists(publicBlob))
-    throw new Tpm2Error("key_not_sealed", directory);
+  // The private blob is the commit marker, so it alone says a key exists: a
+  // lone .priv is a sealed key whose pair is gone (DEC-262 a16: recovery, never
+  // a re-init), and a lone .pub or neither is not sealed.
+  if (!exists(privateBlob)) throw new Tpm2Error("key_not_sealed", directory);
+  if (!exists(publicBlob)) throw new Tpm2Error("key_incomplete", directory);
   requirePrivateFile(publicBlob);
   requirePrivateFile(privateBlob);
   let scratch: string;
@@ -939,33 +1016,77 @@ export async function withLoadedKey<T>(
   }
 }
 
-// True only when the session-config printout is EXACTLY the measured shape
-// (tpm2-tools 5.6, jetson, 2026-11-09) and its attribute list has both decrypt
-// and encrypt on:
+// DEC-262 (a15) NB6: what a session-config printout says. "on" and "off" are
+// the two parsed answers; everything else is "unparsed", and none of the three
+// lets an unseal through unless it is "on".
+//   on       the measured shape and decrypt AND encrypt are both listed;
+//   off      the measured shape, and decrypt or encrypt is not listed (a
+//            security failure: the AC2 stop, session_not_encrypted);
+//   unparsed anything else, including a token outside the known tpm2-tools
+//            attribute vocabulary (the tool changed: tool_incompatible).
+// The measured shape (tpm2-tools 5.6, jetson, 2026-11-09) is
 //   Session-Handle: 0x02000000
 //   Session-Attributes: continuesession|decrypt|encrypt
-// Fail-closed: exactly one Session-Attributes line (a trailing \r tolerated)
-// whose value is one token split on "|" containing the exact names decrypt and
-// encrypt; the only other line allowed is a Session-Handle line. Zero or two
-// attribute lines, an extra line, a different separator or any other shape is
-// refused, so a tool build that prints something new stops the unseal instead
-// of letting it through unencrypted.
-function sessionAttributesOn(printout: string): boolean {
+// exactly these two lines in this order (a trailing \r and a final newline
+// tolerated), the value split on "|" into vocabulary tokens, none repeated.
+// The vocabulary is the six attribute names of tpm2_sessionconfig(1), the
+// --enable-/--disable- options of the tpm2-tools 5.6 man page (read on the
+// jetson, 2026-11-09): continuesession, auditexclusive, auditreset, decrypt,
+// encrypt, audit. A token not on that list is not in the set, and a printout
+// carrying one is "unparsed", never "off" (DEC-262 a15 NB6, a16 condition).
+const sessionAttributeVocabulary = new Set([
+  "continuesession",
+  "decrypt",
+  "encrypt",
+  "audit",
+  "auditexclusive",
+  "auditreset",
+]);
+export type SessionPrintout = "on" | "off" | "unparsed";
+
+function classifySessionPrintout(printout: string): SessionPrintout {
   const lines = printout.split("\n").map((line) => line.replace(/\r$/, ""));
   if (lines.at(-1) === "") lines.pop();
-  let attributes: string | undefined;
-  for (const line of lines) {
-    if (/^Session-Handle: 0x[0-9a-fA-F]+$/.test(line)) continue;
-    const match = /^Session-Attributes: (\S+)$/.exec(line);
-    if (match === null || attributes !== undefined) return false;
-    attributes = match[1];
-  }
-  if (attributes === undefined) return false;
-  const names = attributes.split("|");
-  return names.includes("decrypt") && names.includes("encrypt");
+  // Exactly two lines, in this order: a changed shape is unparsed.
+  if (lines.length !== 2) return "unparsed";
+  if (!/^Session-Handle: 0x[0-9a-fA-F]+$/.test(lines[0] ?? ""))
+    return "unparsed";
+  const match = /^Session-Attributes: (\S+)$/.exec(lines[1] ?? "");
+  if (match === null) return "unparsed";
+  const names = (match[1] ?? "").split("|");
+  // Any subset of the vocabulary, each at most once: a token outside it, or a
+  // repeated one, means the tool's output changed.
+  if (
+    !names.every((name) => sessionAttributeVocabulary.has(name)) ||
+    new Set(names).size !== names.length
+  )
+    return "unparsed";
+  return names.includes("decrypt") && names.includes("encrypt") ? "on" : "off";
 }
 
-export const sessionAttributesOnForTest = sessionAttributesOn;
+export const classifySessionPrintoutForTest = classifySessionPrintout;
+
+// The tpm2-tools version, for a doctor state's display only: never a capability
+// check (presence is the capability, condition iii). Read from the measured
+// `--version` line, allowlisted and capped, "unknown" otherwise.
+async function toolsVersion(
+  presence: Tpm2Presence,
+  directory: string,
+  timeoutMs: number | undefined,
+): Promise<string> {
+  try {
+    const run = await runTool(presence, "tpm2_sessionconfig", ["--version"], {
+      cwd: directory,
+      timeoutMs,
+    });
+    const match = /(?:^|\s)version="([0-9A-Za-z.+~-]{1,32})"(?=\s|$)/.exec(
+      Buffer.from(run.stdout).toString("utf8"),
+    );
+    return match?.[1] ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 // Unseals the vault key (DEC-262 a9, opum-doc's slice-2 rules). Every call
 // loads the key in its own scratch (withLoadedKey), starts a FRESH salted HMAC
@@ -1013,8 +1134,14 @@ export async function unsealKey(
         const printout = Buffer.from(
           (await run("tpm2_sessionconfig", [session])).stdout,
         ).toString("utf8");
-        if (!sessionAttributesOn(printout))
+        const verdict = classifySessionPrintout(printout);
+        if (verdict === "off")
           throw new Tpm2Error("session_not_encrypted", "session");
+        if (verdict === "unparsed")
+          throw new Tpm2Error(
+            "tool_incompatible",
+            `tpm2-tools ${await toolsVersion(presence, loaded.directory, options.timeoutMs)}`,
+          );
         // Verified, never repaired, at the moment before the tool reads it.
         requirePrivateFile(session);
         const result = await run("tpm2_unseal", [

@@ -8,7 +8,8 @@
 // INPUT flag does not exist. The same letter is an output for one tool and an
 // input for another (-c), so both are tables. Modes: `record` exits 0; `fail` exits 1; `hang` never
 // exits; `touch-wide` also writes a 0660 file named by its first argument;
-// `flood` writes far more output than any tool should; `no-read` exits at once
+// `flood` writes far more output than any tool should; `flood-hang` does that and
+// never exits; `no-read` exits at once
 // without reading stdin; `flood-stderr` writes far more than the cap to stderr
 // and exits 0; `flood-stderr-fail` does that and exits 1; `race-final`
 // also creates the final name (the -r path without its ".partial" suffix), as
@@ -21,11 +22,15 @@
 // a test can assert the ORDER of calls and what a tool saw. tpm2_unseal writes
 // the 32-byte synthetic key 0x5a to stdout (`short-unseal`: 31 bytes);
 // tpm2_sessionconfig with no --enable/--disable prints the attributes
-// (`session-off`: no encrypt; `session-zero`: "encrypt: 0"; `wide-on-enable` and
+// (`session-off`: no encrypt; `session-no-decrypt`: measured shape, decrypt
+// missing; `session-unknown-token`: measured shape plus a token outside the
+// vocabulary; `session-zero`: "encrypt: 0"; `wide-on-enable` and
 // `wide-on-read` widen the session file to 0660 at that call). The default
 // printout is the real tpm2-tools 5.6 output, measured on the jetson on
-// 2026-11-09; the two off modes are inventions that exercise the fail-closed
-// parse.
+// 2026-11-09, and so are the off shapes (probe 4: --disable-encrypt prints
+// `continuesession|decrypt`, then --disable-decrypt prints `continuesession`,
+// each after the Session-Handle line); `session-unknown-token` and
+// `session-zero` are inventions that exercise the unparsed branch.
 import {
   appendFileSync,
   chmodSync,
@@ -36,9 +41,15 @@ import {
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
-const [tool, recordDirectory, mode, ...args] = process.argv.slice(2);
-if (tool === undefined || recordDirectory === undefined || mode === undefined)
+const [tool, recordDirectory, fullMode, ...args] = process.argv.slice(2);
+if (
+  tool === undefined ||
+  recordDirectory === undefined ||
+  fullMode === undefined
+)
   throw new Error("usage: <tool> <record-dir> <mode> [args...]");
+// A mode may carry a `--version` behaviour after a "+": `session-zero+version-long`.
+const [mode = "record", versionMode = "record"] = fullMode.split("+");
 
 if (mode === "no-read") process.exit(0);
 const stdin = Buffer.from(await new Response(Bun.stdin.stream()).arrayBuffer());
@@ -51,6 +62,30 @@ writeFileSync(
     stdinHex: stdin.toString("hex"),
   }),
 );
+// `--version` prints the measured one-line shape (tpm2-tools 5.6, jetson,
+// 2026-11-09) and does nothing else. The version modes (after a "+") break it:
+// `version-fail` exits 1, `version-long` is over 32 characters,
+// `version-quote`, `version-ansi` and `version-newline` carry the character
+// they name inside the quoted version.
+if (args[0] === "--version") {
+  if (versionMode === "version-fail") process.exit(1);
+  const version =
+    versionMode === "version-long"
+      ? "1".repeat(40)
+      : versionMode === "version-quote"
+        ? '5.6"x'
+        : versionMode === "version-ansi"
+          ? "5.6\u001b[31m"
+          : versionMode === "version-newline"
+            ? "5.6\nx"
+            : "5.6";
+  process.stdout.write(
+    `tool="${tool}" version="${version}" tctis="libtss2-tctildr" tcti-default=tcti-device\n`,
+  );
+  process.exit(0);
+}
+// `fail-no-output`: exits 1 before writing any output file.
+if (mode === "fail-no-output") process.exit(1);
 const sessionPath = (() => {
   const given = args.find((arg) => arg.startsWith("session:"));
   if (given !== undefined) return given.slice("session:".length);
@@ -124,7 +159,9 @@ if (mode === "flood-stderr" || mode === "flood-stderr-fail")
   process.stderr.write("e".repeat(64 * 1024));
 if (mode === "hang") await new Promise(() => {});
 if (mode === "fail" || mode === "flood-stderr-fail") process.exit(1);
-if (mode === "flood") process.stdout.write("x".repeat(64 * 1024));
+if (mode === "flood" || mode === "flood-hang")
+  process.stdout.write("x".repeat(64 * 1024));
+if (mode === "flood-hang") await new Promise(() => {});
 // `wide-on-enable`: the enable call rewrites the session file 0660.
 // `wide-on-read`: the bare read widens it to 0660 first.
 if (tool === "tpm2_sessionconfig" && sessionPath !== undefined) {
@@ -143,10 +180,14 @@ if (
 )
   process.stdout.write(
     mode === "session-off"
-      ? "Session-Attributes: continuesession\n"
-      : mode === "session-zero"
-        ? "decrypt: 1\nencrypt: 0\n"
-        : "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
+      ? "Session-Handle: 0x02000000\nSession-Attributes: continuesession\n"
+      : mode === "session-no-decrypt"
+        ? "Session-Handle: 0x02000000\nSession-Attributes: continuesession|encrypt\n"
+        : mode === "session-unknown-token"
+          ? "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt|newattr\n"
+          : mode === "session-zero"
+            ? "decrypt: 1\nencrypt: 0\n"
+            : "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
   );
 if (mode === "grandchild") {
   const held = Bun.spawn(["/bin/sleep", "60"], {
