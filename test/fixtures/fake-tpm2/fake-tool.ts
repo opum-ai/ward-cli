@@ -11,7 +11,8 @@
 // `flood` writes far more output than any tool should; `flood-hang` does that and
 // never exits; `no-read` exits at once
 // without reading stdin; `flood-stderr` writes far more than the cap to stderr
-// and exits 0; `flood-stderr-fail` does that and exits 1; `race-final`
+// and exits 0; `flood-stderr-fail` does that and exits 1; `race-pub`
+// plants the final public name the same way; `race-final`
 // also creates the final name (the -r path without its ".partial" suffix), as
 // a second writer would between the check and the publish; `grandchild` leaves a process holding its stdout open
 // (its pid in <record-dir>/grandchild.pid) and exits 0; `lock-directory` makes
@@ -142,6 +143,9 @@ for (const [index, flag] of args.entries()) {
     writeFileSync(path, `${tool} ${flag}`);
     chmodSync(path, 0o660);
     if (mode === "race-final" && flag === "-r" && path.endsWith(".partial"))
+      writeFileSync(path.slice(0, -".partial".length), "planted");
+    // `race-pub` plants the final .pub instead: a public blob holds no key.
+    if (mode === "race-pub" && flag === "-u" && path.endsWith(".partial"))
       writeFileSync(path.slice(0, -".partial".length), "planted");
   }
 }

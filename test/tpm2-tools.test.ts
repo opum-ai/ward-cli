@@ -1458,6 +1458,21 @@ describe("sealing the vault key", () => {
     ).toEqual([]);
   });
 
+  test("a public blob that appears mid-seal is not a sealed key: directory_unusable, never key_exists (N1)", async () => {
+    const { directory, presence } = sealable({ tpm2_create: "race-pub" });
+    const error = await sealKey(presence, key, directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ reason: "directory_unusable" });
+    expect((error as Error).message).toContain("(EEXIST); another writer");
+    // Nothing of ours is published, and the planted public blob is not removed.
+    expect(readFileSync(join(directory, sealedPublicName), "utf8")).toBe(
+      "planted",
+    );
+    expect(existsSync(join(directory, sealedPrivateName))).toBe(false);
+  });
+
   test("a failing create leaves no blob and no partial file, and the same directory can be sealed after", async () => {
     const { base, directory, presence } = sealable({ tpm2_create: "fail" });
     await expect(sealKey(presence, key, directory)).rejects.toMatchObject({

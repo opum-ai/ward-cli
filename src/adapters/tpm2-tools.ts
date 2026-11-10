@@ -904,11 +904,14 @@ export async function sealKey(
         linkSync(partial, final);
       } catch (error) {
         const code = errnoCode(error);
-        // EEXIST is another writer sealing here: a key now exists (key_exists);
-        // any other failure to publish is the directory (directory_unusable).
+        // Only the private blob says a key exists (it is the commit marker), so
+        // key_exists comes from an EEXIST on the .priv link alone (N1). An EEXIST
+        // on the .pub link is another writer mid-seal or a leftover public blob,
+        // which holds no key: that is the directory, not an existing key.
+        const exists = code === "EEXIST";
         throw new Tpm2Error(
-          code === "EEXIST" ? "key_exists" : "directory_unusable",
-          `${final} could not be published (${String(code ?? "unknown")})${code === "EEXIST" ? "; another writer may be sealing here" : ""}`,
+          exists && final === privateBlob ? "key_exists" : "directory_unusable",
+          `${final} could not be published (${String(code ?? "unknown")})${exists ? "; another writer may be sealing here" : ""}`,
         );
       }
       published.push(final);
