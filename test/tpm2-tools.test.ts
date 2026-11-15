@@ -2206,6 +2206,35 @@ describe("unsealing the sealed key", () => {
   });
 });
 
+// MUTANT REGISTER for slice 3b (WCLI-21), written BEFORE the runs. Each line is
+// a one-site mutation of src/adapters/tpm2-tools.ts and the tests predicted to
+// go red, by the first words of their titles; every other test in the file must
+// stay green. Run against a saved copy of the source, restored after each.
+//   M1  never call onWarning                       -> "a failed flush after a good unseal returns the key and warns"
+//   M2  also warn on a failed unseal               -> "a failed flush after a FAILED unseal", "a session never saved"
+//   M3  retry the flush once on failure            -> "a failed flush after a good unseal returns the key and warns"
+//   M4  drop flushFailure from the rethrown error  -> "a failed flush after a FAILED unseal"
+//   M10 flush without the exists(session) guard    -> "a startauthsession that fails without saving", "a session never saved"
+//   M11 do not swallow a returned promise          -> "a warning listener whose promise rejects"
+//   M5  tpm2StateFor drops the path                -> "an untrusted tool is its own state"
+//   M6  key_unloadable not derived in tpm2StateFor -> "blobs that no longer load", "with tpm2_load failing, a refused open"
+//                                                     (positive control), "the unseal path and diagnoseTpm2 agree"
+//   M7  loose saved-session count parse            -> "a count that cannot be read"
+//   M8  report a count of zero as attention        -> "a sealed key on a healthy host is ready"
+//   M9  drop the tpm2-tools version                -> "a tool whose printout changed"
+//   G1  no trust walk of tpm2_getcap               -> "tpm2_getcap is trust-walked before it runs"
+//   G2  absent getcap reads as a count of 0        -> "a host without tpm2_getcap is still supported"
+//   G3  failed getcap reads as a count of 0        -> "a count that cannot be read"
+//   G4  untrusted getcap reads as a count of 0     -> "tpm2_getcap is trust-walked before it runs"
+//   G5  unrecognised output reads as a count of 0  -> "a count that cannot be read"
+//   G6  untrusted getcap drops the path            -> "tpm2_getcap is trust-walked before it runs"
+//   W1  summary states the cause as fact           -> "key_unloadable hedges"
+//   W2  hint tells the user to re-seal             -> "key_unloadable carries the do-not-run-setup caution"
+//   W3  unloadable ignores the failing reason      -> "a load failure that is really another refusal"
+//   W4  unloadable ignores the failing tool        -> "blobs that no longer load", "a load failure that is really another refusal"
+//   W6  getcap is called with another capability   -> "a sealed key on a healthy host is ready", "visible saved sessions",
+//                                                     "a count that cannot be read", "a leaked slot shows even when no key"
+//   W7  untrustedAt does not stamp the path        -> "a trust refusal carries the tool as a structured path", "an untrusted tool is its own state"
 // DEC-262 (a15) 2 and (a17): a flush that fails leaks a saved-session slot.
 describe("a leaked session slot is warned about once and never retried", () => {
   const synthetic = new Uint8Array(32).fill(0x5a);
