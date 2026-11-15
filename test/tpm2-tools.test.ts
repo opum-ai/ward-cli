@@ -2230,7 +2230,7 @@ describe("unsealing the sealed key", () => {
 //   G6  untrusted getcap drops the path            -> "tpm2_getcap is trust-walked before it runs"
 //   W1  summary states the cause as fact           -> "key_unloadable hedges"
 //   W2  hint tells the user to re-seal             -> "key_unloadable carries the do-not-run-setup caution"
-//   W3  unloadable ignores the failing reason      -> "a load failure that is really another refusal"
+//   W3  unloadable ignores the failing reason      -> "a load failure that is really another refusal", "a load that times out"
 //   W4  unloadable ignores the failing tool        -> "blobs that no longer load", "a load failure that is really another refusal"
 //   W6  getcap is called with another capability   -> "a sealed key on a healthy host is ready", "visible saved sessions",
 //                                                     "a count that cannot be read", "a leaked slot shows even when no key"
@@ -2622,6 +2622,7 @@ describe("the TPM2 doctor states", () => {
       () => undefined,
       (caught: unknown) => caught,
     );
+    expect(tpm2StateFor(viaUnseal as Tpm2Error).state).toBe("key_unloadable");
     expect(tpm2StateFor(viaUnseal as Tpm2Error)).toEqual(
       (await diagnose(failing.bin, failing.directory)).state,
     );
