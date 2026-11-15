@@ -1339,7 +1339,9 @@ export interface Tpm2SavedSessionsUnavailable {
 export interface Tpm2Diagnosis {
   readonly state: Tpm2State;
   // Present when at least one saved-session handle is visible, or when the
-  // count is unavailable; absent when the count was read and is zero.
+  // count is unavailable. Absent means zero, OR that the count was never taken
+  // because detection failed (the TPM or its tools were not usable, so no
+  // tpm2_getcap ran): absence alone is not "0 saved sessions".
   readonly savedSessions?: Tpm2SavedSessions | Tpm2SavedSessionsUnavailable;
 }
 
