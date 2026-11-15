@@ -48,6 +48,18 @@
 //   H8  a failing command loses the warning                         -> "a warning before a failing command still reaches stderr"
 //   H9  the output-contract sentence is deleted from ADR 0028       -> "the output contract documents the stderr warning"
 //   H10 the warning is appended AFTER the error envelope (order swapped) -> "a warning before a failing command still reaches stderr"
+// MUTANT REGISTER, round 2 of the #341 review (B1-B4 and the nits), written and committed BEFORE any run of these.
+//   Q1  TpmKeyError.abandoned ignores a flushFailure of tool_timeout        -> "a propagated flush timeout still asks for an explicit exit"
+//   Q2  runWard's catch ignores the TpmKeyError abandoned mark              -> "a propagated tool timeout still asks for an explicit exit", "a propagating ward command whose tpm2 tool times out exits"
+//   Q3  unsealKey does not call onAbandon on a success-path flush timeout   -> test/tpm2-tools.test.ts "a flush timeout after a good unseal", test/tpm2-provider.test.ts "a flush timeout after a good unseal marks the call abandoned"
+//   Q4  named() rebuilds a plain WardError (drops the subclass and .tpm2)   -> "a probe that passes and a load that refuses carries the store and .tpm2"
+//   Q5  the final provider.load is not named                                -> "a probe that passes and a load that refuses carries the store and .tpm2"
+//   Q6  named() also tags vault_key_store_unsupported                       -> "another platform is refused as an unsupported store"
+//   Q7  the init note is added only for tpm_absent                          -> "the init note reaches every detection refusal"
+//   Q8  a load-path refusal also carries the init note                      -> "the init note does not print on a load refusal"
+//   Q9  no per-command de-duplication of the warning line                   -> "a repeated warning is one line per command"
+//   Q10 the router does not zero a probed key when a later probe throws     -> "a key-returning probe followed by a throwing probe zeroes the key"
+//   Q11 the selection spread lets a seam replace directoryFor               -> "a seam cannot redirect the blob directory"
 // OBSERVED for the (a23) round (annotated after the runs; predictions unchanged). None survived.
 // Extras, not predicted: H4 also reddened "the warning is on stderr and the stdout envelope is untouched" and
 // "a warning before a failing command still reaches stderr"; H5 also reddened those two and "under --json the
