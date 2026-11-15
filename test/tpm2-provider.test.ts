@@ -195,6 +195,18 @@ describe("abandoned calls", () => {
     expect(p.abandonedCall?.()).toBe(true);
   });
 
+  test("a flush timeout after a good unseal marks the call abandoned", async () => {
+    const p = provider({
+      unseal: async (_presence, _directory, options) => {
+        options?.onAbandon?.();
+        return synthetic();
+      },
+    });
+    expect(p.abandonedCall?.()).toBe(false);
+    await p.load(VAULT_ID);
+    expect(p.abandonedCall?.()).toBe(true);
+  });
+
   test("a refusal that is not a timeout does not", async () => {
     const p = provider({ unseal: refusing("tool_failed") });
     await caught(() => p.load(VAULT_ID));

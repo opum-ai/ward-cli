@@ -15,6 +15,7 @@ import {
   type KeySelection,
   selectKeyProvider,
 } from "../adapters/key-backend.ts";
+import { TpmKeyError } from "../adapters/tpm2-provider.ts";
 import { observeMachine } from "../adapters/machine.ts";
 import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
@@ -807,7 +808,9 @@ export async function runWard(
       tpm2: {
         ...options.keySelection?.tpm2,
         onWarning: (warning) => {
-          warnings.push(formatKeyWarning(warning, json));
+          // One line per command, however many unseals heard of the leak.
+          const line = formatKeyWarning(warning, json);
+          if (!warnings.includes(line)) warnings.push(line);
           return heard?.(warning);
         },
       },
@@ -825,7 +828,8 @@ export async function runWard(
     const result = failure(wardError);
     if (
       wardError.code === "vault_key_unavailable" ||
-      wardError.code === "vault_key_write_unconfirmed"
+      wardError.code === "vault_key_write_unconfirmed" ||
+      (wardError instanceof TpmKeyError && wardError.abandoned)
     )
       result.exitExplicitly = true;
     return told(result);

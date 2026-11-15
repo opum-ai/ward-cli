@@ -60,6 +60,14 @@
 //   Q9  no per-command de-duplication of the warning line                   -> "a repeated warning is one line per command"
 //   Q10 the router does not zero a probed key when a later probe throws     -> "a key-returning probe followed by a throwing probe zeroes the key"
 //   Q11 the selection spread lets a seam replace directoryFor               -> "a seam cannot redirect the blob directory"
+// OBSERVED for round 2 (annotated after the runs; predictions unchanged). None survived. Differences from the predictions:
+//   Q3  went red only on test/tpm2-tools.test.ts "a flush timeout after a good unseal calls onAbandon...": the provider test
+//       supplies its own unseal that calls onAbandon, so it cannot see the real unseal's call (it pins the provider's reaction).
+//   Q2  also reddened "a propagated flush timeout still asks for an explicit exit"; the probe test is titled
+//       "a ward command whose tpm2 tool times out exits" (it now covers the propagating backup too).
+//   Q4  also reddened both propagated-exit tests and the probe test (a plain WardError has no abandoned mark).
+//   Q10 also reddened "two holders refuse as ambiguous, naming both" (it checks the stray key is zeroed).
+//   Q1, Q5-Q9, Q11 went red on exactly their predicted tests.
 // OBSERVED for the (a23) round (annotated after the runs; predictions unchanged). None survived.
 // Extras, not predicted: H4 also reddened "the warning is on stderr and the stdout envelope is untouched" and
 // "a warning before a failing command still reaches stderr"; H5 also reddened those two and "under --json the
@@ -86,6 +94,7 @@ import {
   formatKeyWarning,
   type KeyBackend,
   selectKeyProvider,
+  tpm2Backend,
   tpm2DirectoryFor,
 } from "../src/adapters/key-backend.ts";
 import {
@@ -95,7 +104,9 @@ import {
   sealedPublicName,
   Tpm2Error,
   type Tpm2Presence,
+  tpm2ErrorCodes,
 } from "../src/adapters/tpm2-tools.ts";
+import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
 import type { KeyProvider } from "../src/application/key-provider.ts";
 import { runWard } from "../src/cli/main.ts";
 import { errorEnvelope, WardError } from "../src/contract/errors.ts";
@@ -336,6 +347,9 @@ describe("platform selection", () => {
     const provider = selectKeyProvider(fresh(), { platform: "win32" });
     const error = await caught(() => provider.load(VAULT_ID));
     expect((error as WardError).code).toBe("vault_key_store_unsupported");
+    // No store is named: this platform never had one.
+    expect((error as WardError).stores).toEqual([]);
+    expect(errorEnvelope(error as WardError).message).not.toContain("store:");
   });
 });
 
@@ -391,11 +405,9 @@ describe("the blob directory", () => {
     const directory = join(ward, "tpm", VAULT_ID);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     writeFileSync(join(directory, sealedPrivateName), "priv");
-    const { provider } = linux(ward, {
-      unseal: async () => {
-        throw new Tpm2Error("key_incomplete", directory);
-      },
-    });
+    // The real unseal path, no stub: withLoadedKey's own check refuses a lone
+    // private blob before any tool runs.
+    const { provider } = linux(ward, { unseal: undefined });
     const error = await caught(() => provider.load(VAULT_ID));
     expect((error as WardError).code).toBe("tpm_key_incomplete");
   });
@@ -408,7 +420,10 @@ describe("the commands are wired to the selection", () => {
       "utf8",
     );
     expect(source).not.toContain("createKeychainKeyProvider");
-    expect(source.match(/selectKeyProvider\(/g)?.length).toBe(12);
+    expect(
+      source.match(/selectKeyProvider\(directory, options\.keySelection\)/g)
+        ?.length,
+    ).toBe(12);
   });
 
   test("ward setup on linux seals through the selected backend", async () => {
@@ -458,6 +473,10 @@ describe("the commands are wired to the selection", () => {
         // The command asked for an explicit exit, and the grandchild was killed
         // with the tool, so the loop drained too.
         expect(out).toContain("done explicit=true");
+        // doctor's own stdout parsed and reported the key unavailable.
+        expect(out).toContain("doctor key=unavailable");
+        // A propagating command (backup) asked for the exit too.
+        expect(out).toContain("backup explicit=true code=tpm_tool_timeout");
       } finally {
         child.kill(9);
         try {
@@ -615,5 +634,198 @@ describe("DEC-262 (a23): the init hint and the leak warning", () => {
     );
     expect(adr).toContain('{"warning":"tpm_session_leaked"}');
     expect(adr).toContain("**stderr**");
+  });
+});
+
+describe("#341 round 2: explicit exit, naming, notes and de-duplication", () => {
+  const timeoutFlush = () =>
+    new Tpm2Error("tool_failed", "tpm2_unseal", {
+      flushFailure: "tool_timeout",
+    });
+
+  // A vault sealed with fakes, then one command with a chosen unseal.
+  async function afterSetup(
+    args: string[],
+    unseal: unknown,
+    extra: Record<string, unknown> = {},
+  ) {
+    const base = fresh();
+    const ward = join(base, ".ward");
+    const selection = (u: unknown) => ({
+      platform: "linux",
+      keychain: stubProvider(async () => {
+        throw new Error("never");
+      }),
+      tpm2: { detect: () => presence, seal: fakeSeal([]), unseal: u as never },
+    });
+    const setup = await runWard(["setup", "--json"], {
+      wardDirectory: ward,
+      keySelection: selection(async () => synthetic()),
+    });
+    expect(setup.exitCode).toBe(0);
+    return await runWard(args, {
+      wardDirectory: ward,
+      keySelection: selection(unseal),
+      passphrases: {
+        available: () => true,
+        read: () => new TextEncoder().encode("synthetic-passphrase"),
+      },
+      ...extra,
+    });
+  }
+  const backup = (base = fresh()) => [
+    "backup",
+    "--output",
+    join(base, "out.bak"),
+    "--json",
+  ];
+
+  test("a propagated tool timeout still asks for an explicit exit", async () => {
+    const result = await afterSetup(backup(), async () => {
+      throw new Tpm2Error("tool_timeout", "tpm2_unseal");
+    });
+    expect(
+      JSON.parse(result.stderr.trim().split("\n").pop() as string).code,
+    ).toBe("tpm_tool_timeout");
+    expect(result.exitExplicitly).toBe(true);
+  });
+
+  test("a propagated flush timeout still asks for an explicit exit", async () => {
+    const result = await afterSetup(backup(), async () => {
+      throw timeoutFlush();
+    });
+    expect(result.exitExplicitly).toBe(true);
+  });
+
+  test("a refusal that is not a timeout does not ask for one", async () => {
+    const result = await afterSetup(backup(), async () => {
+      throw new Tpm2Error("tool_failed", "tpm2_unseal");
+    });
+    expect(result.exitExplicitly).toBeUndefined();
+  });
+
+  test("a probe that passes and a load that refuses carries the store and .tpm2", async () => {
+    const tpm2 = new Tpm2Error("tool_failed", "tpm2_unseal");
+    const holder = tpm2Backend(
+      stubProvider(async () => {
+        throw new TpmKeyError("tpm_tool_failed", tpm2);
+      }),
+      () => "/synthetic",
+    );
+    const router = createRoutingKeyProvider({
+      backends: [{ ...holder, probe: async () => ({ held: true }) }],
+      initialisation: () => holder,
+    });
+    const error = (await caught(() => router.load(VAULT_ID))) as TpmKeyError;
+    expect(error).toBeInstanceOf(TpmKeyError);
+    expect(error.stores).toEqual(["TPM2"]);
+    expect(error.tpm2).toBe(tpm2);
+  });
+
+  const detectionRefusals = [
+    "tpm_absent",
+    "tools_absent",
+    "tpm_not_accessible",
+    "tpm_unusable",
+    "tool_untrusted",
+  ] as const;
+
+  test("the init note reaches every detection refusal", async () => {
+    for (const reason of detectionRefusals) {
+      const { provider } = linux(fresh(), {
+        detect: () => {
+          throw new Tpm2Error(reason);
+        },
+      });
+      const error = (await caught(() =>
+        provider.create(VAULT_ID, synthetic()),
+      )) as WardError;
+      expect(error.code).toBe(tpm2ErrorCodes[reason]);
+      expect(errorEnvelope(error).hint).toContain(
+        "Secret Service is not implemented",
+      );
+    }
+  });
+
+  test("the init note does not print on a load refusal", async () => {
+    for (const reason of detectionRefusals) {
+      const ward = fresh();
+      chmodSync(ward, 0o700);
+      const directory = join(ward, "tpm", VAULT_ID);
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      writeFileSync(join(directory, sealedPrivateName), "priv");
+      writeFileSync(join(directory, sealedPublicName), "pub");
+      const { provider } = linux(ward, {
+        detect: () => {
+          throw new Tpm2Error(reason);
+        },
+        unseal: undefined,
+      });
+      const error = (await caught(() => provider.load(VAULT_ID))) as WardError;
+      expect(error.code).toBe(tpm2ErrorCodes[reason]);
+      expect(errorEnvelope(error).hint ?? "").not.toContain("Secret Service");
+    }
+  });
+
+  test("a repeated warning is one line per command", async () => {
+    // Every unseal hears of the leak; the read-back returns another key, so
+    // setup resolves through a second load, and the line is still one.
+    const base = fresh();
+    let calls = 0;
+    const result = await runWard(["setup", "--json"], {
+      wardDirectory: join(base, ".ward"),
+      keySelection: {
+        platform: "linux",
+        keychain: stubProvider(async () => {
+          throw new Error("never");
+        }),
+        tpm2: {
+          detect: () => presence,
+          seal: fakeSeal([]),
+          unseal: async (_p, _d, options) => {
+            calls += 1;
+            options?.onWarning?.({ code: "tpm_session_leaked" });
+            return synthetic(0x11);
+          },
+        },
+      },
+    });
+    expect(calls).toBeGreaterThan(1);
+    expect(result.stderr).toBe('{"warning":"tpm_session_leaked"}\n');
+  });
+
+  test("a key-returning probe followed by a throwing probe zeroes the key", async () => {
+    const key = synthetic(0x77);
+    const router = createRoutingKeyProvider({
+      backends: [
+        backend("macOS Keychain", async () => ({ held: true, key })),
+        backend("TPM2", async () => {
+          throw new WardError("vault_key_unavailable");
+        }),
+      ],
+      initialisation: () => {
+        throw new Error("never");
+      },
+    });
+    const error = (await caught(() => router.load(VAULT_ID))) as WardError;
+    expect(error.code).toBe("vault_key_unavailable");
+    expect(Array.from(key)).toEqual(new Array(32).fill(0));
+  });
+
+  test("a seam cannot redirect the blob directory", async () => {
+    const ward = fresh();
+    chmodSync(ward, 0o700);
+    const sealedIn: string[] = [];
+    const provider = selectKeyProvider(ward, {
+      platform: "linux",
+      tpm2: {
+        detect: () => presence,
+        seal: fakeSeal(sealedIn),
+        unseal: async () => synthetic(),
+        ...({ directoryFor: () => join(ward, "elsewhere") } as object),
+      },
+    });
+    await provider.create(VAULT_ID, synthetic());
+    expect(sealedIn).toEqual([join(ward, "tpm", VAULT_ID)]);
   });
 });

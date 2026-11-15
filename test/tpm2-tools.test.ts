@@ -2839,6 +2839,35 @@ describe("a timed-out tool and a spawn that threw", () => {
     { timeout: 40_000 },
   );
 
+  test(
+    "a flush timeout after a good unseal calls onAbandon and still returns the key",
+    async () => {
+      const { base, bin, records } = fresh();
+      installFakeTools(bin, records, { tpm2_flushcontext: "hang" });
+      const directory = join(base, "ward-tpm");
+      const presence = detect({ path: bin, device: DEVICE });
+      const key = new Uint8Array(32).fill(0x5a);
+      await sealKey(presence, key, directory);
+      let abandoned = 0;
+      const warnings: unknown[] = [];
+      try {
+        const got = await unsealKey(presence, directory, {
+          timeoutMs: 2_500,
+          onAbandon: () => {
+            abandoned += 1;
+          },
+          onWarning: (warning) => warnings.push(warning),
+        });
+        expect(Buffer.from(got).equals(Buffer.from(key))).toBe(true);
+      } finally {
+        killGrandchild(join(records, "grandchild.pid"));
+      }
+      expect(abandoned).toBe(1);
+      expect(warnings).toEqual([{ code: "tpm_session_leaked" }]);
+    },
+    { timeout: 30_000 },
+  );
+
   test("a non-Tpm2Error unseal failure keeps flushFailure", async () => {
     const { base, bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_flushcontext: "fail" });

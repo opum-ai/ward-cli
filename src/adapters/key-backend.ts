@@ -34,10 +34,15 @@ export interface KeyBackend {
   ): Promise<{ held: false } | { held: true; key?: Uint8Array }>;
 }
 
+// Names the store in a refusal. A TPM refusal keeps its subclass and its
+// Tpm2Error (doctor reads them), and a platform with no backend at all is not
+// pinned on a store it never had.
 function named(error: unknown, store: KeyStoreName): unknown {
-  return error instanceof WardError
-    ? new WardError(error.code, undefined, undefined, [store])
-    : error;
+  if (!(error instanceof WardError)) return error;
+  if (error.code === "vault_key_store_unsupported") return error;
+  if (error instanceof TpmKeyError)
+    return new TpmKeyError(error.code, error.tpm2, error.notes, [store]);
+  return new WardError(error.code, undefined, undefined, [store]);
 }
 
 export function createRoutingKeyProvider(options: {
@@ -75,7 +80,12 @@ export function createRoutingKeyProvider(options: {
       }
       const holder = holders[0];
       if (holder === undefined) throw new WardError("vault_key_missing");
-      return holder.key ?? (await holder.backend.provider.load(vaultId));
+      if (holder.key !== undefined) return holder.key;
+      try {
+        return await holder.backend.provider.load(vaultId);
+      } catch (error) {
+        throw named(error, holder.backend.name);
+      }
     },
 
     async create(vaultId, key) {
@@ -145,7 +155,12 @@ export interface KeySelection {
   readonly platform?: string;
   // Test seams. Production leaves them unset.
   readonly keychain?: KeyProvider;
-  readonly tpm2?: Partial<Tpm2ProviderOptions>;
+  // The blob directory is policy, never a seam: directoryFor and
+  // prepareDirectory cannot be replaced from here.
+  readonly tpm2?: Omit<
+    Partial<Tpm2ProviderOptions>,
+    "directoryFor" | "prepareDirectory"
+  >;
 }
 
 // How a possibly leaked TPM session slot is told (DEC-262 a23): under --json
@@ -183,10 +198,11 @@ export function selectKeyProvider(
   const detect = selection.tpm2?.detect ?? (() => detectTpm2());
   const tpm2 = tpm2Backend(
     createTpm2KeyProvider({
-      directoryFor,
       onWarning: warnOnStderr,
-      prepareDirectory: tpm2PrepareDirectory(wardDirectory),
       ...selection.tpm2,
+      // After the spread, so a caller that smuggles either in is ignored.
+      directoryFor,
+      prepareDirectory: tpm2PrepareDirectory(wardDirectory),
       detect,
     }),
     directoryFor,

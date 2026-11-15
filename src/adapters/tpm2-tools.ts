@@ -1182,6 +1182,10 @@ export async function unsealKey(
   options: {
     timeoutMs?: number;
     onWarning?: (warning: Tpm2Warning) => unknown;
+    // Called when the flush after a GOOD unseal timed out: a killed tool may
+    // have left a child behind, so the caller must exit explicitly. The warning
+    // alone does not say why the flush failed.
+    onAbandon?: () => void;
   } = {},
 ): Promise<Uint8Array> {
   return await withLoadedKey(
@@ -1280,6 +1284,13 @@ export async function unsealKey(
           throw new Tpm2Error("tool_failed", undefined, { flushFailure });
         }
         throw error;
+      }
+      if (flushFailure === "tool_timeout") {
+        try {
+          options.onAbandon?.();
+        } catch {
+          // A listener's failure must not take the key away.
+        }
       }
       if (flushFailure !== undefined) {
         try {

@@ -38,4 +38,27 @@ if (setup.exitCode !== 0) {
 }
 installFakeTools(bin, records, { tpm2_unseal: "grandchild-hang" });
 const doctor = await runWard(["doctor", "--json"], options(1_500));
+const checks = (
+  JSON.parse(doctor.stdout) as {
+    data: { checks: { check: string; code: string }[] };
+  }
+).data.checks;
+console.log(
+  `doctor key=${checks.find((entry) => entry.check === "key_provider")?.code}`,
+);
+// A PROPAGATING command: backup does not fold the refusal into a report, so the
+// timeout reaches runWard's catch (WCLI-158, #341 round 2).
+const backup = await runWard(
+  ["backup", "--output", join(base, "out.ward-backup"), "--json"],
+  {
+    ...options(1_500),
+    passphrases: {
+      available: () => true,
+      read: () => new TextEncoder().encode("synthetic-passphrase"),
+    },
+  },
+);
+console.log(
+  `backup explicit=${String(backup.exitExplicitly)} code=${(JSON.parse(backup.stderr.trim().split("\n").pop() ?? "{}") as { code?: string }).code}`,
+);
 console.log(`done explicit=${String(doctor.exitExplicitly)}`);

@@ -21,14 +21,21 @@ import {
 // the WardError, whose catalog text carries none of them.
 export class TpmKeyError extends WardError {
   readonly tpm2: Tpm2Error;
+  // True when the failing tool, or the flush after it, timed out: a killed
+  // tool may have left a child holding a pipe, so the command must exit
+  // explicitly rather than wait for the event loop (WCLI-158).
+  readonly abandoned: boolean;
   constructor(
     code: ConstructorParameters<typeof WardError>[0],
     tpm2: Tpm2Error,
     notes: ConstructorParameters<typeof WardError>[4] = [],
+    stores: ConstructorParameters<typeof WardError>[3] = [],
   ) {
-    super(code, undefined, undefined, [], notes);
+    super(code, undefined, undefined, stores, notes);
     this.name = "TpmKeyError";
     this.tpm2 = tpm2;
+    this.abandoned =
+      tpm2.reason === "tool_timeout" || tpm2.flushFailure === "tool_timeout";
   }
 }
 
@@ -104,6 +111,9 @@ export function createTpm2KeyProvider(
     return await unseal(presence, directory, {
       timeoutMs: options.timeoutMs,
       onWarning: options.onWarning,
+      onAbandon: () => {
+        abandoned = true;
+      },
     });
   }
 
