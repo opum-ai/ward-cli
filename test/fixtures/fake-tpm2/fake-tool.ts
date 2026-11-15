@@ -178,7 +178,7 @@ if (tool === "tpm2_sessionconfig" && sessionPath !== undefined) {
 }
 // `saved-1` / `saved-2` / `saved-weird`: tpm2_getcap handles-saved-session
 // lists that many handles one per line as "- 0x...", or a line that is not a
-// handle. The one-handle shape was measured on the jetson (probe 5, 2026-11-10,
+// handle. The one-handle shape was measured on the jetson (probe 5, 2026-11-15 UTC,
 // tpm2-tools 5.6: the bytes "- 0x2000000\n" with a session saved); the empty
 // output (the default here) was measured with none saved. The two-handle shape
 // is that one repeated, not measured. The fake refuses (exit 3) any argv but
