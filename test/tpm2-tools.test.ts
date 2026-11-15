@@ -2857,5 +2857,8 @@ describe("a timed-out tool and a spawn that threw", () => {
       reason: "tool_failed",
       flushFailure: "tool_failed",
     });
+    // The spawn error's text (it names the tool's path) is not passed on.
+    expect((error as Tpm2Error).detail).toBeUndefined();
+    expect((error as Tpm2Error).message).not.toContain(bin);
   });
 });

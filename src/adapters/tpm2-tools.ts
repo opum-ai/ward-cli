@@ -887,6 +887,13 @@ export async function createPrimary(
   return context;
 }
 
+// Whether a sealed key is held in this directory: the private blob is the
+// commit marker, so a lone .priv counts as held (a recovery condition, never
+// "no key"), and a lone .pub does not (WCLI-21 N3 c, DEC-262 a16 Q1).
+export function holdsSealedKey(directory: string): boolean {
+  return exists(join(directory, sealedPrivateName));
+}
+
 function exists(path: string): boolean {
   try {
     lstatSync(path);
@@ -1262,7 +1269,9 @@ export async function unsealKey(
         if (flushFailure !== undefined) {
           // A failure that is not a Tpm2Error (a spawn that threw) still
           // carries the flush failure; its own text is not passed on, since it
-          // can name a path (WCLI-21 N4).
+          // can name a path (WCLI-21 N4). Keeping `path` is defensive:
+          // tool_untrusted cannot reach this rethrow today, because the trust
+          // walk runs in detection, so (a19) is served by the detect route.
           if (error instanceof Tpm2Error)
             throw new Tpm2Error(error.reason, error.detail, {
               flushFailure,

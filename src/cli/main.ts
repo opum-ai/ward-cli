@@ -11,9 +11,9 @@ import {
   probeCheckout,
 } from "../adapters/checkout.ts";
 import {
-  createKeychainKeyProvider,
-  keychainService,
-} from "../adapters/keychain.ts";
+  type KeySelection,
+  selectKeyProvider,
+} from "../adapters/key-backend.ts";
 import { observeMachine } from "../adapters/machine.ts";
 import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
@@ -98,6 +98,9 @@ export interface RunOptions {
   // The credential store the vault key lives in. Defaults to the platform
   // provider; tests and qualification probes override it.
   keyProvider?: KeyProvider;
+  // How the platform provider is chosen when keyProvider is not given: the
+  // platform and the TPM2 and Keychain seams. Tests and probes only.
+  keySelection?: KeySelection;
   // The directory the command acts in. Defaults to the process's working
   // directory; tests resolve projects in a temporary checkout.
   cwd?: string;
@@ -169,8 +172,7 @@ async function setupCommand(options: RunOptions): Promise<{
   const session = acquireSetupSession(directory);
   const store = createSqliteVaultStore({ directory });
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   const result = await runSetup({ session, store, keyProvider });
   return {
     output: {
@@ -223,8 +225,7 @@ async function initCommand(
     files: createProjectFiles(checkout.root),
     store: createSqliteVaultStore({ directory }),
     keyProvider:
-      options.keyProvider ??
-      createKeychainKeyProvider({ service: keychainService }),
+      options.keyProvider ?? selectKeyProvider(directory, options.keySelection),
     approver: options.approver ?? createTerminalConsent(),
     // Canonical, so the check against the (canonical) checkout root compares
     // two names for a location rather than two spellings of one.
@@ -291,8 +292,7 @@ async function backupCommand(
   if (typeof path !== "string") throw new WardError("missing_required_option");
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   const result = await runBackup({
     store: createSqliteVaultStore({ directory }),
     keyProvider,
@@ -347,8 +347,7 @@ async function restoreCommand(
   if (typeof path !== "string") throw new WardError("missing_required_option");
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   const result = await runRestore({
     store: createSqliteVaultStore({ directory }),
     keyProvider,
@@ -397,8 +396,7 @@ function reporting(options: RunOptions): {
   const checkout = locateCheckout(options.cwd ?? process.cwd());
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   return {
     keyProvider,
     options: {
@@ -484,7 +482,7 @@ async function secretCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       values: options.secrets ?? createTerminalSecretValues(),
       grants: options.grantApprover ?? createTerminalGrantApprover(),
       now: options.now ?? (() => new Date()),
@@ -513,7 +511,7 @@ async function keyCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       now: options.now ?? (() => new Date()),
       newSecretId: () => randomUUID(),
     },
@@ -546,7 +544,7 @@ async function signCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       now: options.now ?? (() => new Date()),
       newId: options.newId ?? randomUUID,
       observeMachine: options.machine ?? observeMachine,
@@ -574,8 +572,7 @@ async function unregisterCommand(options: RunOptions): Promise<CommandOutput> {
     checkout,
     store: createSqliteVaultStore({ directory }),
     keyProvider:
-      options.keyProvider ??
-      createKeychainKeyProvider({ service: keychainService }),
+      options.keyProvider ?? selectKeyProvider(directory, options.keySelection),
     approver: options.unregisterApprover ?? createTerminalUnregisterApprover(),
   });
   return { kind: result.kind, data: result.data, text: result.text };
@@ -604,7 +601,7 @@ async function profileCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       approver: options.profileApprover ?? createTerminalProfileApprover(),
       now: options.now ?? (() => new Date()),
     },
@@ -631,7 +628,7 @@ async function checkCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
     },
   );
   return {
@@ -675,7 +672,7 @@ async function runCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       transport: options.transport ?? createHttpsTransport(),
       now: options.now ?? (() => new Date()),
       newId: options.newId ?? randomUUID,

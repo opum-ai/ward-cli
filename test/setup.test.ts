@@ -668,6 +668,7 @@ describe("only two callers ever create a key", () => {
     // destination which already has a vault leaves its key untouched.
     const allowed = new Set([
       "adapters/backup-file.ts",
+      "adapters/key-backend.ts",
       "adapters/keychain.ts",
       "adapters/sqlite-vault-store.ts",
       "adapters/tpm2-provider.ts",

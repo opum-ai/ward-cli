@@ -57,9 +57,15 @@ async function caught(run: () => Promise<unknown>): Promise<unknown> {
   return undefined;
 }
 
-const refusing = (reason: Tpm2Reason, detail?: string) => async () => {
-  throw new Tpm2Error(reason, detail);
-};
+const refusing =
+  (
+    reason: Tpm2Reason,
+    detail?: string,
+    extra: ConstructorParameters<typeof Tpm2Error>[2] = {},
+  ) =>
+  async () => {
+    throw new Tpm2Error(reason, detail, extra);
+  };
 
 function provider(
   overrides: Partial<Parameters<typeof createTpm2KeyProvider>[0]> = {},
@@ -114,13 +120,17 @@ describe("load", () => {
   test("a Tpm2Error rides on the WardError for tpm2StateFor", async () => {
     const error = await caught(() =>
       provider({
-        unseal: refusing("tool_untrusted", "/x/tpm2_unseal"),
+        unseal: refusing("tool_untrusted", "/x/tpm2_unseal", {
+          path: "/x/tpm2_unseal",
+        }),
       }).load(VAULT_ID),
     );
     expect(error).toBeInstanceOf(WardError);
     expect((error as TpmKeyError).tpm2).toBeInstanceOf(Tpm2Error);
     expect((error as TpmKeyError).tpm2.reason).toBe("tool_untrusted");
     expect((error as TpmKeyError).tpm2.detail).toBe("/x/tpm2_unseal");
+    // The structured path survives translation (a19).
+    expect((error as TpmKeyError).tpm2.path).toBe("/x/tpm2_unseal");
   });
 
   test("no sealed key is vault_key_missing", async () => {
@@ -146,6 +156,9 @@ describe("load", () => {
       }).load(VAULT_ID),
     );
     expect((error as TpmKeyError).tpm2.reason).toBe("tool_failed");
+    // Neither the detail nor the message carries the unknown error's text.
+    expect((error as TpmKeyError).tpm2.detail).toBeUndefined();
+    expect((error as TpmKeyError).tpm2.message).not.toContain("/private/path");
     expect((error as WardError).message).not.toContain("/private/path");
   });
 
@@ -168,6 +181,16 @@ describe("abandoned calls", () => {
   test("a timed-out tool marks the call abandoned", async () => {
     const p = provider({ unseal: refusing("tool_timeout", "tpm2_unseal") });
     expect(p.abandonedCall?.()).toBe(false);
+    await caught(() => p.load(VAULT_ID));
+    expect(p.abandonedCall?.()).toBe(true);
+  });
+
+  test("a timed-out flush after a failed unseal is a timeout too", async () => {
+    const p = provider({
+      unseal: refusing("tool_failed", "tpm2_unseal", {
+        flushFailure: "tool_timeout",
+      }),
+    });
     await caught(() => p.load(VAULT_ID));
     expect(p.abandonedCall?.()).toBe(true);
   });
@@ -230,6 +253,22 @@ describe("create", () => {
     const error = await caught(() => p.create(VAULT_ID, synthetic()));
     expect((error as WardError).code).toBe("vault_key_write_unconfirmed");
     expect(p.abandonedCall?.()).toBe(true);
+  });
+
+  test("a tool failure mid-seal is unconfirmed", async () => {
+    for (const reason of [
+      "tool_timeout",
+      "tool_failed",
+      "tool_output_too_large",
+    ] as const) {
+      const error = await caught(() =>
+        provider({ seal: refusing(reason, "tpm2_create") }).create(
+          VAULT_ID,
+          synthetic(),
+        ),
+      );
+      expect((error as WardError).code).toBe("vault_key_write_unconfirmed");
+    }
   });
 
   test("an existing key is vault_key_exists and a lone private blob is not", async () => {
