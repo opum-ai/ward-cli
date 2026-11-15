@@ -177,9 +177,17 @@ if (tool === "tpm2_sessionconfig" && sessionPath !== undefined) {
     chmodSync(sessionPath, 0o660);
 }
 // `saved-1` / `saved-2` / `saved-weird`: tpm2_getcap handles-saved-session
-// lists that many handles in the measured YAML shape ("- 0x...", one a line),
-// or a line that is not a handle. The default lists none (empty output, as
-// measured on the jetson).
+// lists that many handles one per line as "- 0x...", or a line that is not a
+// handle. The one-handle shape was measured on the jetson (probe 5, 2026-11-10,
+// tpm2-tools 5.6: the bytes "- 0x2000000\n" with a session saved); the empty
+// output (the default here) was measured with none saved. The two-handle shape
+// is that one repeated, not measured. The fake refuses (exit 3) any argv but
+// exactly ["handles-saved-session"], so a changed capability name goes red.
+if (
+  tool === "tpm2_getcap" &&
+  (args.length !== 1 || args[0] !== "handles-saved-session")
+)
+  process.exit(3);
 if (tool === "tpm2_getcap")
   process.stdout.write(
     mode === "saved-1"

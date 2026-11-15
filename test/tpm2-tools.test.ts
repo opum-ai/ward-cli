@@ -2245,6 +2245,26 @@ describe("a leaked session slot is warned about once and never retried", () => {
     expect(flushes[0]?.args[0]?.startsWith(directory)).toBe(true);
   });
 
+  test("a warning listener whose promise rejects is not an unhandled rejection", async () => {
+    const { directory, presence } = await sealed({ tpm2_flushcontext: "fail" });
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const key = await unsealKey(presence, directory, {
+        onWarning: async () => {
+          throw new Error("async listener");
+        },
+      });
+      expect(Buffer.from(key).equals(Buffer.from(synthetic))).toBe(true);
+      // Let a stray rejection surface before judging.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
   test("a flush that works warns of nothing", async () => {
     const { directory, presence } = await sealed();
     const warnings: unknown[] = [];
@@ -2385,6 +2405,19 @@ describe("the TPM2 doctor states", () => {
     });
   });
 
+  test("a trust refusal carries the tool as a structured path, not parsed out of the detail", async () => {
+    const { bin } = await sealed();
+    const error = refusal(() =>
+      detect({ path: bin, device: DEVICE }, [999_999]),
+    );
+    expect(error.reason).toBe("tool_untrusted");
+    expect(error.path).toBe(join(bin, "tpm2_createprimary"));
+    // Not derived from the detail text.
+    expect(error.detail?.startsWith(`${error.path}: `)).toBe(true);
+    const bare = new Tpm2Error("tool_untrusted", "x: y");
+    expect(tpm2StateFor(bare).path).toBeUndefined();
+  });
+
   test("an untrusted tool is its own state and names the path", async () => {
     const { bin, directory } = await sealed();
     const { state } = await diagnose(bin, directory, {}, [999_999]);
@@ -2472,54 +2505,78 @@ describe("the TPM2 doctor states", () => {
   test("key_unloadable hedges: could not be loaded, a TPM clear is a likely cause, never that it was cleared", () => {
     expect(keyUnloadableSummary).toContain("could not be loaded");
     expect(keyUnloadableSummary).toContain("tpm2_clear");
-    expect(keyUnloadableSummary).toContain("is a likely cause");
+    expect(keyUnloadableSummary).toContain("is a likely cause, among others");
     expect(keyUnloadableSummary).not.toMatch(
       /was cleared|has been cleared|were cleared|is cleared/i,
     );
   });
 
   // DEC-262 (a18) 2: no destructive advice, the do-NOT-run-setup caution.
-  test("key_unloadable advises nothing destructive and carries the do-not-run-setup caution", () => {
-    expect(keyUnloadableHint.startsWith("Do not run `ward setup`")).toBe(true);
+  test("key_unloadable carries the do-not-run-setup caution and no instruction at all", () => {
+    const caution = "Do not run `ward setup`";
+    expect(keyUnloadableHint.startsWith(caution)).toBe(true);
     expect(keyUnloadableHint).toContain("only copy");
-    // The caution is the only mention of setup, re-seal and delete, and the
-    // summary mentions none of them.
-    expect(keyUnloadableSummary).not.toMatch(/setup|re-?seal|delete|remove/i);
-    expect(keyUnloadableHint).toContain(
-      errorCatalog.tpm_key_incomplete.hint.slice(0, 22),
+    expect(errorCatalog.tpm_key_incomplete.hint).toContain(caution);
+    // Beyond the caution itself, nothing tells the user to run, re-seal,
+    // delete or remove anything; and the summary is no instruction either.
+    const rest = keyUnloadableHint.slice(caution.length);
+    expect(rest).not.toMatch(/run|re-?seal|delete|remove/i);
+    expect(keyUnloadableSummary).not.toMatch(
+      /run .*setup|re-?seal|delete|remove/i,
     );
   });
 
   // DEC-262 (a18) 3: key_unloadable is the remainder; each specific state wins.
-  test("a load failure that is really another refusal reports as that state, and only a plain tool failure is unloadable", async () => {
-    for (const refusal of [
-      new Tpm2Error("tpm_not_accessible", "crw-rw---- root tss"),
-      new Tpm2Error("tool_untrusted", "/usr/bin/tpm2_load: untrusted owner"),
-      new Tpm2Error("tool_incompatible", "tpm2-tools 5.6"),
-      new Tpm2Error("tool_timeout", "tpm2_load"),
-      new Tpm2Error("tool_output_too_large", "tpm2_load"),
-    ]) {
-      const state = tpm2StateFor(refusal, { loadFailed: true });
+  test("a load failure that is really another refusal reports as that state, and only a plain tpm2_load tool failure is unloadable", async () => {
+    for (const reason of [
+      "tpm_not_accessible",
+      "tool_untrusted",
+      "tool_incompatible",
+      "tool_timeout",
+      "tool_output_too_large",
+    ] as const) {
+      // The same detail a load failure carries: the reason alone decides.
+      const state = tpm2StateFor(new Tpm2Error(reason, "tpm2_load"));
       expect(state.state).not.toBe("key_unloadable");
-      expect(state).toEqual(tpm2StateFor(refusal));
     }
+    expect(tpm2StateFor(new Tpm2Error("tool_failed", "tpm2_load")).state).toBe(
+      "key_unloadable",
+    );
+    // Other tool failures are not unloadable.
     expect(
-      tpm2StateFor(new Tpm2Error("tool_failed", "tpm2_load"), {
-        loadFailed: true,
-      }).state,
-    ).toBe("key_unloadable");
-    // End to end: with tpm2_load failing, access and trust are judged first.
+      tpm2StateFor(new Tpm2Error("tool_failed", "tpm2_unseal")).state,
+    ).toBe("tool_failed");
+  });
+
+  const loadCalls = (records: string) =>
+    existsSync(join(records, "tpm2_load.json")) ||
+    (existsSync(join(records, "calls.jsonl")) &&
+      readFileSync(join(records, "calls.jsonl"), "utf8").includes(
+        '"tpm2_load"',
+      ));
+
+  test("with tpm2_load failing, a refused open is access_refused and an untrusted tool is tool_untrusted, and the load is never reached", async () => {
     const refused = await sealed({ tpm2_load: "fail" });
     expect(
       (await diagnose(refused.bin, refused.directory, { openCheck: denied }))
         .state.state,
     ).toBe("access_refused");
+    expect(loadCalls(refused.records)).toBe(false);
     const untrusted = await sealed({ tpm2_load: "fail" });
     expect(
       (await diagnose(untrusted.bin, untrusted.directory, {}, [999_999])).state
         .state,
     ).toBe("tool_untrusted");
-    // A load that times out is a timeout, not an unloadable key.
+    expect(loadCalls(untrusted.records)).toBe(false);
+    // Positive control: with neither refusal, the same fake IS reached.
+    const reached = await sealed({ tpm2_load: "fail" });
+    expect((await diagnose(reached.bin, reached.directory)).state.state).toBe(
+      "key_unloadable",
+    );
+    expect(loadCalls(reached.records)).toBe(true);
+  });
+
+  test("a load that times out is a timeout, not an unloadable key", async () => {
     const slow = await sealed({ tpm2_load: "hang" });
     const timed = await diagnoseTpm2ForTest(
       { path: slow.bin, device: DEVICE },
@@ -2528,6 +2585,26 @@ describe("the TPM2 doctor states", () => {
       { timeoutMs: 300 },
     );
     expect(timed.state.state).toBe("tool_timeout");
+  });
+
+  test("the unseal path and diagnoseTpm2 agree: a failing load is key_unloadable by either, an incompatible printout is tool_incompatible and never key_unloadable", async () => {
+    const failing = await sealed({ tpm2_load: "fail" });
+    const viaUnseal = await unsealKey(failing.presence, failing.directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(tpm2StateFor(viaUnseal as Tpm2Error)).toEqual(
+      (await diagnose(failing.bin, failing.directory)).state,
+    );
+    const changed = await sealed({
+      tpm2_sessionconfig: "session-unknown-token",
+    });
+    const error = await unsealKey(changed.presence, changed.directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(tpm2StateFor(error as Tpm2Error).state).toBe("tool_incompatible");
+    expect(tpm2StateFor(error as Tpm2Error).state).not.toBe("key_unloadable");
   });
 
   test("visible saved sessions are an attention state beside the state, not a failure, and name what clears them", async () => {
@@ -2578,11 +2655,20 @@ describe("the TPM2 doctor states", () => {
     });
     chmodSync(join(bin, "tpm2_getcap"), 0o777);
     // The required tools still pass detection; only the diagnostic tool fails.
+    // (a19): the reason AND the path are structured fields, exact.
     expect(await diagnose(bin, directory)).toEqual({
       state: { state: "ready" },
-      savedSessions: { unavailable: "tool_untrusted" },
+      savedSessions: {
+        unavailable: "tool_untrusted",
+        path: join(bin, "tpm2_getcap"),
+      },
     });
     expect(existsSync(join(records, "tpm2_getcap.json"))).toBe(false);
+    // Positive control: the diagnosis did run other tools (the load), and not
+    // one getcap row is in the call log.
+    const log = readFileSync(join(records, "calls.jsonl"), "utf8");
+    expect(log).toContain('"tpm2_load"');
+    expect(log).not.toContain("tpm2_getcap");
   });
 
   test("a leaked slot shows even when no key is sealed", async () => {
