@@ -2471,18 +2471,52 @@ describe("the TPM2 doctor states", () => {
       savedSessions: { count: 2, clearedBy: "reset or reboot" },
     });
     const one = await sealed({ tpm2_getcap: "saved-1" });
-    expect((await diagnose(one.bin, one.directory)).savedSessions?.count).toBe(
-      1,
-    );
-    // A line that is not a handle is no count at all.
+    expect((await diagnose(one.bin, one.directory)).savedSessions).toEqual({
+      count: 1,
+      clearedBy: "reset or reboot",
+    });
+  });
+
+  // DEC-262 (a15) 2: the count is an attention state that never fails doctor,
+  // so an unreadable count is "unavailable": not a failure, and not zero.
+  test("a count that cannot be read is unavailable, never zero and never a failure", async () => {
     const weird = await sealed({ tpm2_getcap: "saved-weird" });
     expect(await diagnose(weird.bin, weird.directory)).toEqual({
       state: { state: "ready" },
+      savedSessions: { unavailable: "output_unrecognised" },
     });
     const failing = await sealed({ tpm2_getcap: "fail" });
     expect(await diagnose(failing.bin, failing.directory)).toEqual({
       state: { state: "ready" },
+      savedSessions: { unavailable: "tool_failed" },
     });
+  });
+
+  test("a host without tpm2_getcap is still supported: sealing, unsealing and the state are unaffected, and the count is unavailable", async () => {
+    const { bin, directory, presence } = await sealed({
+      tpm2_getcap: "absent",
+    });
+    expect(existsSync(join(bin, "tpm2_getcap"))).toBe(false);
+    expect(Object.keys(presence.tools)).not.toContain("tpm2_getcap");
+    const key = await unsealKey(presence, directory);
+    expect(Buffer.from(key).equals(Buffer.from(synthetic))).toBe(true);
+    expect(await diagnose(bin, directory)).toEqual({
+      state: { state: "ready" },
+      savedSessions: { unavailable: "tool_absent" },
+    });
+  });
+
+  test("tpm2_getcap is trust-walked before it runs: an untrusted one is never executed", async () => {
+    const { bin, directory, records } = await sealed({
+      tpm2_getcap: "saved-2",
+    });
+    chmodSync(join(bin, "tpm2_getcap"), 0o777);
+    // The required tools still pass detection; only the diagnostic tool fails.
+    expect(await diagnose(bin, directory)).toEqual({
+      state: { state: "ready" },
+      savedSessions: { unavailable: "tool_untrusted" },
+    });
+    expect(existsSync(join(records, "tpm2_getcap.json"))).toBe(false);
   });
 
   test("a leaked slot shows even when no key is sealed", async () => {
@@ -2490,7 +2524,10 @@ describe("the TPM2 doctor states", () => {
     installFakeTools(bin, records, { tpm2_getcap: "saved-1" });
     const diagnosis = await diagnose(bin, join(base, "ward-tpm"));
     expect(diagnosis.state.state).toBe("key_not_sealed");
-    expect(diagnosis.savedSessions?.count).toBe(1);
+    expect(diagnosis.savedSessions).toEqual({
+      count: 1,
+      clearedBy: "reset or reboot",
+    });
   });
 
   test("every reason has a doctor state carrying its own contract code", () => {

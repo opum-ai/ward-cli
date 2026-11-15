@@ -46,10 +46,14 @@ export const requiredTools = [
   "tpm2_sessionconfig",
   "tpm2_unseal",
   "tpm2_flushcontext",
-  // Read only by diagnoseTpm2: the saved-session handle count.
-  "tpm2_getcap",
 ] as const;
-export type Tpm2Tool = (typeof requiredTools)[number];
+export type RequiredTool = (typeof requiredTools)[number];
+// tpm2_getcap is read only by diagnoseTpm2, for the saved-session count. It is
+// deliberately NOT a required tool (DEC-262 a15 2: the count is an attention
+// state that never fails doctor, so a host without it is still supported). It
+// is resolved and trust-walked by diagnoseTpm2 itself, never by detection.
+export const diagnosticTool = "tpm2_getcap";
+export type Tpm2Tool = RequiredTool | typeof diagnosticTool;
 
 export type Tpm2Reason =
   | "tpm_absent"
@@ -155,7 +159,8 @@ export interface Tpm2Host {
 
 export interface Tpm2Presence {
   readonly device: string;
-  readonly tools: Readonly<Record<Tpm2Tool, string>>;
+  readonly tools: Readonly<Record<RequiredTool, string>> &
+    Readonly<Partial<Record<typeof diagnosticTool, string>>>;
 }
 
 function errnoCode(error: unknown): unknown {
@@ -473,7 +478,7 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
     throw new Tpm2Error("tpm_absent");
   }
   if (!stats.isCharacterDevice()) throw new Tpm2Error("tpm_absent");
-  const found: Partial<Record<Tpm2Tool, string>> = {};
+  const found: Partial<Record<RequiredTool, string>> = {};
   const missing: string[] = [];
   for (const tool of requiredTools) {
     const resolved = resolveTool(tool, path);
@@ -504,7 +509,7 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
       throw new Tpm2Error("tpm_not_accessible", accessRemedy(stats));
     throw new Tpm2Error("tpm_unusable", String(code ?? "unknown"));
   }
-  return { device, tools: found as Record<Tpm2Tool, string> };
+  return { device, tools: found as Record<RequiredTool, string> };
 }
 
 export interface ToolRun {
@@ -518,12 +523,18 @@ export interface ToolRun {
 // by name finds it only in a directory the walk examined. The key never
 // travels here, and an inherited TPM2TOOLS_TCTI cannot point the tools at
 // some other TPM.
+function toolPath(presence: Tpm2Presence, tool: Tpm2Tool): string {
+  const path = presence.tools[tool];
+  if (path === undefined) throw new Tpm2Error("tools_absent", tool);
+  return path;
+}
+
 function toolEnvironment(
   presence: Tpm2Presence,
   tool: Tpm2Tool,
 ): Record<string, string> {
   return {
-    PATH: toolSearchPath(presence.tools[tool]).join(delimiter),
+    PATH: toolSearchPath(toolPath(presence, tool)).join(delimiter),
     TPM2TOOLS_TCTI: `device:${presence.device}`,
     LANG: "C",
     LC_ALL: "C",
@@ -538,7 +549,7 @@ export function spawnTool(
   args: readonly string[],
   options: { cwd?: string } = {},
 ) {
-  return Bun.spawn([presence.tools[tool], ...args], {
+  return Bun.spawn([toolPath(presence, tool), ...args], {
     env: toolEnvironment(presence, tool),
     cwd: options.cwd,
     stdin: "pipe",
@@ -1261,10 +1272,22 @@ export interface Tpm2SavedSessions {
   readonly clearedBy: "reset or reboot";
 }
 
+// The count could not be read: tpm2_getcap is absent, failed the trust walk,
+// failed, or printed something other than handles. That is not a failure of
+// the host and not a count of zero, so it is its own answer.
+export interface Tpm2SavedSessionsUnavailable {
+  readonly unavailable:
+    | "tool_absent"
+    | "tool_untrusted"
+    | "tool_failed"
+    | "output_unrecognised";
+}
+
 export interface Tpm2Diagnosis {
   readonly state: Tpm2State;
-  // Present only when at least one saved-session handle is visible.
-  readonly savedSessions?: Tpm2SavedSessions;
+  // Present when at least one saved-session handle is visible, or when the
+  // count is unavailable; absent when the count was read and is zero.
+  readonly savedSessions?: Tpm2SavedSessions | Tpm2SavedSessionsUnavailable;
 }
 
 // A reason is one doctor state; two reasons share the unsupported state (no
@@ -1314,16 +1337,31 @@ export function tpm2StateFor(
 
 async function countSavedSessions(
   presence: Tpm2Presence,
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
   timeoutMs: number | undefined,
-): Promise<number | undefined> {
+): Promise<Tpm2SavedSessions | Tpm2SavedSessionsUnavailable | undefined> {
+  const resolved = resolveTool(
+    diagnosticTool,
+    host.path ?? process.env.PATH ?? "",
+  );
+  if (resolved === undefined) return { unavailable: "tool_absent" };
+  // Trust-walked like every tool before it runs: the file, its shebang, and
+  // every directory its child may search.
+  try {
+    checkExecutable(resolved, policy);
+    for (const directory of toolSearchPath(resolved, policy.systemDirectories))
+      walkToolTrust(directory, policy, "dir");
+  } catch (error) {
+    if (error instanceof Tpm2Error) return { unavailable: "tool_untrusted" };
+    throw error;
+  }
   try {
     const run = await runTool(
-      presence,
-      "tpm2_getcap",
+      { ...presence, tools: { ...presence.tools, [diagnosticTool]: resolved } },
+      diagnosticTool,
       ["handles-saved-session"],
-      {
-        timeoutMs,
-      },
+      { timeoutMs },
     );
     const lines = Buffer.from(run.stdout)
       .toString("utf8")
@@ -1333,10 +1371,12 @@ async function countSavedSessions(
     // Strict: a line that is not a handle means the tool's output changed, and
     // a count that cannot be trusted is no count.
     if (!lines.every((line) => /^- 0x[0-9a-fA-F]+$/.test(line)))
-      return undefined;
-    return lines.length;
+      return { unavailable: "output_unrecognised" };
+    return lines.length === 0
+      ? undefined
+      : { count: lines.length, clearedBy: "reset or reboot" };
   } catch {
-    return undefined;
+    return { unavailable: "tool_failed" };
   }
 }
 
@@ -1385,8 +1425,11 @@ async function diagnoseWith(
       loadFailed: error.detail === "tpm2_load",
     });
   }
-  const count = await countSavedSessions(presence, options.timeoutMs);
-  return count === undefined || count === 0
-    ? { state }
-    : { state, savedSessions: { count, clearedBy: "reset or reboot" } };
+  const savedSessions = await countSavedSessions(
+    presence,
+    host,
+    policy,
+    options.timeoutMs,
+  );
+  return savedSessions === undefined ? { state } : { state, savedSessions };
 }
