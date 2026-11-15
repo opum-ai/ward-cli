@@ -176,6 +176,20 @@ if (tool === "tpm2_sessionconfig" && sessionPath !== undefined) {
   )
     chmodSync(sessionPath, 0o660);
 }
+// `saved-1` / `saved-2` / `saved-weird`: tpm2_getcap handles-saved-session
+// lists that many handles in the measured YAML shape ("- 0x...", one a line),
+// or a line that is not a handle. The default lists none (empty output, as
+// measured on the jetson).
+if (tool === "tpm2_getcap")
+  process.stdout.write(
+    mode === "saved-1"
+      ? "- 0x2000000\n"
+      : mode === "saved-2"
+        ? "- 0x2000000\n- 0x2000001\n"
+        : mode === "saved-weird"
+          ? "handles: none\n"
+          : "",
+  );
 if (tool === "tpm2_unseal")
   process.stdout.write(Buffer.alloc(mode === "short-unseal" ? 31 : 32, 0x5a));
 if (

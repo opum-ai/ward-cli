@@ -46,6 +46,8 @@ export const requiredTools = [
   "tpm2_sessionconfig",
   "tpm2_unseal",
   "tpm2_flushcontext",
+  // Read only by diagnoseTpm2: the saved-session handle count.
+  "tpm2_getcap",
 ] as const;
 export type Tpm2Tool = (typeof requiredTools)[number];
 
@@ -92,7 +94,10 @@ const remedies: Record<Tpm2Reason, string> = {
 export class Tpm2Error extends Error {
   readonly reason: Tpm2Reason;
   readonly detail: string | undefined;
-  constructor(reason: Tpm2Reason, detail?: string) {
+  // DEC-262 (a17): set when the unseal failed AND flushing its session failed
+  // too, so a saved session may be leaked. `detail` stays the unseal's own.
+  readonly flushFailure: Tpm2Reason | undefined;
+  constructor(reason: Tpm2Reason, detail?: string, flushFailure?: Tpm2Reason) {
     super(
       detail === undefined
         ? remedies[reason]
@@ -101,6 +106,7 @@ export class Tpm2Error extends Error {
     this.name = "Tpm2Error";
     this.reason = reason;
     this.detail = detail;
+    this.flushFailure = flushFailure;
   }
 }
 
@@ -1091,6 +1097,12 @@ async function toolsVersion(
   }
 }
 
+// DEC-262 (a17): the one warning unsealKey can emit. It carries no path and no
+// handle value, only the code.
+export interface Tpm2Warning {
+  readonly code: "tpm_session_leaked";
+}
+
 // Unseals the vault key (DEC-262 a9, opum-doc's slice-2 rules). Every call
 // loads the key in its own scratch (withLoadedKey), starts a FRESH salted HMAC
 // session (never a saved or reused one), requires the session's encrypt and
@@ -1102,7 +1114,10 @@ async function toolsVersion(
 export async function unsealKey(
   presence: Tpm2Presence,
   directory: string,
-  options: { timeoutMs?: number } = {},
+  options: {
+    timeoutMs?: number;
+    onWarning?: (warning: Tpm2Warning) => void;
+  } = {},
 ): Promise<Uint8Array> {
   return await withLoadedKey(
     presence,
@@ -1117,7 +1132,7 @@ export async function unsealKey(
       // A fresh session in a fresh scratch: nothing to reuse and nothing to
       // replace, so a leftover file is refused rather than overwritten.
       if (exists(session)) throw new Tpm2Error("directory_unusable", "session");
-      try {
+      const attempt = async (): Promise<Uint8Array> => {
         await run("tpm2_startauthsession", [
           "--hmac-session",
           "-c",
@@ -1161,21 +1176,217 @@ export async function unsealKey(
         } finally {
           output.fill(0);
         }
-      } finally {
-        // Flush whenever a session file exists, including after a
-        // startauthsession that failed or timed out having saved one. Ward
-        // holds no /dev/tpmrm0 connection and a saved session survives into
-        // another process (measured 2026-11-08), so a flush that fails leaks a
-        // session slot in the TPM until it resets. That is swallowed here so it
-        // cannot mask the unseal's outcome; a signal for it is slice 3's
-        // design (WCLI-21).
+      };
+      // Flush whenever a session file exists, including after a
+      // startauthsession that failed or timed out having saved one: only the
+      // session Ward created here, by its own path, is ever flushed. Ward holds
+      // no /dev/tpmrm0 connection and a saved session survives into another
+      // process (measured 2026-11-08), so a flush that fails leaks a session
+      // slot in the TPM until a reset or reboot (DEC-262 a15 2, a17). After a
+      // successful unseal the key is still returned and onWarning hears of the
+      // leak once, with no retry. After a failed unseal the unseal's own error
+      // is rethrown carrying flushFailure.
+      let outcome: { key: Uint8Array } | { error: unknown };
+      try {
+        outcome = { key: await attempt() };
+      } catch (error) {
+        outcome = { error };
+      }
+      let flushFailure: Tpm2Reason | undefined;
+      try {
+        if (exists(session)) await run("tpm2_flushcontext", [session]);
+      } catch (error) {
+        flushFailure =
+          error instanceof Tpm2Error ? error.reason : "tool_failed";
+      }
+      if ("error" in outcome) {
+        const { error } = outcome;
+        if (flushFailure !== undefined && error instanceof Tpm2Error)
+          throw new Tpm2Error(error.reason, error.detail, flushFailure);
+        throw error;
+      }
+      if (flushFailure !== undefined) {
         try {
-          if (exists(session)) await run("tpm2_flushcontext", [session]);
+          options.onWarning?.({ code: "tpm_session_leaked" });
         } catch {
-          // Leaked, not reported: see above.
+          // A listener's failure must not take the key away.
         }
       }
+      return outcome.key;
     },
     options,
   );
+}
+
+// --- doctor states (DEC-262 a15, a16, a17) -----------------------------------
+// A pure adapter-level diagnosis. Nothing here is wired into `ward doctor`
+// (slice 3d does that, mapping a diagnosis into a check); the states are read
+// from Tpm2Error.reason and Tpm2Error.detail, never from the WardError, whose
+// catalog text carries no path or version.
+
+export type Tpm2StateName =
+  | "ready"
+  | "unsupported"
+  | "access_refused"
+  | "tools_absent"
+  | "tpm_unusable"
+  | "tool_untrusted"
+  | "tool_incompatible"
+  | "session_not_encrypted"
+  | "blob_not_user_private"
+  | "key_not_sealed"
+  | "key_incomplete"
+  | "key_unloadable"
+  | "key_exists"
+  | "directory_unusable"
+  | "tool_timeout"
+  | "tool_output_too_large"
+  | "tool_failed";
+
+export interface Tpm2State {
+  readonly state: Tpm2StateName;
+  // The contract code of the refusal behind the state; absent when ready.
+  readonly code?: ErrorCode;
+  // tool_untrusted: the tool or directory that failed the trust walk.
+  readonly path?: string;
+  // tool_incompatible: the tpm2-tools version, "unknown" when it could not be read.
+  readonly version?: string;
+}
+
+// A saved session visible in the TPM is an attention state, not a failure: it
+// may be Ward's own leaked slot or another program's, so the count says only
+// what is visible. A TPM reset or a reboot clears it (a15 2).
+export interface Tpm2SavedSessions {
+  readonly count: number;
+  readonly clearedBy: "reset or reboot";
+}
+
+export interface Tpm2Diagnosis {
+  readonly state: Tpm2State;
+  // Present only when at least one saved-session handle is visible.
+  readonly savedSessions?: Tpm2SavedSessions;
+}
+
+// A reason is one doctor state; two reasons share the unsupported state (no
+// device, or a platform that cannot open a blob safely) though their contract
+// codes stay distinct. The Record makes a new reason fail to compile here.
+const stateNames: Record<Tpm2Reason, Tpm2StateName> = {
+  tpm_absent: "unsupported",
+  platform_unsupported: "unsupported",
+  tpm_not_accessible: "access_refused",
+  tools_absent: "tools_absent",
+  tpm_unusable: "tpm_unusable",
+  directory_unusable: "directory_unusable",
+  blob_not_user_private: "blob_not_user_private",
+  key_not_sealed: "key_not_sealed",
+  key_incomplete: "key_incomplete",
+  key_exists: "key_exists",
+  session_not_encrypted: "session_not_encrypted",
+  tool_incompatible: "tool_incompatible",
+  tool_untrusted: "tool_untrusted",
+  tool_timeout: "tool_timeout",
+  tool_output_too_large: "tool_output_too_large",
+  tool_failed: "tool_failed",
+};
+
+// The doctor state for a TPM refusal. `loadFailed` marks a failure of the
+// blob load itself (tpm2_load exited non-zero on a complete, private pair):
+// the usual cause is a TPM that was cleared, so the primary the blobs were
+// sealed under no longer exists. It is a state of its own, not "not sealed".
+export function tpm2StateFor(
+  error: Tpm2Error,
+  options: { loadFailed?: boolean } = {},
+): Tpm2State {
+  const code = tpm2ErrorCodes[error.reason];
+  if (options.loadFailed === true && error.reason === "tool_failed")
+    return { state: "key_unloadable", code };
+  const state = stateNames[error.reason];
+  if (error.reason === "tool_untrusted")
+    return { state, code, path: (error.detail ?? "").split(": ")[0] };
+  if (error.reason === "tool_incompatible")
+    return {
+      state,
+      code,
+      version: (error.detail ?? "").replace(/^tpm2-tools /, "") || "unknown",
+    };
+  return { state, code };
+}
+
+async function countSavedSessions(
+  presence: Tpm2Presence,
+  timeoutMs: number | undefined,
+): Promise<number | undefined> {
+  try {
+    const run = await runTool(
+      presence,
+      "tpm2_getcap",
+      ["handles-saved-session"],
+      {
+        timeoutMs,
+      },
+    );
+    const lines = Buffer.from(run.stdout)
+      .toString("utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    // Strict: a line that is not a handle means the tool's output changed, and
+    // a count that cannot be trusted is no count.
+    if (!lines.every((line) => /^- 0x[0-9a-fA-F]+$/.test(line)))
+      return undefined;
+    return lines.length;
+  } catch {
+    return undefined;
+  }
+}
+
+// Reads the host and the key directory, running no unseal and no session. The
+// blob load probes the pinned primary; a TPM2_Clear that happened since the
+// seal shows as key_unloadable. tool_incompatible and session_not_encrypted
+// are found only by an unseal attempt, so a caller maps its Tpm2Error through
+// tpm2StateFor.
+export async function diagnoseTpm2(
+  host: Tpm2Host,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<Tpm2Diagnosis> {
+  return await diagnoseWith(host, {}, directory, options);
+}
+
+// TEST SEAM: diagnoseTpm2 with a narrowed trust policy (see ToolTrustPolicy).
+export async function diagnoseTpm2ForTest(
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<Tpm2Diagnosis> {
+  return await diagnoseWith(host, policy, directory, options);
+}
+
+async function diagnoseWith(
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+  directory: string,
+  options: { timeoutMs?: number },
+): Promise<Tpm2Diagnosis> {
+  let presence: Tpm2Presence;
+  try {
+    presence = detectWith(host, policy);
+  } catch (error) {
+    if (!(error instanceof Tpm2Error)) throw error;
+    return { state: tpm2StateFor(error) };
+  }
+  let state: Tpm2State = { state: "ready" };
+  try {
+    await withLoadedKey(presence, directory, async () => undefined, options);
+  } catch (error) {
+    if (!(error instanceof Tpm2Error)) throw error;
+    state = tpm2StateFor(error, {
+      loadFailed: error.detail === "tpm2_load",
+    });
+  }
+  const count = await countSavedSessions(presence, options.timeoutMs);
+  return count === undefined || count === 0
+    ? { state }
+    : { state, savedSessions: { count, clearedBy: "reset or reboot" } };
 }
