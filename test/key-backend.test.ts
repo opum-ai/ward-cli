@@ -47,6 +47,7 @@
 //   H7  the warning is appended to stdout instead of stderr         -> "the warning is on stderr and the stdout envelope is untouched"
 //   H8  a failing command loses the warning                         -> "a warning before a failing command still reaches stderr"
 //   H9  the output-contract sentence is deleted from ADR 0028       -> "the output contract documents the stderr warning"
+//   H10 the warning is appended AFTER the error envelope (order swapped) -> "a warning before a failing command still reaches stderr"
 // OBSERVED for the (a23) round (annotated after the runs; predictions unchanged). None survived.
 // Extras, not predicted: H4 also reddened "the warning is on stderr and the stdout envelope is untouched" and
 // "a warning before a failing command still reaches stderr"; H5 also reddened those two and "under --json the
