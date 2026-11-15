@@ -21,6 +21,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
+import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
+import { Tpm2Error } from "../src/adapters/tpm2-tools.ts";
+import type { KeyProvider } from "../src/application/key-provider.ts";
 import {
   acquireSetupSession,
   setupJournalFileName,
@@ -667,6 +670,7 @@ describe("only two callers ever create a key", () => {
       "adapters/backup-file.ts",
       "adapters/keychain.ts",
       "adapters/sqlite-vault-store.ts",
+      "adapters/tpm2-provider.ts",
       "application/backup.ts",
       "application/key-provider.ts",
       "application/setup.ts",
@@ -692,5 +696,28 @@ describe("only two callers ever create a key", () => {
     }
     expect(offenders).toEqual([]);
     expect([...present].sort()).toEqual([...allowed].sort());
+  });
+});
+
+describe("a sealed key whose pair is incomplete", () => {
+  test("setup refuses over an incomplete sealed key and creates nothing", async () => {
+    const f = fresh();
+    let creates = 0;
+    const keyProvider: KeyProvider = {
+      load: async () => {
+        throw new TpmKeyError(
+          "tpm_key_incomplete",
+          new Tpm2Error("key_incomplete"),
+        );
+      },
+      create: async () => {
+        creates += 1;
+      },
+    };
+    const result = await setupViaRunWard({ ...f.options(), keyProvider });
+    expect(result.exitCode).not.toBe(exitCodes.success);
+    expect(json(result.stderr).code).toBe("tpm_key_incomplete");
+    expect(creates).toBe(0);
+    expect(existsSync(join(f.directory, vaultFileName))).toBe(false);
   });
 });

@@ -582,7 +582,27 @@ export function spawnTool(
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    // Its own process group (WCLI-158), so a timeout can kill a tool and
+    // whatever it spawned: a grandchild holding a pipe would otherwise keep
+    // the CLI alive after the call was abandoned.
+    detached: true,
   });
+}
+
+// Kills the tool's whole process group, and the tool itself when the group
+// cannot be signalled. Never throws: a tool that already exited is not an error.
+function killTool(child: { pid: number; kill(signal?: number): void }): void {
+  try {
+    process.kill(-child.pid, 9);
+    return;
+  } catch {
+    // No such group: fall back to the child alone.
+  }
+  try {
+    child.kill(9);
+  } catch {
+    // Already gone.
+  }
 }
 
 // stdout is the tool's result, so a stream past the cap is refused. stderr is
@@ -639,7 +659,7 @@ export async function runTool(
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       abandoned = true;
-      child.kill(9);
+      killTool(child);
       reject(new Tpm2Error("tool_timeout", tool));
     }, options.timeoutMs ?? defaultToolTimeoutMs);
   });
@@ -660,7 +680,7 @@ export async function runTool(
           // A refused stdout kills the child at once: waiting for stderr EOF or
           // the exit would turn tool_output_too_large into tool_timeout.
           readCapped(child.stdout, tool).catch((error: unknown) => {
-            child.kill(9);
+            killTool(child);
             throw error;
           }),
           readCapped(child.stderr, tool, "truncate"),
@@ -689,7 +709,7 @@ export async function runTool(
       }
       return { stdout, stderr: Buffer.from(stderr).toString("utf8") };
     } catch (error) {
-      child.kill(9);
+      killTool(child);
       throw error;
     }
   })();
@@ -1239,8 +1259,17 @@ export async function unsealKey(
       }
       if ("error" in outcome) {
         const { error } = outcome;
-        if (flushFailure !== undefined && error instanceof Tpm2Error)
-          throw new Tpm2Error(error.reason, error.detail, { flushFailure });
+        if (flushFailure !== undefined) {
+          // A failure that is not a Tpm2Error (a spawn that threw) still
+          // carries the flush failure; its own text is not passed on, since it
+          // can name a path (WCLI-21 N4).
+          if (error instanceof Tpm2Error)
+            throw new Tpm2Error(error.reason, error.detail, {
+              flushFailure,
+              path: error.path,
+            });
+          throw new Tpm2Error("tool_failed", undefined, { flushFailure });
+        }
         throw error;
       }
       if (flushFailure !== undefined) {
