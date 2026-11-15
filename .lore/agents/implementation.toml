@@ -10,9 +10,9 @@ sources = [
   "adr/0004-committed-platform-target",
   "adr/0002-p0-threat-model-and-non-guarantees",
   "index",
-  "adr/0005-project-binding-identity",
-  "adr/0006-backup-container-and-restore-authority",
-  "adr/0007-status-and-doctor-reporting",
+  "adr/0005-project-binding-identity#decision",
+  "adr/0006-backup-container-and-restore-authority#decision",
+  "adr/0007-status-and-doctor-reporting#decision",
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0023-keep-the-vault-state-reader-s-exact-key-set-comparison-at-the-first-release",
@@ -23,4 +23,5 @@ sources = [
   "adr/0015-a-local-skill-file-is-drift-and-only-an-exact-copy-is-force-removable#decision",
   "adr/0016-ward-init-asks-its-file-choice-with-the-peers-multiselect#decision",
   "adr/0027-an-ed25519-sign-operation-sign-keys-are-a-kind-of-secret-record-never-exported#decision",
+  "adr/0028-tpm2-key-custody-on-linux-tool-trust-the-leaked-session-slot-and-the-stored-format-template#decision",
 ]

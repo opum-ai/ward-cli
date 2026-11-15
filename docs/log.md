@@ -64,6 +64,10 @@
 - 2026-11-03T10:28:07-06:00 d3eb3b913387378d9b9e4af25c5ad86ad3289f80 feat(WCLI-139): unregister raises binding_changed when the removal set changed (DEC-255 a9) (#264)
 - 2026-11-04T08:13:31-06:00 108df11306c3736fe51da4e92876cdb9b9eb9b1b fix(WCLI-143): the WCLI-139 review LOWs: binding_changed wording, ADR 0022 clause 2, race-test order dependency (#272)
 - 2026-11-07T15:42:11-06:00 03104acb60e36f39cb8d2d813b26b587e30bf74c feat(WCLI-149): Ed25519 sign keys as a kind of secret record, ward key, backup exclusion (DEC-262 a3)
+- 2026-11-07T19:25:36-06:00 d893cb839d5d631e8527aaebf83ddb7dda5dd92a feat(WCLI-149): Ed25519 sign keys, ward key, backup exclusion (DEC-262 a3), part 1 (#285)
+- 2026-11-07T20:17:46-06:00 f65f2183f1798c54ba215d25f69d523732947378 feat(WCLI-149): sign profile, ward sign, per-kind snapshot versions (DEC-262 a3, a4), part 2 (#288)
+- 2026-11-08T15:00:27-06:00 fb08b926d92ab2aced164dc3cfdcfec2334f37a0 fix(WCLI-152): the Linux setup lock is kernel-arbitrated flock, with no O_EXCL fallback (#294)
+- 2026-11-08T15:08:32-06:00 8133f1c69da6e0fef5b4820a0794d8a124ea12e7 docs(WCLI-155): CI runs on the GitHub-hosted ubuntu-24.04-arm runner, not self-hosted (#300)
 
 ## docs/runbooks
 
