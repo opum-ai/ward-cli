@@ -760,6 +760,15 @@ export const refusedHeaderCanonicalNames = Object.freeze([
 export const keyStoreNames = Object.freeze(["macOS Keychain", "TPM2"] as const);
 export type KeyStoreName = (typeof keyStoreNames)[number];
 
+// A fixed note a key refusal can add to its hint (DEC-262 a22, a23). The text
+// is constant, so no path or value can reach a hint through it, and it never
+// suggests a weaker store.
+export const keyRefusalNotes = Object.freeze({
+  secret_service_not_implemented:
+    "Secret Service is not implemented in this Ward build, so a Linux machine can be set up only on TPM2.",
+});
+export type KeyRefusalNote = keyof typeof keyRefusalNotes;
+
 export type RefusedHeaderName = (typeof refusedHeaderCanonicalNames)[number];
 
 export class WardError extends Error {
@@ -773,12 +782,14 @@ export class WardError extends Error {
   readonly refusedHeader: RefusedHeaderName | undefined;
   // Which credential stores a key refusal names; kept only from the fixed list.
   readonly stores: readonly KeyStoreName[];
+  readonly notes: readonly KeyRefusalNote[];
 
   constructor(
     code: ErrorCode,
     argumentPosition?: number,
     refusedHeader?: RefusedHeaderName,
     stores: readonly KeyStoreName[] = [],
+    notes: readonly KeyRefusalNote[] = [],
   ) {
     super(errorCatalog[code].message);
     this.name = "WardError";
@@ -788,6 +799,7 @@ export class WardError extends Error {
       (known) => known === refusedHeader,
     );
     this.stores = stores.filter((name) => keyStoreNames.includes(name));
+    this.notes = notes.filter((note) => note in keyRefusalNotes);
   }
 }
 
@@ -806,11 +818,15 @@ export function errorEnvelope(error: WardError): ErrorEnvelope {
     error.stores.length === 0
       ? named
       : `${named} (${error.stores.length === 1 ? "store" : "stores"}: ${error.stores.join(", ")})`;
+  const hint = [
+    ...(entry.hint === undefined ? [] : [entry.hint]),
+    ...error.notes.map((note) => keyRefusalNotes[note]),
+  ].join(" ");
   return {
     error_type: entry.type,
     code: error.code,
     message,
-    ...(entry.hint === undefined ? {} : { hint: entry.hint }),
+    ...(hint === "" ? {} : { hint }),
     principal: null,
   };
 }

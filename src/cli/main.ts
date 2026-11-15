@@ -11,6 +11,7 @@ import {
   probeCheckout,
 } from "../adapters/checkout.ts";
 import {
+  formatKeyWarning,
   type KeySelection,
   selectKeyProvider,
 } from "../adapters/key-backend.ts";
@@ -794,8 +795,30 @@ export async function runWard(
   argv: readonly string[],
   options: RunOptions = {},
 ): Promise<RunResult> {
+  // Warnings from the key provider go to stderr in front of whatever else the
+  // command writes there (DEC-262 a23); the stdout envelope is untouched.
+  const json = argv.includes("--json");
+  const warnings: string[] = [];
+  const heard = options.keySelection?.tpm2?.onWarning;
+  const withSink: RunOptions = {
+    ...options,
+    keySelection: {
+      ...options.keySelection,
+      tpm2: {
+        ...options.keySelection?.tpm2,
+        onWarning: (warning) => {
+          warnings.push(formatKeyWarning(warning, json));
+          return heard?.(warning);
+        },
+      },
+    },
+  };
+  const told = (result: RunResult): RunResult =>
+    warnings.length === 0
+      ? result
+      : { ...result, stderr: `${warnings.join("")}${result.stderr}` };
   try {
-    return await dispatch(argv, options);
+    return told(await dispatch(argv, withSink));
   } catch (error) {
     const wardError =
       error instanceof WardError ? error : new WardError("uncaught");
@@ -805,6 +828,6 @@ export async function runWard(
       wardError.code === "vault_key_write_unconfirmed"
     )
       result.exitExplicitly = true;
-    return result;
+    return told(result);
   }
 }

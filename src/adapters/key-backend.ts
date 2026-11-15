@@ -5,6 +5,7 @@ import { isVaultId } from "../domain/envelope.ts";
 import { createKeychainKeyProvider, keychainService } from "./keychain.ts";
 import {
   createTpm2KeyProvider,
+  TpmKeyError,
   translateTpm2Error,
   type Tpm2ProviderOptions,
 } from "./tpm2-provider.ts";
@@ -13,6 +14,7 @@ import {
   holdsSealedKey,
   preparePrivateDirectory,
   Tpm2Error,
+  tpm2ErrorCodes,
   type Tpm2Warning,
 } from "./tpm2-tools.ts";
 
@@ -146,10 +148,18 @@ export interface KeySelection {
   readonly tpm2?: Partial<Tpm2ProviderOptions>;
 }
 
-// The default sink for a possibly leaked TPM session slot: one JSON line with
-// the code and nothing else, on stderr.
+// How a possibly leaked TPM session slot is told (DEC-262 a23): under --json
+// exactly one line carrying the code and nothing else; in human mode a sentence
+// with the code and what clears it. Neither carries a path or a handle.
+export function formatKeyWarning(warning: Tpm2Warning, json: boolean): string {
+  return json
+    ? `${JSON.stringify({ warning: warning.code })}\n`
+    : `warning: ${warning.code}: a TPM session slot may be leaked; it is cleared by a reset or reboot.\n`;
+}
+
+// The sink used when the caller supplies none: human wording on stderr.
 function warnOnStderr(warning: Tpm2Warning): void {
-  process.stderr.write(`${JSON.stringify({ warning: warning.code })}\n`);
+  process.stderr.write(formatKeyWarning(warning, false));
 }
 
 export function selectKeyProvider(
@@ -189,7 +199,10 @@ export function selectKeyProvider(
       try {
         detect();
       } catch (error) {
-        if (error instanceof Tpm2Error) throw translateTpm2Error(error);
+        if (error instanceof Tpm2Error)
+          throw new TpmKeyError(tpm2ErrorCodes[error.reason], error, [
+            "secret_service_not_implemented",
+          ]);
         throw error;
       }
       return tpm2;

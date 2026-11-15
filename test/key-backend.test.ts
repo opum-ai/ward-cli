@@ -47,6 +47,11 @@
 //   H7  the warning is appended to stdout instead of stderr         -> "the warning is on stderr and the stdout envelope is untouched"
 //   H8  a failing command loses the warning                         -> "a warning before a failing command still reaches stderr"
 //   H9  the output-contract sentence is deleted from ADR 0028       -> "the output contract documents the stderr warning"
+// OBSERVED for the (a23) round (annotated after the runs; predictions unchanged). None survived.
+// Extras, not predicted: H4 also reddened "the warning is on stderr and the stdout envelope is untouched" and
+// "a warning before a failing command still reaches stderr"; H5 also reddened those two and "under --json the
+// leak warning is exactly one line"; H6 also reddened those two runWard tests; H7 also reddened
+// "a warning before a failing command still reaches stderr". Run 2026-11-15, bun 1.3.14.
 // The mock is imported first (test-isolation.test.ts).
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
@@ -64,6 +69,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createRoutingKeyProvider,
+  formatKeyWarning,
   type KeyBackend,
   selectKeyProvider,
   tpm2DirectoryFor,
@@ -452,4 +458,148 @@ describe("the commands are wired to the selection", () => {
     },
     { timeout: 60_000 },
   );
+});
+
+describe("DEC-262 (a23): the init hint and the leak warning", () => {
+  const weaker =
+    /file|keyring|passphrase|environment|plaintext|weaker|fallback/i;
+
+  test("the Linux init refusal says Secret Service is not implemented", async () => {
+    const { provider } = linux(fresh(), {
+      detect: () => {
+        throw new Tpm2Error("tpm_absent");
+      },
+    });
+    const error = (await caught(() =>
+      provider.create(VAULT_ID, synthetic()),
+    )) as WardError;
+    // The specific code stays; the hint adds the gap and suggests no store.
+    expect(error.code).toBe("tpm_absent");
+    const { hint } = errorEnvelope(error);
+    expect(hint).toContain("Secret Service is not implemented");
+    expect(hint).not.toMatch(weaker);
+  });
+
+  const leak = { code: "tpm_session_leaked" } as const;
+
+  test("under --json the leak warning is exactly one line", () => {
+    expect(formatKeyWarning(leak, true)).toBe(
+      '{"warning":"tpm_session_leaked"}\n',
+    );
+  });
+
+  test("in human mode the leak warning is a sentence", () => {
+    const text = formatKeyWarning(leak, false);
+    expect(text).toContain("tpm_session_leaked");
+    expect(text).toContain("reset or reboot");
+    expect(text.trim().startsWith("{")).toBe(false);
+  });
+
+  test("the leak warning carries no path or handle", () => {
+    for (const json of [true, false]) {
+      const text = formatKeyWarning(leak, json);
+      expect(text).not.toMatch(/\/|0x[0-9a-f]/i);
+      expect(text.split("\n").filter(Boolean).length).toBe(1);
+    }
+  });
+
+  // A vault sealed with fakes, then a command whose unseal fires the warning.
+  async function leaking(args: string[], unsealAfterSetup: unknown) {
+    const base = fresh();
+    const checkout = join(base, "checkout");
+    mkdirSync(checkout);
+    Bun.spawnSync(["git", "init", "-q", checkout]);
+    const ward = join(base, ".ward");
+    const sealedIn: string[] = [];
+    const selection = (unseal: unknown) => ({
+      platform: "linux",
+      keychain: stubProvider(async () => {
+        throw new Error("never");
+      }),
+      tpm2: {
+        detect: () => presence,
+        seal: fakeSeal(sealedIn),
+        unseal: unseal as never,
+      },
+    });
+    const setup = await runWard(["setup", "--json"], {
+      wardDirectory: ward,
+      keySelection: selection(async () => synthetic()),
+    });
+    expect(setup.exitCode).toBe(0);
+    return await runWard(args, {
+      wardDirectory: ward,
+      cwd: checkout,
+      keySelection: selection(unsealAfterSetup),
+    });
+  }
+
+  const warnOnce = async (
+    _presence: Tpm2Presence,
+    _directory: string,
+    options?: {
+      onWarning?: (warning: { code: "tpm_session_leaked" }) => unknown;
+    },
+  ) => {
+    options?.onWarning?.(leak);
+    return synthetic();
+  };
+
+  test("the warning is on stderr and the stdout envelope is untouched", async () => {
+    const result = await leaking(["doctor", "--json"], warnOnce);
+    expect(result.stderr).toBe('{"warning":"tpm_session_leaked"}\n');
+    expect(result.stdout).not.toContain("tpm_session_leaked");
+    // stdout is still exactly one JSON envelope.
+    expect(() => JSON.parse(result.stdout)).not.toThrow();
+    const human = await leaking(["doctor"], warnOnce);
+    expect(human.stderr).toContain("reset or reboot");
+    expect(human.stdout).not.toContain("tpm_session_leaked");
+  });
+
+  test("a warning before a failing command still reaches stderr", async () => {
+    // The read-back after sealing hears the warning and returns another key,
+    // so setup fails as unconfirmed; the resolving load then fails too.
+    const base = fresh();
+    let calls = 0;
+    const result = await runWard(["setup", "--json"], {
+      wardDirectory: join(base, ".ward"),
+      keySelection: {
+        platform: "linux",
+        keychain: stubProvider(async () => {
+          throw new Error("never");
+        }),
+        tpm2: {
+          detect: () => presence,
+          seal: fakeSeal([]),
+          unseal: async (_p, _d, options) => {
+            calls += 1;
+            if (calls > 1) throw new Tpm2Error("tool_failed", "tpm2_unseal");
+            options?.onWarning?.(leak);
+            return synthetic(0x11);
+          },
+        },
+      },
+    });
+    expect(result.exitCode).not.toBe(0);
+    const lines = result.stderr.trim().split("\n");
+    expect(lines[0]).toBe('{"warning":"tpm_session_leaked"}');
+    expect(JSON.parse(lines[lines.length - 1] as string).code).toBe(
+      "vault_key_write_unconfirmed",
+    );
+  });
+
+  test("the output contract documents the stderr warning", () => {
+    const adr = readFileSync(
+      join(
+        import.meta.dir,
+        "..",
+        "docs",
+        "adr",
+        "0028-tpm2-key-custody-on-linux-tool-trust-the-leaked-session-slot-and-the-stored-format-template.md",
+      ),
+      "utf8",
+    );
+    expect(adr).toContain('{"warning":"tpm_session_leaked"}');
+    expect(adr).toContain("**stderr**");
+  });
 });

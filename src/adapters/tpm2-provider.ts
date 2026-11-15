@@ -24,8 +24,9 @@ export class TpmKeyError extends WardError {
   constructor(
     code: ConstructorParameters<typeof WardError>[0],
     tpm2: Tpm2Error,
+    notes: ConstructorParameters<typeof WardError>[4] = [],
   ) {
-    super(code);
+    super(code, undefined, undefined, [], notes);
     this.name = "TpmKeyError";
     this.tpm2 = tpm2;
   }
