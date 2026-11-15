@@ -70,6 +70,11 @@ export function createTpm2KeyProvider(
   const detect = options.detect ?? (() => detectTpm2());
   const unseal = options.unseal ?? unsealKey;
   const seal = options.seal ?? sealKey;
+  // N7 (NB4): a timeout can strand a saved session, because the killed tool
+  // never reached its flush. Nothing here recovers it; the only report is
+  // doctor's saved-session count (diagnoseTpm2). The test that pins the abandon
+  // path is "a timed-out tool marks the call abandoned" in
+  // test/tpm2-provider.test.ts.
   let abandoned = false;
 
   // Fresh detection on every call: access can be revoked between two calls,
