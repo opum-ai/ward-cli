@@ -36,6 +36,17 @@
 //   K13 also reddened "a ward command whose tpm2 tool times out exits"
 //   K19 also reddened "a TPM refusal is reported as an unavailable key" (it lists tool_untrusted)
 // Run 2026-11-15 against the 3d-1b working tree, bun 1.3.14.
+// MUTANT REGISTER, DEC-262 (a23) round, written and committed BEFORE any run of
+// these mutants. Same rules as above.
+//   H1  the Linux init refusal drops the Secret Service note        -> "the Linux init refusal says Secret Service is not implemented"
+//   H2  the note's text suggests a weaker store                     -> "the Linux init refusal says Secret Service is not implemented"
+//   H3  the error envelope drops the notes                          -> "the Linux init refusal says Secret Service is not implemented"
+//   H4  --json mode writes the human sentence                       -> "under --json the leak warning is exactly one line", "the leak warning carries no path or handle"
+//   H5  human mode writes the JSON line                             -> "in human mode the leak warning is a sentence"
+//   H6  the --json line carries an extra field                      -> "under --json the leak warning is exactly one line", "the leak warning carries no path or handle"
+//   H7  the warning is appended to stdout instead of stderr         -> "the warning is on stderr and the stdout envelope is untouched"
+//   H8  a failing command loses the warning                         -> "a warning before a failing command still reaches stderr"
+//   H9  the output-contract sentence is deleted from ADR 0028       -> "the output contract documents the stderr warning"
 // The mock is imported first (test-isolation.test.ts).
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
