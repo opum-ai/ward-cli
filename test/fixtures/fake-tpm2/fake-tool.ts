@@ -11,7 +11,8 @@
 // `flood` writes far more output than any tool should; `flood-hang` does that and
 // never exits; `no-read` exits at once
 // without reading stdin; `flood-stderr` writes far more than the cap to stderr
-// and exits 0; `flood-stderr-fail` does that and exits 1; `race-final`
+// and exits 0; `flood-stderr-fail` does that and exits 1; `race-pub`
+// plants the final public name the same way; `race-final`
 // also creates the final name (the -r path without its ".partial" suffix), as
 // a second writer would between the check and the publish; `grandchild` leaves a process holding its stdout open
 // (its pid in <record-dir>/grandchild.pid) and exits 0; `lock-directory` makes
@@ -143,6 +144,9 @@ for (const [index, flag] of args.entries()) {
     chmodSync(path, 0o660);
     if (mode === "race-final" && flag === "-r" && path.endsWith(".partial"))
       writeFileSync(path.slice(0, -".partial".length), "planted");
+    // `race-pub` plants the final .pub instead: a public blob holds no key.
+    if (mode === "race-pub" && flag === "-u" && path.endsWith(".partial"))
+      writeFileSync(path.slice(0, -".partial".length), "planted");
   }
 }
 if (mode === "lock-directory") {
@@ -172,6 +176,28 @@ if (tool === "tpm2_sessionconfig" && sessionPath !== undefined) {
   )
     chmodSync(sessionPath, 0o660);
 }
+// `saved-1` / `saved-2` / `saved-weird`: tpm2_getcap handles-saved-session
+// lists that many handles one per line as "- 0x...", or a line that is not a
+// handle. The one-handle shape was measured on the jetson (probe 5, 2026-11-15 UTC,
+// tpm2-tools 5.6: the bytes "- 0x2000000\n" with a session saved); the empty
+// output (the default here) was measured with none saved. The two-handle shape
+// is that one repeated, not measured. The fake refuses (exit 3) any argv but
+// exactly ["handles-saved-session"], so a changed capability name goes red.
+if (
+  tool === "tpm2_getcap" &&
+  (args.length !== 1 || args[0] !== "handles-saved-session")
+)
+  process.exit(3);
+if (tool === "tpm2_getcap")
+  process.stdout.write(
+    mode === "saved-1"
+      ? "- 0x2000000\n"
+      : mode === "saved-2"
+        ? "- 0x2000000\n- 0x2000001\n"
+        : mode === "saved-weird"
+          ? "handles: none\n"
+          : "",
+  );
 if (tool === "tpm2_unseal")
   process.stdout.write(Buffer.alloc(mode === "short-unseal" ? 31 : 32, 0x5a));
 if (

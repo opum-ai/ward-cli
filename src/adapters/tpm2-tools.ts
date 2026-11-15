@@ -47,7 +47,13 @@ export const requiredTools = [
   "tpm2_unseal",
   "tpm2_flushcontext",
 ] as const;
-export type Tpm2Tool = (typeof requiredTools)[number];
+export type RequiredTool = (typeof requiredTools)[number];
+// tpm2_getcap is read only by diagnoseTpm2, for the saved-session count. It is
+// deliberately NOT a required tool (DEC-262 a15 2: the count is an attention
+// state that never fails doctor, so a host without it is still supported). It
+// is resolved and trust-walked by diagnoseTpm2 itself, never by detection.
+export const diagnosticTool = "tpm2_getcap";
+export type Tpm2Tool = RequiredTool | typeof diagnosticTool;
 
 export type Tpm2Reason =
   | "tpm_absent"
@@ -92,7 +98,17 @@ const remedies: Record<Tpm2Reason, string> = {
 export class Tpm2Error extends Error {
   readonly reason: Tpm2Reason;
   readonly detail: string | undefined;
-  constructor(reason: Tpm2Reason, detail?: string) {
+  // DEC-262 (a17): set when the unseal failed AND flushing its session failed
+  // too, so a saved session may be leaked. `detail` stays the unseal's own.
+  readonly flushFailure: Tpm2Reason | undefined;
+  // tool_untrusted: the tool or directory whose trust walk refused, as a field
+  // so a doctor never parses it out of `detail`.
+  readonly path: string | undefined;
+  constructor(
+    reason: Tpm2Reason,
+    detail?: string,
+    extra: { flushFailure?: Tpm2Reason; path?: string } = {},
+  ) {
     super(
       detail === undefined
         ? remedies[reason]
@@ -101,6 +117,8 @@ export class Tpm2Error extends Error {
     this.name = "Tpm2Error";
     this.reason = reason;
     this.detail = detail;
+    this.flushFailure = extra.flushFailure;
+    this.path = extra.path;
   }
 }
 
@@ -149,7 +167,8 @@ export interface Tpm2Host {
 
 export interface Tpm2Presence {
   readonly device: string;
-  readonly tools: Readonly<Record<Tpm2Tool, string>>;
+  readonly tools: Readonly<Record<RequiredTool, string>> &
+    Readonly<Partial<Record<typeof diagnosticTool, string>>>;
 }
 
 function errnoCode(error: unknown): unknown {
@@ -222,7 +241,7 @@ function modeText(mode: number): string {
 // the directory that holds it, which is checked. A failure refuses by name
 // before any spawn, and is never answered by trying a later PATH entry.
 export function assertToolTrusted(toolPath: string): void {
-  checkExecutable(toolPath, {});
+  untrustedAt(toolPath, () => checkExecutable(toolPath, {}));
 }
 
 // TEST SEAM, not a production entry point: the only way to narrow the walk.
@@ -238,11 +257,27 @@ export interface ToolTrustPolicy {
   readonly systemDirectories?: readonly string[];
 }
 
+// Runs a trust walk and stamps the tool or directory it was run on onto a
+// tool_untrusted refusal, as the structured path.
+function untrustedAt<T>(path: string, walk: () => T): T {
+  try {
+    return walk();
+  } catch (error) {
+    if (
+      error instanceof Tpm2Error &&
+      error.reason === "tool_untrusted" &&
+      error.path === undefined
+    )
+      throw new Tpm2Error(error.reason, error.detail, { path });
+    throw error;
+  }
+}
+
 export function walkToolTrustForTest(
   toolPath: string,
   policy: ToolTrustPolicy,
 ): void {
-  checkExecutable(toolPath, policy);
+  untrustedAt(toolPath, () => checkExecutable(toolPath, policy));
 }
 
 // The first line after "#!", or undefined for a file that does not start with
@@ -467,7 +502,7 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
     throw new Tpm2Error("tpm_absent");
   }
   if (!stats.isCharacterDevice()) throw new Tpm2Error("tpm_absent");
-  const found: Partial<Record<Tpm2Tool, string>> = {};
+  const found: Partial<Record<RequiredTool, string>> = {};
   const missing: string[] = [];
   for (const tool of requiredTools) {
     const resolved = resolveTool(tool, path);
@@ -482,14 +517,17 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
   // Each tool, then each directory its child may search, once per detection.
   const directories = new Set<string>();
   for (const tool of requiredTools) {
-    checkExecutable(found[tool] as string, policy);
+    untrustedAt(found[tool] as string, () =>
+      checkExecutable(found[tool] as string, policy),
+    );
     for (const directory of toolSearchPath(
       found[tool] as string,
       policy.systemDirectories,
     ))
       directories.add(directory);
   }
-  for (const directory of directories) walkToolTrust(directory, policy, "dir");
+  for (const directory of directories)
+    untrustedAt(directory, () => walkToolTrust(directory, policy, "dir"));
   try {
     (host.openCheck ?? defaultOpenCheck)(device);
   } catch (error) {
@@ -498,7 +536,7 @@ function detectWith(host: Tpm2Host, policy: ToolTrustPolicy): Tpm2Presence {
       throw new Tpm2Error("tpm_not_accessible", accessRemedy(stats));
     throw new Tpm2Error("tpm_unusable", String(code ?? "unknown"));
   }
-  return { device, tools: found as Record<Tpm2Tool, string> };
+  return { device, tools: found as Record<RequiredTool, string> };
 }
 
 export interface ToolRun {
@@ -512,12 +550,18 @@ export interface ToolRun {
 // by name finds it only in a directory the walk examined. The key never
 // travels here, and an inherited TPM2TOOLS_TCTI cannot point the tools at
 // some other TPM.
+function toolPath(presence: Tpm2Presence, tool: Tpm2Tool): string {
+  const path = presence.tools[tool];
+  if (path === undefined) throw new Tpm2Error("tools_absent", tool);
+  return path;
+}
+
 function toolEnvironment(
   presence: Tpm2Presence,
   tool: Tpm2Tool,
 ): Record<string, string> {
   return {
-    PATH: toolSearchPath(presence.tools[tool]).join(delimiter),
+    PATH: toolSearchPath(toolPath(presence, tool)).join(delimiter),
     TPM2TOOLS_TCTI: `device:${presence.device}`,
     LANG: "C",
     LC_ALL: "C",
@@ -532,7 +576,7 @@ export function spawnTool(
   args: readonly string[],
   options: { cwd?: string } = {},
 ) {
-  return Bun.spawn([presence.tools[tool], ...args], {
+  return Bun.spawn([toolPath(presence, tool), ...args], {
     env: toolEnvironment(presence, tool),
     cwd: options.cwd,
     stdin: "pipe",
@@ -904,11 +948,14 @@ export async function sealKey(
         linkSync(partial, final);
       } catch (error) {
         const code = errnoCode(error);
-        // EEXIST is another writer sealing here: a key now exists (key_exists);
-        // any other failure to publish is the directory (directory_unusable).
+        // Only the private blob says a key exists (it is the commit marker), so
+        // key_exists comes from an EEXIST on the .priv link alone (N1). An EEXIST
+        // on the .pub link is another writer mid-seal or a leftover public blob,
+        // which holds no key: that is the directory, not an existing key.
+        const exists = code === "EEXIST";
         throw new Tpm2Error(
-          code === "EEXIST" ? "key_exists" : "directory_unusable",
-          `${final} could not be published (${String(code ?? "unknown")})${code === "EEXIST" ? "; another writer may be sealing here" : ""}`,
+          exists && final === privateBlob ? "key_exists" : "directory_unusable",
+          `${final} could not be published (${String(code ?? "unknown")})${exists ? "; another writer may be sealing here" : ""}`,
         );
       }
       published.push(final);
@@ -1088,6 +1135,12 @@ async function toolsVersion(
   }
 }
 
+// DEC-262 (a17): the one warning unsealKey can emit. It carries no path and no
+// handle value, only the code.
+export interface Tpm2Warning {
+  readonly code: "tpm_session_leaked";
+}
+
 // Unseals the vault key (DEC-262 a9, opum-doc's slice-2 rules). Every call
 // loads the key in its own scratch (withLoadedKey), starts a FRESH salted HMAC
 // session (never a saved or reused one), requires the session's encrypt and
@@ -1099,7 +1152,10 @@ async function toolsVersion(
 export async function unsealKey(
   presence: Tpm2Presence,
   directory: string,
-  options: { timeoutMs?: number } = {},
+  options: {
+    timeoutMs?: number;
+    onWarning?: (warning: Tpm2Warning) => unknown;
+  } = {},
 ): Promise<Uint8Array> {
   return await withLoadedKey(
     presence,
@@ -1114,7 +1170,7 @@ export async function unsealKey(
       // A fresh session in a fresh scratch: nothing to reuse and nothing to
       // replace, so a leftover file is refused rather than overwritten.
       if (exists(session)) throw new Tpm2Error("directory_unusable", "session");
-      try {
+      const attempt = async (): Promise<Uint8Array> => {
         await run("tpm2_startauthsession", [
           "--hmac-session",
           "-c",
@@ -1158,21 +1214,283 @@ export async function unsealKey(
         } finally {
           output.fill(0);
         }
-      } finally {
-        // Flush whenever a session file exists, including after a
-        // startauthsession that failed or timed out having saved one. Ward
-        // holds no /dev/tpmrm0 connection and a saved session survives into
-        // another process (measured 2026-11-08), so a flush that fails leaks a
-        // session slot in the TPM until it resets. That is swallowed here so it
-        // cannot mask the unseal's outcome; a signal for it is slice 3's
-        // design (WCLI-21).
+      };
+      // Flush whenever a session file exists, including after a
+      // startauthsession that failed or timed out having saved one: only the
+      // session Ward created here, by its own path, is ever flushed. Ward holds
+      // no /dev/tpmrm0 connection and a saved session survives into another
+      // process (measured 2026-11-08), so a flush that fails leaks a session
+      // slot in the TPM until a reset or reboot (DEC-262 a15 2, a17). After a
+      // successful unseal the key is still returned and onWarning hears of the
+      // leak once, with no retry. After a failed unseal the unseal's own error
+      // is rethrown carrying flushFailure.
+      let outcome: { key: Uint8Array } | { error: unknown };
+      try {
+        outcome = { key: await attempt() };
+      } catch (error) {
+        outcome = { error };
+      }
+      let flushFailure: Tpm2Reason | undefined;
+      try {
+        if (exists(session)) await run("tpm2_flushcontext", [session]);
+      } catch (error) {
+        flushFailure =
+          error instanceof Tpm2Error ? error.reason : "tool_failed";
+      }
+      if ("error" in outcome) {
+        const { error } = outcome;
+        if (flushFailure !== undefined && error instanceof Tpm2Error)
+          throw new Tpm2Error(error.reason, error.detail, { flushFailure });
+        throw error;
+      }
+      if (flushFailure !== undefined) {
         try {
-          if (exists(session)) await run("tpm2_flushcontext", [session]);
+          // A listener that returns a rejecting promise must not become an
+          // unhandled rejection after the key has been returned.
+          Promise.resolve(
+            options.onWarning?.({ code: "tpm_session_leaked" }),
+          ).catch(() => undefined);
         } catch {
-          // Leaked, not reported: see above.
+          // A listener's failure must not take the key away.
         }
       }
+      return outcome.key;
     },
     options,
   );
+}
+
+// --- doctor states (DEC-262 a15, a16, a17) -----------------------------------
+// A pure adapter-level diagnosis. Nothing here is wired into `ward doctor`
+// (slice 3d does that, mapping a diagnosis into a check); the states are read
+// from Tpm2Error.reason and Tpm2Error.detail, never from the WardError, whose
+// catalog text carries no path or version.
+
+export type Tpm2StateName =
+  | "ready"
+  | "unsupported"
+  | "access_refused"
+  | "tools_absent"
+  | "tpm_unusable"
+  | "tool_untrusted"
+  | "tool_incompatible"
+  | "session_not_encrypted"
+  | "blob_not_user_private"
+  | "key_not_sealed"
+  | "key_incomplete"
+  | "key_unloadable"
+  | "key_exists"
+  | "directory_unusable"
+  | "tool_timeout"
+  | "tool_output_too_large"
+  | "tool_failed";
+
+export interface Tpm2State {
+  readonly state: Tpm2StateName;
+  // The contract code of the refusal behind the state; absent when ready.
+  readonly code?: ErrorCode;
+  // tool_untrusted: the tool or directory that failed the trust walk.
+  readonly path?: string;
+  // tool_incompatible: the tpm2-tools version, "unknown" when it could not be read.
+  readonly version?: string;
+  // key_unloadable only: the wording a doctor must use, fixed here so no
+  // renderer can overstate the cause or advise a destructive step (a18).
+  readonly summary?: string;
+  readonly hint?: string;
+}
+
+// DEC-262 (a18, a20). The cause is hedged: a TPM clear is a likely cause among
+// others (a blob copied from another host, a corrupted blob, a TPM in failure
+// mode), never a stated fact. The hint advises nothing: it carries only the
+// same do-NOT-run-setup caution as key_incomplete, because the cause may be
+// recoverable and setup would destroy the only copy of the sealed key.
+// tpm_tool_failed is shared with every other tool failure, so the catalog
+// cannot carry this text; it lives on the state.
+export const keyUnloadableSummary =
+  "The sealed vault key could not be loaded. A TPM clear (tpm2_clear) is a likely cause, among others.";
+export const keyUnloadableHint =
+  "Do not run `ward setup`: the cause may be recoverable, and setup would destroy the only copy of the sealed key.";
+
+// A saved session visible in the TPM is an attention state, not a failure: it
+// may be Ward's own leaked slot or another program's, so the count says only
+// what is visible. A TPM reset or a reboot clears it (a15 2). A Ward unseal
+// running at the same moment in another process also holds a saved session, so
+// a count of 1 can be that and clear by itself within seconds.
+export interface Tpm2SavedSessions {
+  readonly count: number;
+  readonly clearedBy: "reset or reboot";
+}
+
+// The count could not be read: tpm2_getcap is absent, failed the trust walk,
+// failed, or printed something other than handles. That is not a failure of
+// the host and not a count of zero, so it is its own answer.
+export interface Tpm2SavedSessionsUnavailable {
+  readonly unavailable:
+    | "tool_absent"
+    | "tool_untrusted"
+    | "tool_failed"
+    | "output_unrecognised";
+  // tool_untrusted: the tool or directory that failed the trust walk (a19). An
+  // untrusted binary on the tool path may be a tampering signal, so the reason
+  // and the path are fields and never folded into a quiet "unavailable".
+  readonly path?: string;
+}
+
+export interface Tpm2Diagnosis {
+  readonly state: Tpm2State;
+  // Present when at least one saved-session handle is visible, or when the
+  // count is unavailable. Absent means zero, OR that the count was never taken
+  // because detection failed (the TPM or its tools were not usable, so no
+  // tpm2_getcap ran): absence alone is not "0 saved sessions".
+  readonly savedSessions?: Tpm2SavedSessions | Tpm2SavedSessionsUnavailable;
+}
+
+// A reason is one doctor state; two reasons share the unsupported state (no
+// device, or a platform that cannot open a blob safely) though their contract
+// codes stay distinct. The Record makes a new reason fail to compile here.
+const stateNames: Record<Tpm2Reason, Tpm2StateName> = {
+  tpm_absent: "unsupported",
+  platform_unsupported: "unsupported",
+  tpm_not_accessible: "access_refused",
+  tools_absent: "tools_absent",
+  tpm_unusable: "tpm_unusable",
+  directory_unusable: "directory_unusable",
+  blob_not_user_private: "blob_not_user_private",
+  key_not_sealed: "key_not_sealed",
+  key_incomplete: "key_incomplete",
+  key_exists: "key_exists",
+  session_not_encrypted: "session_not_encrypted",
+  tool_incompatible: "tool_incompatible",
+  tool_untrusted: "tool_untrusted",
+  tool_timeout: "tool_timeout",
+  tool_output_too_large: "tool_output_too_large",
+  tool_failed: "tool_failed",
+};
+
+// The doctor state for a TPM refusal. A tpm2_load that exits non-zero on a
+// complete, private pair is key_unloadable: a state of its own, not "not
+// sealed", worded without naming a cause as fact (keyUnloadableSummary).
+export function tpm2StateFor(error: Tpm2Error): Tpm2State {
+  const code = tpm2ErrorCodes[error.reason];
+  // The remainder after every more specific refusal (a18 3): only a plain
+  // tool_failed from tpm2_load is unloadable; access_refused, tool_untrusted,
+  // tool_incompatible, a timeout and the rest keep their own state. Derived
+  // here, so the unseal path and diagnoseTpm2 agree. A named limitation (a20):
+  // a load the tools reject for a version reason reads as key_unloadable,
+  // because tool_incompatible is found only by an unseal's session printout.
+  if (error.reason === "tool_failed" && error.detail === "tpm2_load")
+    return {
+      state: "key_unloadable",
+      code,
+      summary: keyUnloadableSummary,
+      hint: keyUnloadableHint,
+    };
+  const state = stateNames[error.reason];
+  if (error.reason === "tool_untrusted")
+    return { state, code, path: error.path };
+  if (error.reason === "tool_incompatible")
+    return {
+      state,
+      code,
+      version: (error.detail ?? "").replace(/^tpm2-tools /, "") || "unknown",
+    };
+  return { state, code };
+}
+
+async function countSavedSessions(
+  presence: Tpm2Presence,
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+  timeoutMs: number | undefined,
+): Promise<Tpm2SavedSessions | Tpm2SavedSessionsUnavailable | undefined> {
+  const resolved = resolveTool(
+    diagnosticTool,
+    host.path ?? process.env.PATH ?? "",
+  );
+  if (resolved === undefined) return { unavailable: "tool_absent" };
+  // Trust-walked like every tool before it runs: the file, its shebang, and
+  // every directory its child may search.
+  try {
+    untrustedAt(resolved, () => checkExecutable(resolved, policy));
+    for (const directory of toolSearchPath(resolved, policy.systemDirectories))
+      untrustedAt(directory, () => walkToolTrust(directory, policy, "dir"));
+  } catch (error) {
+    if (error instanceof Tpm2Error)
+      return { unavailable: "tool_untrusted", path: error.path ?? resolved };
+    throw error;
+  }
+  try {
+    const run = await runTool(
+      { ...presence, tools: { ...presence.tools, [diagnosticTool]: resolved } },
+      diagnosticTool,
+      ["handles-saved-session"],
+      { timeoutMs },
+    );
+    const lines = Buffer.from(run.stdout)
+      .toString("utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    // Strict: a line that is not a handle means the tool's output changed, and
+    // a count that cannot be trusted is no count.
+    if (!lines.every((line) => /^- 0x[0-9a-fA-F]+$/.test(line)))
+      return { unavailable: "output_unrecognised" };
+    return lines.length === 0
+      ? undefined
+      : { count: lines.length, clearedBy: "reset or reboot" };
+  } catch {
+    return { unavailable: "tool_failed" };
+  }
+}
+
+// Reads the host and the key directory, running no unseal and no session. The
+// blob load probes the pinned primary; a load that fails on a complete pair
+// reads as key_unloadable (a TPM clear is a likely cause, among others). tool_incompatible and session_not_encrypted
+// are found only by an unseal attempt, so a caller maps its Tpm2Error through
+// tpm2StateFor.
+export async function diagnoseTpm2(
+  host: Tpm2Host,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<Tpm2Diagnosis> {
+  return await diagnoseWith(host, {}, directory, options);
+}
+
+// TEST SEAM: diagnoseTpm2 with a narrowed trust policy (see ToolTrustPolicy).
+export async function diagnoseTpm2ForTest(
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+  directory: string,
+  options: { timeoutMs?: number } = {},
+): Promise<Tpm2Diagnosis> {
+  return await diagnoseWith(host, policy, directory, options);
+}
+
+async function diagnoseWith(
+  host: Tpm2Host,
+  policy: ToolTrustPolicy,
+  directory: string,
+  options: { timeoutMs?: number },
+): Promise<Tpm2Diagnosis> {
+  let presence: Tpm2Presence;
+  try {
+    presence = detectWith(host, policy);
+  } catch (error) {
+    if (!(error instanceof Tpm2Error)) throw error;
+    return { state: tpm2StateFor(error) };
+  }
+  let state: Tpm2State = { state: "ready" };
+  try {
+    await withLoadedKey(presence, directory, async () => undefined, options);
+  } catch (error) {
+    if (!(error instanceof Tpm2Error)) throw error;
+    state = tpm2StateFor(error);
+  }
+  const savedSessions = await countSavedSessions(
+    presence,
+    host,
+    policy,
+    options.timeoutMs,
+  );
+  return savedSessions === undefined ? { state } : { state, savedSessions };
 }
