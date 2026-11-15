@@ -238,6 +238,12 @@ async function observeKey(
       case "vault_key_store_unsupported":
         return { status: "unsupported" };
       default:
+        // Every TPM2 code (DEC-262 a15) means the TPM did not give the key:
+        // fail closed as unavailable. A lone private blob (tpm_key_incomplete)
+        // is a recovery condition and is NEVER read as a missing key, which is
+        // what lets setup run (WCLI-21 N3 a). Slice 3d-2 renders the states.
+        if (wardCode(error)?.startsWith("tpm_") === true)
+          return { status: "unavailable" };
         throw error;
     }
   }

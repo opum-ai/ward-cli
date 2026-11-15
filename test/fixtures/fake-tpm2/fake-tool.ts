@@ -15,7 +15,7 @@
 // plants the final public name the same way; `race-final`
 // also creates the final name (the -r path without its ".partial" suffix), as
 // a second writer would between the check and the publish; `grandchild` leaves a process holding its stdout open
-// (its pid in <record-dir>/grandchild.pid) and exits 0; `lock-directory` makes
+// (its pid in <record-dir>/grandchild.pid) and exits 0 (`grandchild-hang` does that and then never exits); `lock-directory` makes
 // its working directory read-only (0500) once its outputs exist, so a later
 // link(2) into it fails with EACCES for any non-root user.
 // Every call is also appended to <record-dir>/calls.jsonl (tool, argv, and the
@@ -215,7 +215,7 @@ if (
             ? "decrypt: 1\nencrypt: 0\n"
             : "Session-Handle: 0x02000000\nSession-Attributes: continuesession|decrypt|encrypt\n",
   );
-if (mode === "grandchild") {
+if (mode === "grandchild" || mode === "grandchild-hang") {
   const held = Bun.spawn(["/bin/sleep", "60"], {
     stdin: "ignore",
     stdout: "inherit",
@@ -223,6 +223,8 @@ if (mode === "grandchild") {
   });
   writeFileSync(join(recordDirectory, "grandchild.pid"), String(held.pid));
   held.unref();
+  // `grandchild-hang` also never exits itself, so only a timeout ends it.
+  if (mode === "grandchild-hang") await new Promise(() => {});
 }
 if (mode === "touch-wide" && args[0] !== undefined) {
   writeFileSync(args[0], "blob");

@@ -2769,3 +2769,93 @@ describe("every Tpm2Reason has its own contract code", () => {
     }
   });
 });
+
+// WCLI-21 slice 3d-1a: WCLI-158 and N4.
+describe("a timed-out tool and a spawn that threw", () => {
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  test(
+    "a timed-out tool's grandchild is killed with it",
+    async () => {
+      const { bin, records } = fresh();
+      installFakeTools(bin, records, { tpm2_unseal: "grandchild-hang" });
+      const presence = detect({ path: bin, device: DEVICE });
+      const pidFile = join(records, "grandchild.pid");
+      try {
+        const reason = await runTool(presence, "tpm2_unseal", [], {
+          timeoutMs: 2_500,
+        }).catch((e) => e.reason);
+        expect(reason).toBe("tool_timeout");
+        expect(readFileSync(pidFile, "utf8")).toMatch(/^[1-9]\d*$/);
+        const pid = Number(readFileSync(pidFile, "utf8"));
+        // The group kill is a signal: give the kernel a moment to reap.
+        for (let wait = 0; wait < 50 && alive(pid); wait++)
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(alive(pid)).toBe(false);
+      } finally {
+        killGrandchild(pidFile);
+      }
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "a timed-out tool lets the process exit",
+    async () => {
+      const { bin, records } = fresh();
+      const probe = join(
+        import.meta.dir,
+        "fixtures",
+        "tpm2-timeout-exit-probe.ts",
+      );
+      const child = Bun.spawn([process.execPath, probe, bin, records, root], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const pidFile = join(records, "grandchild.pid");
+      try {
+        const outcome = await Promise.race([
+          child.exited.then(() => "exited"),
+          new Promise<string>((resolve) =>
+            setTimeout(() => resolve("still running"), 20_000),
+          ),
+        ]);
+        expect(outcome).toBe("exited");
+        expect(await new Response(child.stdout).text()).toContain(
+          "done tool_timeout",
+        );
+      } finally {
+        child.kill(9);
+        killGrandchild(pidFile);
+      }
+    },
+    { timeout: 40_000 },
+  );
+
+  test("a non-Tpm2Error unseal failure keeps flushFailure", async () => {
+    const { base, bin, records } = fresh();
+    installFakeTools(bin, records, { tpm2_flushcontext: "fail" });
+    const directory = join(base, "ward-tpm");
+    const presence = detect({ path: bin, device: DEVICE });
+    await sealKey(presence, new Uint8Array(32).fill(0x5a), directory);
+    // The unseal tool vanishes after detection: Bun.spawn throws, which is
+    // not a Tpm2Error, and the session the start step saved is still flushed.
+    rmSync(join(bin, "tpm2_unseal"));
+    const error = await unsealKey(presence, directory).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Tpm2Error);
+    expect(error).toMatchObject({
+      reason: "tool_failed",
+      flushFailure: "tool_failed",
+    });
+  });
+});

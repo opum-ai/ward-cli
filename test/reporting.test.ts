@@ -36,6 +36,13 @@ import {
   locateCheckout,
   probeCheckout,
 } from "../src/adapters/checkout.ts";
+import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
+import {
+  Tpm2Error,
+  type Tpm2Reason,
+  tpm2ErrorCodes,
+} from "../src/adapters/tpm2-tools.ts";
+import type { KeyProvider } from "../src/application/key-provider.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
@@ -1652,5 +1659,48 @@ describe("both commands change nothing and render nothing secret", () => {
     expect(readFileSync(agentsPath).equals(before.agents)).toBe(true);
     expect(readdirSync(checkout)).toEqual(before.checkoutListing);
     expect(readdirSync(h.directory)).toEqual(before.vaultListing);
+  });
+});
+
+describe("a TPM-backed key provider answers status without throwing", () => {
+  const tpmFailure = (reason: Tpm2Reason): KeyProvider => ({
+    load: async () => {
+      throw new TpmKeyError(tpm2ErrorCodes[reason], new Tpm2Error(reason));
+    },
+    create: async () => undefined,
+  });
+
+  async function statusWith(keyProvider: KeyProvider) {
+    const h = harness();
+    const checkout = worktree(`status-tpm-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const result = await runWard(
+      ["status", "--json"],
+      h.options(checkout, { keyProvider }),
+    );
+    return {
+      result,
+      data: json(result.stdout).data as StatusData,
+    };
+  }
+
+  test("a lone private blob is never reported as a missing key", async () => {
+    const { data } = await statusWith(tpmFailure("key_incomplete"));
+    expect(data.keyProvider.status).not.toBe("missing");
+    expect(data.keyProvider.status).toBe("unavailable");
+  });
+
+  test("a TPM refusal is reported as an unavailable key", async () => {
+    for (const reason of [
+      "tpm_not_accessible",
+      "tool_untrusted",
+      "tool_timeout",
+      "session_not_encrypted",
+    ] as const) {
+      const { result, data } = await statusWith(tpmFailure(reason));
+      expect(result.exitCode).toBe(exitCodes.success);
+      expect(data.keyProvider.status).toBe("unavailable");
+    }
   });
 });
