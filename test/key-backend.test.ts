@@ -52,7 +52,8 @@
 // Extras, not predicted: H4 also reddened "the warning is on stderr and the stdout envelope is untouched" and
 // "a warning before a failing command still reaches stderr"; H5 also reddened those two and "under --json the
 // leak warning is exactly one line"; H6 also reddened those two runWard tests; H7 also reddened
-// "a warning before a failing command still reaches stderr". Run 2026-11-15, bun 1.3.14.
+// "a warning before a failing command still reaches stderr". H10 went red on exactly its predicted test.
+// Run 2026-11-15, bun 1.3.14.
 // The mock is imported first (test-isolation.test.ts).
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
