@@ -1262,7 +1262,20 @@ export interface Tpm2State {
   readonly path?: string;
   // tool_incompatible: the tpm2-tools version, "unknown" when it could not be read.
   readonly version?: string;
+  // key_unloadable only: the wording a doctor must use, fixed here so no
+  // renderer can overstate the cause or advise a destructive step (a18).
+  readonly summary?: string;
+  readonly hint?: string;
 }
+
+// DEC-262 (a18). The cause is hedged: a TPM clear is a likely cause, never a
+// stated fact. The hint advises nothing destructive and carries the same
+// do-NOT-run-setup caution as key_incomplete: the cause may be recoverable and
+// setup would destroy the only copy of the sealed key.
+export const keyUnloadableSummary =
+  "The sealed vault key could not be loaded. A TPM clear (tpm2_clear) is a likely cause.";
+export const keyUnloadableHint =
+  "Do not run `ward setup`, re-seal the key or delete the blobs: the cause may be recoverable, and setup would destroy the only copy of the sealed key.";
 
 // A saved session visible in the TPM is an attention state, not a failure: it
 // may be Ward's own leaked slot or another program's, so the count says only
@@ -1321,8 +1334,16 @@ export function tpm2StateFor(
   options: { loadFailed?: boolean } = {},
 ): Tpm2State {
   const code = tpm2ErrorCodes[error.reason];
+  // The remainder after every more specific refusal (a18 3): only a plain
+  // tool_failed from the load is unloadable; access_refused, tool_untrusted,
+  // tool_incompatible, a timeout and the rest keep their own state.
   if (options.loadFailed === true && error.reason === "tool_failed")
-    return { state: "key_unloadable", code };
+    return {
+      state: "key_unloadable",
+      code,
+      summary: keyUnloadableSummary,
+      hint: keyUnloadableHint,
+    };
   const state = stateNames[error.reason];
   if (error.reason === "tool_untrusted")
     return { state, code, path: (error.detail ?? "").split(": ")[0] };

@@ -55,6 +55,8 @@ import {
   type Tpm2Host,
   type Tpm2Reason,
   tpm2StateFor,
+  keyUnloadableHint,
+  keyUnloadableSummary,
   tpmDevicePath,
 } from "../src/adapters/tpm2-tools.ts";
 import { errorCatalog } from "../src/contract/errors.ts";
@@ -2453,6 +2455,8 @@ describe("the TPM2 doctor states", () => {
     expect((await diagnose(cleared.bin, cleared.directory)).state).toEqual({
       state: "key_unloadable",
       code: "tpm_tool_failed",
+      summary: keyUnloadableSummary,
+      hint: keyUnloadableHint,
     });
     const broken = await sealed();
     // The seal ran with working fakes; only the probe's primary breaks now.
@@ -2462,6 +2466,68 @@ describe("the TPM2 doctor states", () => {
     expect((await diagnose(broken.bin, broken.directory)).state.state).toBe(
       "tool_failed",
     );
+  });
+
+  // DEC-262 (a18) 1: hedged wording, never "the TPM was cleared".
+  test("key_unloadable hedges: could not be loaded, a TPM clear is a likely cause, never that it was cleared", () => {
+    expect(keyUnloadableSummary).toContain("could not be loaded");
+    expect(keyUnloadableSummary).toContain("tpm2_clear");
+    expect(keyUnloadableSummary).toContain("is a likely cause");
+    expect(keyUnloadableSummary).not.toMatch(
+      /was cleared|has been cleared|were cleared|is cleared/i,
+    );
+  });
+
+  // DEC-262 (a18) 2: no destructive advice, the do-NOT-run-setup caution.
+  test("key_unloadable advises nothing destructive and carries the do-not-run-setup caution", () => {
+    expect(keyUnloadableHint.startsWith("Do not run `ward setup`")).toBe(true);
+    expect(keyUnloadableHint).toContain("only copy");
+    // The caution is the only mention of setup, re-seal and delete, and the
+    // summary mentions none of them.
+    expect(keyUnloadableSummary).not.toMatch(/setup|re-?seal|delete|remove/i);
+    expect(keyUnloadableHint).toContain(
+      errorCatalog.tpm_key_incomplete.hint.slice(0, 22),
+    );
+  });
+
+  // DEC-262 (a18) 3: key_unloadable is the remainder; each specific state wins.
+  test("a load failure that is really another refusal reports as that state, and only a plain tool failure is unloadable", async () => {
+    for (const refusal of [
+      new Tpm2Error("tpm_not_accessible", "crw-rw---- root tss"),
+      new Tpm2Error("tool_untrusted", "/usr/bin/tpm2_load: untrusted owner"),
+      new Tpm2Error("tool_incompatible", "tpm2-tools 5.6"),
+      new Tpm2Error("tool_timeout", "tpm2_load"),
+      new Tpm2Error("tool_output_too_large", "tpm2_load"),
+    ]) {
+      const state = tpm2StateFor(refusal, { loadFailed: true });
+      expect(state.state).not.toBe("key_unloadable");
+      expect(state).toEqual(tpm2StateFor(refusal));
+    }
+    expect(
+      tpm2StateFor(new Tpm2Error("tool_failed", "tpm2_load"), {
+        loadFailed: true,
+      }).state,
+    ).toBe("key_unloadable");
+    // End to end: with tpm2_load failing, access and trust are judged first.
+    const refused = await sealed({ tpm2_load: "fail" });
+    expect(
+      (await diagnose(refused.bin, refused.directory, { openCheck: denied }))
+        .state.state,
+    ).toBe("access_refused");
+    const untrusted = await sealed({ tpm2_load: "fail" });
+    expect(
+      (await diagnose(untrusted.bin, untrusted.directory, {}, [999_999])).state
+        .state,
+    ).toBe("tool_untrusted");
+    // A load that times out is a timeout, not an unloadable key.
+    const slow = await sealed({ tpm2_load: "hang" });
+    const timed = await diagnoseTpm2ForTest(
+      { path: slow.bin, device: DEVICE },
+      { trustRoot: root },
+      slow.directory,
+      { timeoutMs: 300 },
+    );
+    expect(timed.state.state).toBe("tool_timeout");
   });
 
   test("visible saved sessions are an attention state beside the state, not a failure, and name what clears them", async () => {
