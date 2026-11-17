@@ -2791,3 +2791,4 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 //   P1  tpm2Diagnoser's vault path ignores the detect seam again                 -> "with a vault, the detect seam is honoured and no tool runs against the host"
 //   P2  the preload guard's diagnoseTpm2 wrapper stops refusing the real host     -> "a test that reaches the real TPM host fails loudly..." (vault path)
 //   P3  the preload guard's detectTpm2 wrapper stops refusing the real host       -> the same test (detection-alone path)
+// OBSERVED (3d-2b ii-b first commit, bun 1.3.14, 2026-11-17; predictions above unchanged). P1-P3 each went red on exactly their one predicted test and no other. A first guard draft recursed (the mocked module's live bindings), which hung the run; it now snapshots the real functions before mocking.
