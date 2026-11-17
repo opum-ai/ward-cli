@@ -2381,6 +2381,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
 //   K9  tpm2Diagnoser hands the ward directory instead of the vault's        -> the same test (its directory assertion)
 //   K10 the probe is never given the vault id                                -> "the probe is asked for the vault, and for the host alone when there is no vault"
 //   K11 the path of an untrusted tool is dropped from the skipped check      -> "no usable TPM is skipped as tpm2_absent with prose naming which..."
+// OBSERVED (3d-2b ii-a, bun 1.3.14, 2026-11-17; predictions above unchanged). K3-K11 went red on their predicted tests. Differences: K1 also reddened "a key fault is reported once..." (it reads the pass/ok shape); K2, written as `return undefined`, crashed every doctor test, which is louder than predicted but includes all the predicted ones; K10 also reddened "the real diagnosis is called with the vault's blob directory...", which needs the vault id too. Carry 5 (#351): the unguarded-sink mutant I3 was re-run COMBINED with doctor now wired (tpm2-tools.test.ts + reporting.test.ts, 30 s timeout): it did not stall this time, one red (the throwing-sink test), 220 pass.
 // DEC-262 (a25, a26), slice 3d-2b(ii-a). Proofs carried: doctor reports EIGHT
 // checks in the fixed order on Linux and macOS; `tpm2` takes only pass or
 // skipped, never a failure, whatever state the probe names; it is skipped with
