@@ -16,8 +16,9 @@
 // Compiled fixtures are separate processes and are not covered; each names its
 // own host.
 import { afterEach, mock } from "bun:test";
+import { readlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Tpm2Host } from "../../src/adapters/tpm2-tools.ts";
 
 export const realTpmHostRefusal =
@@ -48,8 +49,28 @@ export function takeRealTpmHostTrips(): readonly string[] {
   return trips.splice(0, trips.length);
 }
 
+// The device path as the kernel would reach it: "/dev//tpmrm0" and a symlink to
+// the device are the real device too. A dangling link (no TPM here) is followed
+// by hand, since realpath refuses it.
+function resolved(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    try {
+      return resolve(dirname(absolute), readlinkSync(absolute));
+    } catch {
+      return absolute;
+    }
+  }
+}
+
 function refuseRealHost(name: string, host: Tpm2Host | undefined): void {
-  if (host?.device !== undefined && host.device !== real.tpmDevicePath) return;
+  if (
+    host?.device !== undefined &&
+    resolved(host.device) !== resolved(real.tpmDevicePath)
+  )
+    return;
   trips.push(name);
   throw new Error(realTpmHostRefusal);
 }
