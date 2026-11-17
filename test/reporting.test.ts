@@ -2399,6 +2399,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
 //   M1  tpm2 says ok for tool_untrusted (it is dropped from the host states)   -> "a host fault that also breaks the key fails once in key_provider, and tpm2 skips naming it..."
 //   M2  tpm2 adds a savedSessions key on the no-vault path                     -> "with no vault the tpm2 check has no savedSessions key..."
 //   M3  tpm2 repeats the host fault as a FAILURE (status fail)                 -> "a host fault that also breaks the key fails once..." (the tpm2 fail filter and the skipped shape)
+// OBSERVED ((a27) proofs, bun 1.3.14, 2026-11-17; predictions above unchanged). M1-M3 went red on their predicted tests. Extras: M1 also reddened the no-usable-TPM test (it loses its tool_untrusted case); M3 also reddened that test and "tpm2 takes only pass or skipped..." (both read tpm2's status).
 // DEC-262 (a25, a26), slice 3d-2b(ii-a). Proofs carried: doctor reports EIGHT
 // checks in the fixed order on Linux and macOS; `tpm2` takes only pass or
 // skipped, never a failure, whatever state the probe names; it is skipped with
