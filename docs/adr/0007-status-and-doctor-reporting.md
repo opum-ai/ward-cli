@@ -98,6 +98,13 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   script that needs to reads the vault's own checks (`permissions`, `schema`).
   Human output adds `cleared by: a reset or reboot` beneath a count (a15 item
   2); the JSON carries the count only.
+  With a vault, `tpm2` also reads `key_provider`'s result from the same run
+  (a28): when `key_provider` refused on a host state (`tool_incompatible`, which
+  only an unseal can find, or an untrusted or refused tool), `tpm2` is `skipped`
+  with `tpm2_absent` and a `reason` naming that state, so doctor fails once and
+  `tpm2` never says `ok` on that run. A named limitation, beside ADR 0028's
+  (a20): with no vault nothing is unsealed, so an incompatible tool cannot be
+  seen and `tpm2` may say `ok`.
   It never fails doctor and never repeats a key
   fault as a failure: doctor fails once, in `key_provider` (a27), and where the
   fault is a host state `tpm2` skips naming it. `leaked_slot` is not a code: a

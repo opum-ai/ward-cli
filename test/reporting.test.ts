@@ -2841,6 +2841,38 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     expect(r.result.exitCode).toBe(exitCodes.success);
   });
 
+  // DEC-262 (a28): with a vault, tpm2 consults key_provider's result.
+  test("with a vault, an unseal that fails tool_incompatible gives key_provider fail, tpm2 skipped/tpm2_absent naming it, and doctor at exit 6", async () => {
+    const provider: KeyProvider = {
+      load: async () => {
+        throw new TpmKeyError(
+          tpm2ErrorCodes.tool_incompatible,
+          new Tpm2Error("tool_incompatible", "tpm2-tools 5.6"),
+        );
+      },
+      create: async () => undefined,
+      backend: () => "tpm2",
+    };
+    // The host diagnosis cannot see an incompatibility (only an unseal can), so
+    // it says ready; the consult is what keeps tpm2 from saying ok.
+    const r = await doctorWith(async () => ({ state: { state: "ready" } }), {
+      provider,
+    });
+    expect(r.data.checks.find((c) => c.check === "key_provider")).toMatchObject(
+      { status: "fail", code: "tool_incompatible" },
+    );
+    const check = tpm2Of(r.data) as unknown as Record<string, unknown>;
+    expect(check).toMatchObject({
+      check: "tpm2",
+      status: "skipped",
+      code: "tpm2_absent",
+    });
+    expect(check.reason).toBe(
+      errorCatalog[tpm2ErrorCodes.tool_incompatible].message,
+    );
+    expect(r.result.exitCode).toBe(exitCodes.validation);
+  });
+
   test("each unavailable reason has its own fixed wording and only an untrusted tool carries a path", async () => {
     const reasons = new Set<unknown>();
     for (const unavailable of [
@@ -2984,3 +3016,6 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 //   R6  no-real-keychain.ts stops importing the guard                             -> test-isolation.test.ts "the keychain mock carries the real-TPM-host guard..."
 // The global afterEach (N1) has no in-suite mutant, since a test cannot observe its own afterEach failing; it is exercised by hand with a scratch test that trips the guard and does not take the record.
 // OBSERVED (3d-2b ii-b round 2, bun 1.3.14, 2026-11-17; predictions above unchanged). R1-R6 each went red on exactly their predicted test and no other. The afterEach (N1) by hand: a scratch test that calls detectTpm2() and swallows the throw failed with "test processes must not reach the real TPM host (detectTpm2)"; the scratch file was removed.
+// MUTANT REGISTER, WCLI-21 3d-2b ii-b ROUND 2, DEC-262 (a28), written BEFORE any run. Bun 1.3.14 on each observation.
+//   S1  tpm2 stops consulting key_provider's refusal (the (a28) consult is dropped) -> "with a vault, an unseal that fails tool_incompatible gives key_provider fail, tpm2 skipped/tpm2_absent naming it..." (tpm2 flips to pass/ok)
+//   S2  the consult skips for any refusal, not only host states                     -> "a key fault is reported once, in key_provider, and tpm2 does not repeat it" (key_incomplete would flip tpm2 to skipped)

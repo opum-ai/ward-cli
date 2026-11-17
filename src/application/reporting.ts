@@ -960,10 +960,23 @@ function tpm2PassCheck(sessions: TpmSavedSessions | undefined): DoctorCheck {
 async function tpm2Check(
   options: ReportingOptions,
   vault: VaultObservation,
+  key: KeyObservation | undefined,
 ): Promise<DoctorCheck> {
   const check = "tpm2" as const;
   if (!onLinux(options) || options.diagnoseTpm === undefined)
     return { check, status: "skipped", code: "not_applicable" };
+  // DEC-262 (a28): with a vault, tpm2 reads key_provider's result from this same
+  // run. A host-state refusal (a tool_incompatible found only by the unseal, an
+  // untrusted or refused tool) is skipped here, naming the state, so doctor fails
+  // exactly once, in key_provider, and tpm2 never says ok on that run. With no
+  // vault nothing is unsealed, so an incompatibility cannot be seen (ADR 0007).
+  if (
+    vault.status === "present" &&
+    key?.status === "unavailable" &&
+    key.refusal !== undefined &&
+    tpmHostStates.has(key.refusal.state)
+  )
+    return tpm2HostFaultCheck(key.refusal);
   let state: KeyRefusalState;
   let sessions: TpmSavedSessions | undefined;
   try {
@@ -985,8 +998,14 @@ async function tpm2Check(
     };
   }
   if (!tpmHostStates.has(state.state)) return tpm2PassCheck(sessions);
+  return tpm2HostFaultCheck(state);
+}
+
+// The skipped shape for a host state (a26 Q3): `reason` is the state's own
+// wording, and `path` rides along for an untrusted tool.
+function tpm2HostFaultCheck(state: KeyRefusalState): DoctorCheck {
   return {
-    check,
+    check: "tpm2",
     status: "skipped",
     code: "tpm2_absent",
     reason: state.summary ?? catalogEntry(state.code).message ?? tpmProbeReason,
@@ -1343,7 +1362,7 @@ export async function runDoctor(
     instructionsCheck(options.files),
     // DEC-262 (a25, a26): fixed order, every platform: the six, tpm2, then
     // secret_service.
-    await tpm2Check(options, observation.vault),
+    await tpm2Check(options, observation.vault, observation.key),
     secretServiceCheck(onLinux(options)),
   ];
   const ok = checks.every((check) => check.status !== "fail");
