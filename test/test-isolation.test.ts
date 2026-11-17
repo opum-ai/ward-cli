@@ -36,3 +36,11 @@ test("the check sees at least one such file", () => {
   );
   expect(files.length).toBeGreaterThan(0);
 });
+
+test("the keychain mock carries the real-TPM-host guard, so a test run from outside the repository root has both", () => {
+  const source = readFileSync(
+    join(testDir, "support", "no-real-keychain.ts"),
+    "utf8",
+  );
+  expect(source).toMatch(/^import "\.\/no-real-tpm-host\.ts";$/m);
+});

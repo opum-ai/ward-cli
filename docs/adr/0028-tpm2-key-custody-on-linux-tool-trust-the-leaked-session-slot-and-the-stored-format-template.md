@@ -90,8 +90,8 @@ behaviour is:
   when the unseal's error is a `Tpm2Error`; a non-`Tpm2Error` failure keeps `flushFailure` too (N4,
   closed: the test "a non-Tpm2Error unseal failure keeps flushFailure" pins it).
 - **`diagnoseTpm2`** (adapter-level; `ward doctor` calls it with a vault (detection alone without one), and its
-  `tpm2` check follows DEC-262 a26: `ok`, or `tpm2_absent` with prose, never a failure; the count
-  itself is rendered in a later slice) reports the
+  `tpm2` check follows DEC-262 a26: `ok` or `saved_sessions` with the count, or `tpm2_absent` with
+  prose, never a failure) reports the
   **visible saved-session handle count** as an attention state that does not fail doctor and names
   what clears it: a reset or a reboot. The count comes from `tpm2_getcap handles-saved-session`,
   which is not a required tool: it is resolved and trust-walked on its own. A count that cannot be
@@ -159,7 +159,10 @@ output and its JSON, asserting `tool_untrusted` and the word "untrusted"; the pr
 (reason and detail, never the `WardError`) goes through `tpm2StateFor`; detection is fresh before a
 load; the count is never rendered as zero when detection failed (NN1); a lone `.priv` counts as the
 TPM holding a key in the presence check (N3 c); and N7 above. WCLI-21's note holds the full
-carry list.
+carry list. Slice 3d-2b(ii-b) builds doctor's surface for the count (a26, a27): with a vault,
+`tpm2` is `pass` with `saved_sessions` carrying `count`, or `ok` with `savedSessions:
+"unavailable"`, a reason and, for an untrusted `tpm2_getcap`, its path; with no vault the count is
+not taken and the key is absent (NN1). Neither fails doctor.
 
 ## Measured
 

@@ -88,7 +88,24 @@ export type KeyRefusalClassifier = (
 // that is about the KEY (reported once, in key_provider), not the host.
 export interface TpmDiagnosis {
   readonly state: KeyRefusalState;
+  // The saved-session count (DEC-262 a26). Taken only for a vault, so absent
+  // for a host-only diagnosis (a27 Q1: no vault, no count). A `count` is what
+  // is visible, not a leak attributed to Ward; `unavailable` is its own answer,
+  // never zero. For a vault whose count is zero the adapter leaves it absent.
+  readonly savedSessions?: TpmSavedSessions;
 }
+
+export type TpmSavedSessions =
+  | { readonly count: number }
+  | {
+      readonly unavailable:
+        | "tool_absent"
+        | "tool_untrusted"
+        | "tool_failed"
+        | "output_unrecognised";
+      // tool_untrusted: the tool or directory that failed the trust walk (a19).
+      readonly path?: string;
+    };
 
 // Diagnoses the TPM for a vault, or for the host alone when there is no vault.
 // It may run tools, so it can be abandoned: the composition root wires the

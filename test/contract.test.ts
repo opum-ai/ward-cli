@@ -1,6 +1,7 @@
 // The mock is imported first: main.ts reaches the keychain adapter, so
 // bunfig.toml's preload alone would not cover a run from another cwd.
 import "./support/no-real-keychain.ts";
+import { noTpmHost } from "./support/no-real-tpm-host.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
@@ -127,6 +128,7 @@ function options(): RunOptions {
       service: "opum.ward.contract",
       entry: keychain.entry,
     }),
+    keySelection: { tpm2Host: noTpmHost },
     cwd: exampleCheckout,
     passphrases,
     approver,
