@@ -54,6 +54,7 @@ import type {
   KeyRefusalState,
   KeyRefusalStateName,
   TpmDiagnoser,
+  TpmSavedSessions,
 } from "./key-provider.ts";
 import type { ProjectFiles } from "./project-files.ts";
 import type { VaultStore } from "./vault-store.ts";
@@ -756,6 +757,12 @@ export interface DoctorCheck {
   readonly path?: string;
   readonly stores?: readonly string[];
   readonly version?: string;
+  // tpm2 only (DEC-262 a26 Q1, Q2, a27 Q1), and only when a vault was
+  // diagnosed: `count` rides code `saved_sessions`; `savedSessions` is
+  // "unavailable" when the count could not be read (a pass, never a failure,
+  // and never zero). With no vault neither key is present: no count was taken.
+  readonly count?: number;
+  readonly savedSessions?: "unavailable";
   // Named individually rather than counted, because the re-approve step is
   // per profile and per checkout (DEC-246 a2 clause 2), and only for this
   // project's records: other projects are a bare count (DEC-246 a3 Q1).
@@ -904,7 +911,46 @@ const tpmHostStates: ReadonlySet<KeyRefusalStateName> = new Set([
   "tool_incompatible",
 ]);
 
-// DEC-262 (a25, a26): `tpm2` is `pass` with code `ok`, or `skipped` with
+// What a tpm2 `reason` says when the saved-session count could not be read
+// (DEC-262 a26 Q2, a19). Fixed prose; an untrusted tool says so, and its path is
+// a field beside it, as visible as any other attention state.
+const savedSessionsUnavailableReason: Record<
+  Extract<TpmSavedSessions, { unavailable: string }>["unavailable"],
+  string
+> = {
+  tool_absent:
+    "tpm2_getcap is not installed, so Ward could not count saved TPM sessions. That is not a count of zero.",
+  tool_untrusted:
+    "tpm2_getcap is untrusted: it is not in a location Ward trusts to run, so the saved TPM session count is unavailable. An untrusted binary on the tool path can be a sign of tampering.",
+  tool_failed:
+    "tpm2_getcap failed, so Ward could not count saved TPM sessions. That is not a count of zero.",
+  output_unrecognised:
+    "tpm2_getcap printed something Ward does not recognise, so Ward could not count saved TPM sessions. That is not a count of zero.",
+};
+
+// A usable TPM is `pass`, with an attention state beside it when the vault's
+// diagnosis found one (DEC-262 a26): visible saved sessions carry their count
+// under `saved_sessions`; an unreadable count is `ok` with `savedSessions:
+// "unavailable"`, a reason and, for an untrusted tool, its path. Neither fails
+// doctor. A count cannot say a leak is Ward's (ADR 0028).
+function tpm2PassCheck(sessions: TpmSavedSessions | undefined): DoctorCheck {
+  const check = "tpm2" as const;
+  if (sessions === undefined) return { check, status: "pass", code: "ok" };
+  if ("unavailable" in sessions)
+    return {
+      check,
+      status: "pass",
+      code: "ok",
+      reason: savedSessionsUnavailableReason[sessions.unavailable],
+      ...(sessions.path === undefined ? {} : { path: sessions.path }),
+      savedSessions: "unavailable",
+    };
+  return sessions.count > 0
+    ? { check, status: "pass", code: "saved_sessions", count: sessions.count }
+    : { check, status: "pass", code: "ok" };
+}
+
+// DEC-262 (a25, a26): `tpm2` is `pass` with code `ok` or `saved_sessions`, or `skipped` with
 // `tpm2_absent` (no TPM is usable here) or `not_applicable` (not Linux, or this
 // report has no TPM probe wired). It is attention at most, and never a failure.
 async function tpm2Check(
@@ -915,12 +961,15 @@ async function tpm2Check(
   if (!onLinux(options) || options.diagnoseTpm === undefined)
     return { check, status: "skipped", code: "not_applicable" };
   let state: KeyRefusalState;
+  let sessions: TpmSavedSessions | undefined;
   try {
-    state = (
-      await options.diagnoseTpm(
-        vault.status === "present" ? vault.vaultId : undefined,
-      )
-    ).state;
+    const diagnosis = await options.diagnoseTpm(
+      vault.status === "present" ? vault.vaultId : undefined,
+    );
+    state = diagnosis.state;
+    // No vault, no count (a27 Q1): a count a diagnoser volunteers without one is
+    // not reported.
+    sessions = vault.status === "present" ? diagnosis.savedSessions : undefined;
   } catch {
     // A probe that failed is not a TPM fault and not a doctor failure: it fails
     // closed to "no TPM usable" with fixed prose.
@@ -931,8 +980,7 @@ async function tpm2Check(
       reason: tpmProbeReason,
     };
   }
-  if (!tpmHostStates.has(state.state))
-    return { check, status: "pass", code: "ok" };
+  if (!tpmHostStates.has(state.state)) return tpm2PassCheck(sessions);
   return {
     check,
     status: "skipped",
@@ -1207,6 +1255,10 @@ function keyDetailLines(check: DoctorCheck, hint?: string): string[] {
     lines.push(`    version: ${escapeForDisplay(check.version)}`);
   if (check.stores !== undefined && check.stores.length > 0)
     lines.push(`    stores: ${check.stores.join(", ")}`);
+  if (check.count !== undefined)
+    lines.push(`    saved sessions: ${check.count}`);
+  if (check.savedSessions !== undefined)
+    lines.push(`    saved sessions: ${check.savedSessions}`);
   if (hint !== undefined) lines.push(`    ${hint}`);
   return lines;
 }

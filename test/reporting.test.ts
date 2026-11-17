@@ -2746,7 +2746,7 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     expect(r.result.exitCode).toBe(exitCodes.validation);
   });
 
-  test("with no vault the tpm2 check has no savedSessions key, and with a vault it has none yet either", async () => {
+  test("with no vault the tpm2 check has no savedSessions key, and with a vault and no count it has none either", async () => {
     const probe: TpmDiagnoser = async () => ({ state: { state: "ready" } });
     const h = harness();
     const bare = worktree(`tpm2-nosessions-${++cases}`);
@@ -2763,6 +2763,142 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     expect("savedSessions" in (without ?? {})).toBe(false);
     const withVault = tpm2Of((await doctorWith(probe)).data);
     expect("savedSessions" in (withVault ?? {})).toBe(false);
+  });
+
+  // DEC-262 (a26 Q1/Q2, a27 Q1), WCLI-21 3d-2b ii-b.
+  test("a visible saved-session count is pass/saved_sessions carrying its count, in JSON and human output, and never fails doctor", async () => {
+    const r = await doctorWith(async () => ({
+      state: { state: "ready" },
+      savedSessions: { count: 2 },
+    }));
+    expect(tpm2Of(r.data) as unknown).toEqual({
+      check: "tpm2",
+      status: "pass",
+      code: "saved_sessions",
+      count: 2,
+    });
+    expect(r.text).toContain("saved_sessions");
+    expect(r.text).toContain("saved sessions: 2");
+    expect(r.result.exitCode).toBe(exitCodes.success);
+  });
+
+  test("an untrusted getcap stays pass/ok with savedSessions unavailable, its reason and its path, in JSON and human output", async () => {
+    const path = "/synthetic/bin/tpm2_getcap";
+    const r = await doctorWith(async () => ({
+      state: { state: "ready" },
+      savedSessions: { unavailable: "tool_untrusted", path },
+    }));
+    const check = tpm2Of(r.data) as unknown as Record<string, unknown>;
+    expect(check).toMatchObject({
+      check: "tpm2",
+      status: "pass",
+      code: "ok",
+      path,
+      savedSessions: "unavailable",
+    });
+    expect(check.reason).toContain("untrusted");
+    expect(r.text).toContain(path);
+    expect(r.text).toContain("untrusted");
+    expect(r.text).toContain("saved sessions: unavailable");
+    // The key is fine, so key_provider passes and doctor exits 0.
+    expect(r.data.checks.find((c) => c.check === "key_provider")?.status).toBe(
+      "pass",
+    );
+    expect(r.result.exitCode).toBe(exitCodes.success);
+  });
+
+  test("each unavailable reason has its own fixed wording and only an untrusted tool carries a path", async () => {
+    const reasons = new Set<unknown>();
+    for (const unavailable of [
+      "tool_absent",
+      "tool_untrusted",
+      "tool_failed",
+      "output_unrecognised",
+    ] as const) {
+      const r = await doctorWith(async () => ({
+        state: { state: "ready" },
+        savedSessions:
+          unavailable === "tool_untrusted"
+            ? { unavailable, path: "/synthetic/bin/tpm2_getcap" }
+            : { unavailable },
+      }));
+      const check = tpm2Of(r.data) as unknown as Record<string, unknown>;
+      expect(check.status).toBe("pass");
+      expect(check.code).toBe("ok");
+      expect("path" in check).toBe(unavailable === "tool_untrusted");
+      reasons.add(check.reason);
+    }
+    expect(reasons.size).toBe(4);
+  });
+
+  test("savedSessions is absent with no vault and with a zero count, and present with a vault when the count is unavailable", async () => {
+    const volunteered: TpmDiagnoser = async () => ({
+      state: { state: "ready" },
+      savedSessions: { count: 3 },
+    });
+    // No vault: a count the diagnoser volunteers is not reported (a27 Q1).
+    const h = harness();
+    const bare = worktree(`tpm2-novault-count-${++cases}`);
+    const noVault = await runWard(
+      ["doctor", "--json"],
+      h.options(bare, {
+        keySelection: { platform: "linux", diagnose: volunteered },
+      }),
+    );
+    const without = (json(noVault.stdout).data as DoctorData).checks.find(
+      (c) => c.check === "tpm2",
+    );
+    expect(without).toEqual({ check: "tpm2", status: "pass", code: "ok" });
+    expect("savedSessions" in (without ?? {})).toBe(false);
+    expect("count" in (without ?? {})).toBe(false);
+    // A vault with an unreadable count carries the key.
+    const withVault = tpm2Of(
+      (
+        await doctorWith(async () => ({
+          state: { state: "ready" },
+          savedSessions: { unavailable: "tool_failed" },
+        }))
+      ).data,
+    );
+    expect("savedSessions" in (withVault ?? {})).toBe(true);
+    // A vault with a zero count (no key at all) does not.
+    const zero = tpm2Of(
+      (await doctorWith(async () => ({ state: { state: "ready" } }))).data,
+    );
+    expect("savedSessions" in (zero ?? {})).toBe(false);
+  });
+
+  test("a count of zero is just ok, with no count key", async () => {
+    const r = await doctorWith(async () => ({
+      state: { state: "ready" },
+      savedSessions: { count: 0 },
+    }));
+    expect(tpm2Of(r.data) as unknown).toEqual({
+      check: "tpm2",
+      status: "pass",
+      code: "ok",
+    });
+  });
+
+  test("the diagnoser hands the vault's saved-session answer to the check and none without a vault", async () => {
+    const h = harness();
+    const checkout = worktree(`tpm2-sessions-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const vaultId = h.store.header()?.vaultId as string;
+    const diagnoser = tpm2Diagnoser(join(tmpdir(), "ward-x"), {
+      platform: "linux",
+      tpm2Host: noTpmHost,
+      diagnoseTpm2: async () => ({
+        state: { state: "ready" as const },
+        savedSessions: { count: 1, clearedBy: "reset or reboot" as const },
+      }),
+    });
+    expect((await diagnoser(vaultId)).savedSessions).toMatchObject({
+      count: 1,
+    });
+    const bare = await diagnoser(undefined);
+    expect("savedSessions" in bare).toBe(false);
   });
 
   test("the probe is asked for the vault, and for the host alone when there is no vault", async () => {
@@ -2792,3 +2928,15 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 //   P2  the preload guard's diagnoseTpm2 wrapper stops refusing the real host     -> "a test that reaches the real TPM host fails loudly..." (vault path)
 //   P3  the preload guard's detectTpm2 wrapper stops refusing the real host       -> the same test (detection-alone path)
 // OBSERVED (3d-2b ii-b first commit, bun 1.3.14, 2026-11-17; predictions above unchanged). P1-P3 each went red on exactly their one predicted test and no other. A first guard draft recursed (the mocked module's live bindings), which hung the run; it now snapshots the real functions before mocking.
+
+// MUTANT REGISTER, WCLI-21 3d-2b ii-b (DEC-262 a26 Q1/Q2, a27 Q1), written BEFORE any run. Bun 1.3.14 on each observation.
+//   Q1  a visible count is reported as code ok, not saved_sessions                -> "a visible saved-session count is pass/saved_sessions carrying its count..."
+//   Q2  the count key is dropped from the saved_sessions check                    -> the same test
+//   Q3  the human output drops the count line                                     -> the same test (its text assertion)
+//   Q4  an unavailable count drops the path of an untrusted getcap                -> "an untrusted getcap stays pass/ok with savedSessions unavailable, its reason and its path, in JSON and human output"
+//   Q5  an unavailable count drops the savedSessions key                          -> the same test, and "savedSessions is absent with no vault and with a zero count, and present with a vault when the count is unavailable"
+//   Q6  an unavailable count makes the check skipped                              -> the same untrusted test (status pass, doctor exit 0)
+//   Q7  the no-vault gate is dropped (a count is reported without a vault)        -> "savedSessions is absent with no vault..."
+//   Q8  a count of zero is reported as saved_sessions                             -> "a count of zero is just ok, with no count key"
+//   Q9  every unavailable reason shares one wording                               -> "each unavailable reason has its own fixed wording and only an untrusted tool carries a path"
+//   Q10 tpm2Diagnoser's vault path drops savedSessions from the diagnosis         -> "the diagnoser hands the vault's saved-session answer to the check and none without a vault"
