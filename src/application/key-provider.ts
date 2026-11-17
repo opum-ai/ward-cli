@@ -1,3 +1,4 @@
+import type { ErrorCode } from "../contract/errors.ts";
 // The port through which Ward reaches the vault key (spec §6.4). The key is
 // held in memory for one invocation at most; no implementation caches it
 // across processes.
@@ -39,9 +40,31 @@ export interface KeyProvider {
 // so a renderer never parses a message (DEC-262 a15, a18, a19, a20). The shape
 // matches the TPM2 adapter's doctor state; the application layer holds only
 // this structural type and receives the classifier from the composition root.
+// Every state a backend can name for a refusal. The adapter's own state type is
+// this one, so a new state is a compile error where it is made and where a
+// report maps it to a code.
+export type KeyRefusalStateName =
+  | "ready"
+  | "unsupported"
+  | "access_refused"
+  | "tools_absent"
+  | "tpm_unusable"
+  | "tool_untrusted"
+  | "tool_incompatible"
+  | "session_not_encrypted"
+  | "blob_not_user_private"
+  | "key_not_sealed"
+  | "key_incomplete"
+  | "key_unloadable"
+  | "key_exists"
+  | "directory_unusable"
+  | "tool_timeout"
+  | "tool_output_too_large"
+  | "tool_failed";
+
 export interface KeyRefusalState {
-  readonly state: string;
-  readonly code?: string;
+  readonly state: KeyRefusalStateName;
+  readonly code?: ErrorCode;
   // tool_untrusted: the tool or directory that failed the trust walk.
   readonly path?: string;
   // tool_incompatible: the tpm2-tools version, "unknown" when unreadable.

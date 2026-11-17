@@ -33,7 +33,7 @@
 // `ward check` (WCLI-9), not this command. Doctor exits 0 when no check
 // failed and 6 when any did, with every check reported either way.
 import { type ExitCode, exitCodes } from "../contract/envelope.ts";
-import { WardError } from "../contract/errors.ts";
+import { errorCatalog, WardError } from "../contract/errors.ts";
 import type { AgentTarget } from "../contract/manifest.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { managedBlockStatus } from "../domain/managed-block.ts";
@@ -51,6 +51,7 @@ import type {
   KeyProvider,
   KeyRefusalClassifier,
   KeyRefusalState,
+  KeyRefusalStateName,
 } from "./key-provider.ts";
 import type { ProjectFiles } from "./project-files.ts";
 import type { VaultStore } from "./vault-store.ts";
@@ -300,7 +301,14 @@ export async function observeKey(
         // what lets setup run (WCLI-21 N3 a). The refusal's state rides along
         // for the renderers of slice 3d-2.
         if (wardCode(error)?.startsWith("tpm_") === true) {
-          const refusal = classify?.(error);
+          // A classifier that throws must not take the report down: fail
+          // closed to a plain unavailable key.
+          let refusal: KeyRefusalState | undefined;
+          try {
+            refusal = classify?.(error);
+          } catch {
+            refusal = undefined;
+          }
           return refusal === undefined
             ? { status: "unavailable" }
             : { status: "unavailable", refusal };
@@ -790,7 +798,7 @@ function keyCheck(
       check,
       status: "fail",
       code: "vault_key_ambiguous",
-      reason: "vault_key_ambiguous",
+      reason: errorCatalog.vault_key_ambiguous.message,
       stores: key.stores,
     };
   switch (reportedKeyStatus(key)) {
@@ -810,16 +818,30 @@ function keyCheck(
 }
 
 // The states a TPM refusal reports under their own code (DEC-262 a24 Q2);
-// every other refusal stays `unavailable` and names its state in `reason`.
-const keyStateCodes: ReadonlySet<string> = new Set([
-  "key_incomplete",
-  "key_unloadable",
-  "tool_untrusted",
-  "tool_incompatible",
-]);
+// every other refusal stays `unavailable` and names its state in `reason`. The
+// Record is exhaustive: a new state is a compile error until it is placed.
+const keyStateCode: Record<KeyRefusalStateName, string> = {
+  key_incomplete: "key_incomplete",
+  key_unloadable: "key_unloadable",
+  tool_untrusted: "tool_untrusted",
+  tool_incompatible: "tool_incompatible",
+  ready: "unavailable",
+  unsupported: "unavailable",
+  access_refused: "unavailable",
+  tools_absent: "unavailable",
+  tpm_unusable: "unavailable",
+  session_not_encrypted: "unavailable",
+  blob_not_user_private: "unavailable",
+  key_not_sealed: "unavailable",
+  key_exists: "unavailable",
+  directory_unusable: "unavailable",
+  tool_timeout: "unavailable",
+  tool_output_too_large: "unavailable",
+  tool_failed: "unavailable",
+};
 
 function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
-  const code = keyStateCodes.has(refusal.state) ? refusal.state : "unavailable";
+  const code = keyStateCode[refusal.state];
   return {
     check: "key_provider",
     status: "fail",
@@ -1076,12 +1098,20 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
 // What a key_provider failure adds beneath its line, in the same fields the
 // JSON carries, so the reason, the path and the stores are as visible in
 // human output as in JSON (DEC-262 a19, a24).
+// The recovery step a failed key check adds in human output only. Ambiguity
+// carries the catalog's recovery wording; a TPM state carries its own hint.
+function keyRecoveryHint(key: KeyObservation | undefined): string | undefined {
+  if (key?.status === "ambiguous") return errorCatalog.vault_key_ambiguous.hint;
+  return key?.status === "unavailable" ? key.refusal?.hint : undefined;
+}
+
 function keyDetailLines(check: DoctorCheck, hint?: string): string[] {
   const lines: string[] = [];
   if (check.reason !== undefined) lines.push(`    reason: ${check.reason}`);
   if (check.path !== undefined)
     lines.push(`    path: ${escapeForDisplay(check.path)}`);
-  if (check.version !== undefined) lines.push(`    version: ${check.version}`);
+  if (check.version !== undefined)
+    lines.push(`    version: ${escapeForDisplay(check.version)}`);
   if (check.stores !== undefined && check.stores.length > 0)
     lines.push(`    stores: ${check.stores.join(", ")}`);
   if (hint !== undefined) lines.push(`    ${hint}`);
@@ -1165,12 +1195,7 @@ export async function runDoctor(
   const data: DoctorReport = { ok, checks };
   return {
     data,
-    text: doctorText(
-      data,
-      observation.key?.status === "unavailable"
-        ? observation.key.refusal?.hint
-        : undefined,
-    ),
+    text: doctorText(data, keyRecoveryHint(observation.key)),
     exitCode: ok ? exitCodes.success : exitCodes.validation,
   };
 }

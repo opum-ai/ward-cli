@@ -1800,12 +1800,24 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       ["doctor", "--json"],
       h.options(checkout, { keyProvider }),
     );
-    const checks = (
-      json(doctor.stdout).data as { checks: { check: string; code: string }[] }
-    ).checks;
-    expect(checks.find((c) => c.check === "key_provider")?.code).toBe(
-      "vault_key_ambiguous",
-    );
+    // The WHOLE array and the exit code: every check that reads the key's
+    // status renders it from one place, so a site that stopped doing so would
+    // leak an unruled code here.
+    expect(doctor.exitCode).toBe(exitCodes.validation);
+    const checks = (json(doctor.stdout).data as DoctorData).checks.map((c) => [
+      c.check,
+      c.status,
+      c.code,
+    ]);
+    expect(checks).toEqual([
+      ["permissions", "pass", "private"],
+      ["key_provider", "fail", "vault_key_ambiguous"],
+      ["schema", "fail", "key_unavailable"],
+      ["binding", "fail", "key_unavailable"],
+      ["stale_approvals", "fail", "key_unavailable"],
+      ["instructions", "skipped", "absent"],
+      ["secret_service", "skipped", "not_applicable"],
+    ]);
   });
 
   test("a TPM refusal carries its doctor state, never the WardError's text", async () => {
@@ -1814,9 +1826,15 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       "v",
       keyRefusalState,
     );
-    expect(observed).toMatchObject({
+    // toEqual, so a refusal that also carried the error's message, or any
+    // other key, fails: it is exactly the state, its code and the path.
+    expect(observed).toEqual({
       status: "unavailable",
-      refusal: { state: "tool_untrusted", path: "/synthetic/tpm2_unseal" },
+      refusal: {
+        state: "tool_untrusted",
+        code: tpm2ErrorCodes.tool_untrusted,
+        path: "/synthetic/tpm2_unseal",
+      },
     });
   });
 
@@ -1826,10 +1844,11 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       "v",
       keyRefusalState,
     );
-    expect(observed).toMatchObject({
+    expect(observed).toEqual({
       status: "unavailable",
       refusal: {
         state: "key_unloadable",
+        code: tpm2ErrorCodes.tool_failed,
         summary: keyUnloadableSummary,
         hint: keyUnloadableHint,
       },
@@ -1842,8 +1861,13 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       "v",
       keyRefusalState,
     );
-    expect(observed.status).toBe("unavailable");
-    expect(observed).toMatchObject({ refusal: { state: "key_incomplete" } });
+    expect(observed).toEqual({
+      status: "unavailable",
+      refusal: {
+        state: "key_incomplete",
+        code: tpm2ErrorCodes.key_incomplete,
+      },
+    });
   });
 
   test("without a classifier, or from a refusal that is not a TPM load, no state is attached", async () => {
@@ -1857,6 +1881,31 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
         keyRefusalState,
       ),
     ).toEqual({ status: "unavailable" });
+  });
+
+  test("a classifier that throws fails closed to a plain unavailable key", async () => {
+    expect(
+      await observeKey(failing(tpm("key_incomplete")), "v", () => {
+        throw new Error("synthetic classifier fault");
+      }),
+    ).toEqual({ status: "unavailable" });
+  });
+
+  test("an incompatible tool's version is carried", async () => {
+    expect(
+      await observeKey(
+        failing(tpm("tool_incompatible", "tpm2-tools 5.6")),
+        "v",
+        keyRefusalState,
+      ),
+    ).toEqual({
+      status: "unavailable",
+      refusal: {
+        state: "tool_incompatible",
+        code: tpm2ErrorCodes.tool_incompatible,
+        version: "5.6",
+      },
+    });
   });
 
   test("an unrecognised failure still throws", async () => {
@@ -1890,6 +1939,14 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   F6  secret_service says not_implemented on macOS                           -> "secret_service is the last check on every platform...", "on macOS the backend is the keychain...", "a healthy checkout passes every check and exits 0"
 //   F7  the hint is dropped from the human doctor output                       -> "key_provider's JSON carries no summary or hint key, and the hint is human output only"
 // OBSERVED (a25 round, bun 1.3.14, 2026-11-17; predictions above unchanged). F2, F5, F7 went red on exactly their predicted tests; F3 survived, as predicted. F1 also reddened the hint test (it reads the reason); F4 also reddened three existing doctor tests that list the checks; F6 also reddened "a healthy checkout passes every check and exits 0".
+// MUTANT REGISTER, #347 review carry-in round, written BEFORE any run. Bun 1.3.14 on each observation. D9 above is now PINNED (see G5); it was "not run: predicted to survive" until rendering existed.
+//   G1  the human doctor prints the path unescaped                             -> "a path and a version from the host are escaped before they are printed"
+//   G2  the human doctor prints the version unescaped                          -> "a path and a version from the host are escaped before they are printed"
+//   G3  the classifier call is not guarded                                     -> "a classifier that throws fails closed to a plain unavailable key"
+//   G4  the ambiguous recovery hint is dropped from the human output           -> "an ambiguous vault shows its recovery hint in human output only"
+//   G5  main.ts stops passing classifyKeyRefusal (D9)                          -> "each of the five key states renders in JSON and in human output" (key_incomplete, key_unloadable, tool_untrusted and tool_incompatible lose their codes)
+//   G6  schemaCheck stops rendering the key status through reportedKeyStatus   -> "status and doctor answer on an ambiguous vault instead of throwing" (its whole-array assertion)
+//   G7  the ambiguous check reports exit 0 (key check passes)                  -> "status and doctor answer on an ambiguous vault..." and "a broken key exits 6..."
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a
@@ -2059,6 +2116,25 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
     expect(r.doctorText).toContain("/synthetic/tpm2_unseal");
     expect(JSON.stringify(r.doctorData)).toContain("tool_untrusted");
     expect(JSON.stringify(r.doctorData)).toContain("/synthetic/tpm2_unseal");
+  });
+
+  test("a path and a version from the host are escaped before they are printed", async () => {
+    const hostile = "\u001b[31m/synthetic/tpm2_unseal\u0007";
+    const untrusted = await reports(tpm("tool_untrusted", undefined, hostile));
+    expect(untrusted.doctorText).not.toContain("\u001b");
+    expect(untrusted.doctorText).not.toContain("\u0007");
+    expect(untrusted.doctorText).toContain("/synthetic/tpm2_unseal");
+    const incompatible = await reports(
+      tpm("tool_incompatible", "tpm2-tools 5.6\u001b[31m"),
+    );
+    expect(incompatible.doctorText).not.toContain("\u001b");
+    expect(incompatible.doctorText).toContain("5.6");
+  });
+
+  test("an ambiguous vault shows its recovery hint in human output only", async () => {
+    const r = await reports(ambiguous);
+    expect(r.doctorText).toContain("recovery condition");
+    expect(JSON.stringify(r.doctorData)).not.toContain("recovery condition");
   });
 
   test("a broken key exits 6 and the failure is on key_provider", async () => {
