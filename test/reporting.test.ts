@@ -2395,6 +2395,10 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
 //   L4  the no-vault path ignores the detect seam                                  -> "the diagnoser honours the host seam on both paths..."
 //   L5  the diagnosis directory is tpm/<wrong vault id> (right prefix)             -> "the real diagnosis is called with the vault's blob directory..." (exact join)
 // OBSERVED (#352 round-1 fixes, bun 1.3.14, 2026-11-17; predictions above unchanged). L1-L5 went red on exactly their predicted tests (L1 also reddened the no-wording test, since it ignores the catalog for every state). L1 is the reviewer's mutant that survived before.
+// MUTANT REGISTER, DEC-262 (a27) proofs, written BEFORE any run. Bun 1.3.14 on each observation. The proof uses tpm2_unseal, a REQUIRED tool, not tpm2_getcap: an untrusted getcap leaves the state `ready` (ii-b's attention case), so it could not make key_provider fail.
+//   M1  tpm2 says ok for tool_untrusted (it is dropped from the host states)   -> "a host fault that also breaks the key fails once in key_provider, and tpm2 skips naming it..."
+//   M2  tpm2 adds a savedSessions key on the no-vault path                     -> "with no vault the tpm2 check has no savedSessions key..."
+//   M3  tpm2 repeats the host fault as a FAILURE (status fail)                 -> "a host fault that also breaks the key fails once..." (the tpm2 fail filter and the skipped shape)
 // DEC-262 (a25, a26), slice 3d-2b(ii-a). Proofs carried: doctor reports EIGHT
 // checks in the fixed order on Linux and macOS; `tpm2` takes only pass or
 // skipped, never a failure, whatever state the probe names; it is skipped with
@@ -2660,6 +2664,69 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
       },
     })(undefined);
     expect(viaDetect.state.state).toBe("access_refused");
+  });
+
+  // DEC-262 (a27) proofs.
+  test("a host fault that also breaks the key fails once in key_provider, and tpm2 skips naming it, with doctor at exit 6", async () => {
+    const path = "/synthetic/tpm2_unseal";
+    const provider: KeyProvider = {
+      load: async () => {
+        throw new TpmKeyError(
+          tpm2ErrorCodes.tool_untrusted,
+          new Tpm2Error("tool_untrusted", undefined, { path }),
+        );
+      },
+      create: async () => undefined,
+      backend: () => "tpm2",
+    };
+    const r = await doctorWith(
+      async () => ({
+        state: {
+          state: "tool_untrusted",
+          code: tpm2ErrorCodes.tool_untrusted,
+          path,
+        },
+      }),
+      { provider },
+    );
+    const key = r.data.checks.find((c) => c.check === "key_provider");
+    expect(key).toMatchObject({
+      status: "fail",
+      code: "tool_untrusted",
+      path,
+    });
+    expect(tpm2Of(r.data) as unknown).toEqual({
+      check: "tpm2",
+      status: "skipped",
+      code: "tpm2_absent",
+      reason: errorCatalog.tpm_tool_untrusted.message,
+      path,
+    });
+    // Doctor fails exactly once for it: only key_provider is a failure among
+    // the two, and the tpm2 check is never `ok` on an untrusted tool.
+    expect(
+      r.data.checks.filter((c) => c.status === "fail" && c.check === "tpm2"),
+    ).toEqual([]);
+    expect(r.result.exitCode).toBe(exitCodes.validation);
+  });
+
+  test("with no vault the tpm2 check has no savedSessions key, and with a vault it has none yet either", async () => {
+    const probe: TpmDiagnoser = async () => ({ state: { state: "ready" } });
+    const h = harness();
+    const bare = worktree(`tpm2-nosessions-${++cases}`);
+    const noVault = await runWard(
+      ["doctor", "--json"],
+      h.options(bare, {
+        keySelection: { platform: "linux", diagnose: probe },
+      }),
+    );
+    const without = (json(noVault.stdout).data as DoctorData).checks.find(
+      (c) => c.check === "tpm2",
+    );
+    expect(without).toEqual({ check: "tpm2", status: "pass", code: "ok" });
+    expect("savedSessions" in (without ?? {})).toBe(false);
+    const withVault = tpm2Of((await doctorWith(probe)).data);
+    expect("savedSessions" in (withVault ?? {})).toBe(false);
   });
 
   test("the probe is asked for the vault, and for the host alone when there is no vault", async () => {
