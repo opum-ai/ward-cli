@@ -23,6 +23,7 @@ import {
   Tpm2Error,
   tpm2ErrorCodes,
   tpm2StateFor,
+  type Tpm2Host,
   type Tpm2Warning,
 } from "./tpm2-tools.ts";
 
@@ -196,12 +197,16 @@ export interface KeySelection {
   // Test seam for the diagnosis call itself, so a test can prove the abandon
   // sink reaches it. Production leaves it unset (the real diagnoseTpm2 runs).
   readonly diagnoseTpm2?: typeof diagnoseTpm2;
+  // Test seam: the host doctor's TPM probe looks at (search path, device, open
+  // check). Production leaves it unset, so the real host is probed.
+  readonly tpm2Host?: Tpm2Host;
 }
 
 // Doctor's TPM diagnosis on Linux (DEC-262 a26). With a vault it is the
-// adapter's full diagnosis of that vault's blob directory; with none it is the
-// host alone (presence, access, tools), and no tool runs against a directory
-// that does not exist. The abandon sink is the command's own, so a timed-out
+// adapter's diagnosis of that vault's blob directory (diagnoseTpm2); with none
+// it is detection alone (detectTpm2: presence, access, tools), and no tool runs
+// against a directory that does not exist. Both look at `selection.tpm2Host`
+// (the real host when unset), and the no-vault path honours `tpm2.detect`. The abandon sink is the command's own, so a timed-out
 // tool still makes the command exit explicitly.
 export function tpm2Diagnoser(
   wardDirectory: string,
@@ -212,7 +217,7 @@ export function tpm2Diagnoser(
   return async (vaultId): Promise<TpmDiagnosis> => {
     if (vaultId !== undefined)
       return await (selection.diagnoseTpm2 ?? diagnoseTpm2)(
-        {},
+        selection.tpm2Host ?? {},
         directoryFor(vaultId),
         {
           timeoutMs: selection.tpm2?.timeoutMs,
@@ -220,7 +225,9 @@ export function tpm2Diagnoser(
         },
       );
     try {
-      detectTpm2();
+      (
+        selection.tpm2?.detect ?? (() => detectTpm2(selection.tpm2Host ?? {}))
+      )();
     } catch (error) {
       if (error instanceof Tpm2Error) return { state: tpm2StateFor(error) };
       throw error;

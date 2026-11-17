@@ -742,8 +742,8 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
-  // key_provider only (DEC-262 a24 Q2, a25): why the key could not be had, when
-  // the backend said. `reason` is always prose: the state's fixed wording
+  // key_provider and tpm2 (DEC-262 a24 Q2, a25, a26): why the key could not be
+  // had, or why no TPM is usable, when the backend said. `reason` is always prose: the state's fixed wording
   // (key_unloadable's doctor string is carried unchanged), the catalog's
   // message for its code, or the fixed unknownRefusalReason; `path`
   // is a tool that failed the trust walk; `stores` names the stores that both
@@ -846,12 +846,20 @@ const keyStateCode: Record<KeyRefusalStateName, string> = {
   tool_failed: "unavailable",
 };
 
-// The catalog's fixed wording for a refusal's contract code, so `reason` is
-// always prose, never a bare state token (DEC-262 a25 pick 3).
-// What `reason` says when the catalog has no wording for a refusal's code (or
-// the refusal carries none): fixed prose, never the state token.
+// What a key_provider `reason` says when the catalog has no wording for a
+// refusal's code (or the refusal carries none): fixed prose, never the state
+// token.
 export const unknownRefusalReason =
   "The credential store did not give the vault key, and Ward has no more specific wording for why.";
+
+// What a tpm2 `reason` says when the catalog has no wording for the host state,
+// or the probe itself failed: fixed prose about the TPM probe, not about a vault
+// key (tpm2 is a host check, and may run with no vault at all).
+export const tpmProbeReason =
+  "Ward could not tell whether a TPM is usable on this host, so the check was skipped.";
+
+// The catalog's fixed wording for a refusal's contract code, so `reason` is
+// always prose, never a bare state token (DEC-262 a25 pick 3).
 
 function catalogEntry(code: ErrorCode | undefined): {
   message?: string;
@@ -896,7 +904,7 @@ const tpmHostStates: ReadonlySet<KeyRefusalStateName> = new Set([
 
 // DEC-262 (a25, a26): `tpm2` is `pass` with code `ok`, or `skipped` with
 // `tpm2_absent` (no TPM is usable here) or `not_applicable` (not Linux, or this
-// report has no TPM probe). It is attention at most, and never a failure.
+// report has no TPM probe wired). It is attention at most, and never a failure.
 async function tpm2Check(
   options: ReportingOptions,
   vault: VaultObservation,
@@ -918,7 +926,7 @@ async function tpm2Check(
       check,
       status: "skipped",
       code: "tpm2_absent",
-      reason: unknownRefusalReason,
+      reason: tpmProbeReason,
     };
   }
   if (!tpmHostStates.has(state.state))
@@ -927,8 +935,7 @@ async function tpm2Check(
     check,
     status: "skipped",
     code: "tpm2_absent",
-    reason:
-      state.summary ?? catalogEntry(state.code).message ?? unknownRefusalReason,
+    reason: state.summary ?? catalogEntry(state.code).message ?? tpmProbeReason,
     ...(state.path === undefined ? {} : { path: state.path }),
   };
 }

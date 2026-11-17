@@ -86,7 +86,7 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   `not_implemented` on Linux and `not_applicable` elsewhere. The `tpm2` check
   (a25, a26) is `pass` with `ok`, or `skipped` with `tpm2_absent` (no TPM is
   usable; `reason` is prose naming which, `path` for an untrusted tool) or
-  `not_applicable` (off Linux); it never fails doctor and never repeats a key
+  `not_applicable` (off Linux, or no TPM probe wired); it never fails doctor and never repeats a key
   fault, which `key_provider` reports once. `leaked_slot` is not a code: a
   saved-session count cannot attribute a leak to Ward. No existing field
   changes.

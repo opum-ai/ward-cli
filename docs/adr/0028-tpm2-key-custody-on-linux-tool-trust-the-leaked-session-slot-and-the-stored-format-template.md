@@ -89,7 +89,7 @@ behaviour is:
   holding the flush's reason, and `detail` stays the unseal's. No warning is emitted. This holds only
   when the unseal's error is a `Tpm2Error`; a non-`Tpm2Error` failure keeps `flushFailure` too (N4,
   closed: the test "a non-Tpm2Error unseal failure keeps flushFailure" pins it).
-- **`diagnoseTpm2`** (adapter-level; `ward doctor` calls it for the host and key state, and its
+- **`diagnoseTpm2`** (adapter-level; `ward doctor` calls it with a vault (detection alone without one), and its
   `tpm2` check follows DEC-262 a26: `ok`, or `tpm2_absent` with prose, never a failure; the count
   itself is rendered in a later slice) reports the
   **visible saved-session handle count** as an attention state that does not fail doctor and names
@@ -158,7 +158,7 @@ test that fails if it drops the warning; doctor shows the untrusted reason and p
 output and its JSON, asserting `tool_untrusted` and the word "untrusted"; the provider's `Tpm2Error`
 (reason and detail, never the `WardError`) goes through `tpm2StateFor`; detection is fresh before a
 load; the count is never rendered as zero when detection failed (NN1); a lone `.priv` counts as the
-TPM holding a key in the presence check (N3 c); and N4 and N7 above. WCLI-21's note holds the full
+TPM holding a key in the presence check (N3 c); and N7 above. WCLI-21's note holds the full
 carry list.
 
 ## Measured
