@@ -199,6 +199,13 @@ case (a session file crossing processes, with an unseal under it), so it is not 
 - A leaked slot is surfaced twice, once as a one-shot warning from the unseal that saw it and once
   as a count from `diagnoseTpm2` (which doctor shows once 3d wires it), and never retried. Neither
   fails a command or doctor.
+- The one-shot warning reaches the user on **stderr**, in front of anything else the command writes
+  there, and never on stdout (DEC-262 a23). Under `--json` it is exactly one line,
+  `{"warning":"tpm_session_leaked"}`, so a consumer that parses the stdout envelope must also read
+  stderr for it; in human mode it is a sentence naming the code and that a reset or reboot clears
+  the slot. Neither carries a path or a handle. A second warning type is a new question, not a
+  reason to change the envelope.
+  The contract is stated in [Ward's stderr output contract](../reference/ward-s-stderr-output-contract.md).
 - `key_unloadable` can be raised for causes other than a TPM clear. The hedge in its wording and the
   absence of any destructive advice are what keep that safe, and they are tested.
 - What 3d must build against this record is listed in (vii) and, in full, on WCLI-21.

@@ -35,6 +35,7 @@
 - 2026-10-26T16:21:03-05:00 50b553b576c80a3495880fed817f3d211666d6da docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3 (#198)
 - 2026-10-28T09:19:42-05:00 e7cf35ce5fa6d028358f183fb59bfc63f3b2cb2c feat(WCLI-92): ship opum-ward from a lean plugin/ directory (#204)
 - 2026-11-03T10:48:55-06:00 f612a61ecf307c966edbc339dd4a38b668624661 fix(WCLI-140): the legacy hint names ward init only where init can run; docs and field naming (#267)
+- 2026-11-16T22:37:42-06:00 61fb355bef4ad4c3f3ed6bf00b4253ef327ae365 docs(WCLI-21): Ward's stderr output contract concept, pinned by a test and linked from ADR 0028
 
 ## docs/adr
 
@@ -68,6 +69,8 @@
 - 2026-11-07T20:17:46-06:00 f65f2183f1798c54ba215d25f69d523732947378 feat(WCLI-149): sign profile, ward sign, per-kind snapshot versions (DEC-262 a3, a4), part 2 (#288)
 - 2026-11-08T15:00:27-06:00 fb08b926d92ab2aced164dc3cfdcfec2334f37a0 fix(WCLI-152): the Linux setup lock is kernel-arbitrated flock, with no O_EXCL fallback (#294)
 - 2026-11-08T15:08:32-06:00 8133f1c69da6e0fef5b4820a0794d8a124ea12e7 docs(WCLI-155): CI runs on the GitHub-hosted ubuntu-24.04-arm runner, not self-hosted (#300)
+- 2026-11-14T20:22:38-06:00 344ca6d6c51939a46216ea641e4d73acaed3f21d docs(WCLI-21): ADR 0028, TPM2 key custody on Linux (slice 3c) (#334)
+- 2026-11-14T21:13:29-06:00 d9adb6d77dff01f91f5881b3a6c38db230402a21 feat(WCLI-21): the DEC-262 (a23) conditions: init hint, leak warning on stderr, contract entry
 
 ## docs/runbooks
 

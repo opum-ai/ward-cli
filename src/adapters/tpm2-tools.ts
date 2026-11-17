@@ -887,6 +887,13 @@ export async function createPrimary(
   return context;
 }
 
+// Whether a sealed key is held in this directory: the private blob is the
+// commit marker, so a lone .priv counts as held (a recovery condition, never
+// "no key"), and a lone .pub does not (WCLI-21 N3 c, DEC-262 a16 Q1).
+export function holdsSealedKey(directory: string): boolean {
+  return exists(join(directory, sealedPrivateName));
+}
+
 function exists(path: string): boolean {
   try {
     lstatSync(path);
@@ -1140,6 +1147,7 @@ async function toolsVersion(
   presence: Tpm2Presence,
   directory: string,
   timeoutMs: number | undefined,
+  onAbandon?: () => void,
 ): Promise<string> {
   try {
     const run = await runTool(presence, "tpm2_sessionconfig", ["--version"], {
@@ -1150,7 +1158,16 @@ async function toolsVersion(
       Buffer.from(run.stdout).toString("utf8"),
     );
     return match?.[1] ?? "unknown";
-  } catch {
+  } catch (error) {
+    // The display string stays "unknown", but a killed tool may have left a
+    // process behind, so the caller still hears that the call was abandoned.
+    if (error instanceof Tpm2Error && error.reason === "tool_timeout") {
+      try {
+        onAbandon?.();
+      } catch {
+        // A listener's failure must not change the refusal.
+      }
+    }
     return "unknown";
   }
 }
@@ -1175,6 +1192,10 @@ export async function unsealKey(
   options: {
     timeoutMs?: number;
     onWarning?: (warning: Tpm2Warning) => unknown;
+    // Called when the flush after a GOOD unseal timed out: a killed tool may
+    // have left a child behind, so the caller must exit explicitly. The warning
+    // alone does not say why the flush failed.
+    onAbandon?: () => void;
   } = {},
 ): Promise<Uint8Array> {
   return await withLoadedKey(
@@ -1216,7 +1237,7 @@ export async function unsealKey(
         if (verdict === "unparsed")
           throw new Tpm2Error(
             "tool_incompatible",
-            `tpm2-tools ${await toolsVersion(presence, loaded.directory, options.timeoutMs)}`,
+            `tpm2-tools ${await toolsVersion(presence, loaded.directory, options.timeoutMs, options.onAbandon)}`,
           );
         // Verified, never repaired, at the moment before the tool reads it.
         requirePrivateFile(session);
@@ -1262,7 +1283,9 @@ export async function unsealKey(
         if (flushFailure !== undefined) {
           // A failure that is not a Tpm2Error (a spawn that threw) still
           // carries the flush failure; its own text is not passed on, since it
-          // can name a path (WCLI-21 N4).
+          // can name a path (WCLI-21 N4). Keeping `path` is defensive:
+          // tool_untrusted cannot reach this rethrow today, because the trust
+          // walk runs in detection, so (a19) is served by the detect route.
           if (error instanceof Tpm2Error)
             throw new Tpm2Error(error.reason, error.detail, {
               flushFailure,
@@ -1271,6 +1294,13 @@ export async function unsealKey(
           throw new Tpm2Error("tool_failed", undefined, { flushFailure });
         }
         throw error;
+      }
+      if (flushFailure === "tool_timeout") {
+        try {
+          options.onAbandon?.();
+        } catch {
+          // A listener's failure must not take the key away.
+        }
       }
       if (flushFailure !== undefined) {
         try {

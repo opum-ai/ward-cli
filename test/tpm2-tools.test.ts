@@ -2839,6 +2839,69 @@ describe("a timed-out tool and a spawn that threw", () => {
     { timeout: 40_000 },
   );
 
+  test(
+    "a flush timeout after a good unseal calls onAbandon and still returns the key",
+    async () => {
+      const { base, bin, records } = fresh();
+      installFakeTools(bin, records, { tpm2_flushcontext: "hang" });
+      const directory = join(base, "ward-tpm");
+      const presence = detect({ path: bin, device: DEVICE });
+      const key = new Uint8Array(32).fill(0x5a);
+      await sealKey(presence, key, directory);
+      let abandoned = 0;
+      const warnings: unknown[] = [];
+      try {
+        const got = await unsealKey(presence, directory, {
+          timeoutMs: 2_500,
+          onAbandon: () => {
+            abandoned += 1;
+          },
+          onWarning: (warning) => warnings.push(warning),
+        });
+        expect(Buffer.from(got).equals(Buffer.from(key))).toBe(true);
+      } finally {
+        killGrandchild(join(records, "grandchild.pid"));
+      }
+      expect(abandoned).toBe(1);
+      expect(warnings).toEqual([{ code: "tpm_session_leaked" }]);
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "a tpm2-tools version probe that times out still calls onAbandon",
+    async () => {
+      const { base, bin, records } = fresh();
+      installFakeTools(bin, records, {
+        tpm2_sessionconfig: "session-zero+version-hang",
+      });
+      const directory = join(base, "ward-tpm");
+      const presence = detect({ path: bin, device: DEVICE });
+      await sealKey(presence, new Uint8Array(32).fill(0x5a), directory);
+      let abandoned = 0;
+      try {
+        const error = await unsealKey(presence, directory, {
+          timeoutMs: 2_500,
+          onAbandon: () => {
+            abandoned += 1;
+          },
+        }).then(
+          () => undefined,
+          (caught: unknown) => caught,
+        );
+        // The refusal is unchanged: the version only labels it.
+        expect(error).toMatchObject({
+          reason: "tool_incompatible",
+          detail: "tpm2-tools unknown",
+        });
+      } finally {
+        killGrandchild(join(records, "grandchild.pid"));
+      }
+      expect(abandoned).toBe(1);
+    },
+    { timeout: 30_000 },
+  );
+
   test("a non-Tpm2Error unseal failure keeps flushFailure", async () => {
     const { base, bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_flushcontext: "fail" });
@@ -2857,5 +2920,8 @@ describe("a timed-out tool and a spawn that threw", () => {
       reason: "tool_failed",
       flushFailure: "tool_failed",
     });
+    // The spawn error's text (it names the tool's path) is not passed on.
+    expect((error as Tpm2Error).detail).toBeUndefined();
+    expect((error as Tpm2Error).message).not.toContain(bin);
   });
 });

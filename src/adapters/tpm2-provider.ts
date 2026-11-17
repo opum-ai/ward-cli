@@ -21,13 +21,21 @@ import {
 // the WardError, whose catalog text carries none of them.
 export class TpmKeyError extends WardError {
   readonly tpm2: Tpm2Error;
+  // True when the failing tool, or the flush after it, timed out: a killed
+  // tool may have left a child holding a pipe, so the command must exit
+  // explicitly rather than wait for the event loop (WCLI-158).
+  readonly abandoned: boolean;
   constructor(
     code: ConstructorParameters<typeof WardError>[0],
     tpm2: Tpm2Error,
+    notes: ConstructorParameters<typeof WardError>[4] = [],
+    stores: ConstructorParameters<typeof WardError>[3] = [],
   ) {
-    super(code);
+    super(code, undefined, undefined, stores, notes);
     this.name = "TpmKeyError";
     this.tpm2 = tpm2;
+    this.abandoned =
+      tpm2.reason === "tool_timeout" || tpm2.flushFailure === "tool_timeout";
   }
 }
 
@@ -36,7 +44,14 @@ export interface Tpm2ProviderOptions {
   directoryFor: (vaultId: string) => string;
   // Hears of a possibly leaked saved-session slot. It receives the code only.
   onWarning?: (warning: Tpm2Warning) => unknown;
+  // Hears that a call was abandoned (a tool timed out, or its flush did), so
+  // the caller can exit explicitly whichever command it was running.
+  onAbandon?: () => void;
   timeoutMs?: number;
+  // Creates this vault's parent directories before a seal, refusing one that
+  // is not private (blob_not_user_private) and never repairing it. Absent means
+  // the caller owns the whole path.
+  prepareDirectory?: (vaultId: string) => void;
   // Seams for tests: detection and the two tools-level operations.
   detect?: () => Tpm2Presence;
   unseal?: typeof unsealKey;
@@ -46,7 +61,7 @@ export interface Tpm2ProviderOptions {
 // How each refusal reaches the KeyProvider contract. A missing sealed key is
 // the contract's missing key; a lone private blob is NEVER that, because it is
 // a recovery condition and setup must not run over it (N3 a).
-function translate(error: unknown): WardError {
+export function translateTpm2Error(error: unknown): WardError {
   const tpm2 =
     error instanceof Tpm2Error
       ? error
@@ -76,6 +91,14 @@ export function createTpm2KeyProvider(
   // path is "a timed-out tool marks the call abandoned" in
   // test/tpm2-provider.test.ts.
   let abandoned = false;
+  const abandon = () => {
+    abandoned = true;
+    try {
+      options.onAbandon?.();
+    } catch {
+      // A listener's failure must not change the refusal being reported.
+    }
+  };
 
   // Fresh detection on every call: access can be revoked between two calls,
   // and a stale presence would let that read as an unloadable key.
@@ -85,8 +108,13 @@ export function createTpm2KeyProvider(
   }
 
   function note(error: unknown): void {
-    if (error instanceof Tpm2Error && error.reason === "tool_timeout")
-      abandoned = true;
+    // A timed-out flush after a failed unseal is a timeout too: the killed
+    // flush may have stranded a session, and the CLI must exit explicitly.
+    if (
+      error instanceof Tpm2Error &&
+      (error.reason === "tool_timeout" || error.flushFailure === "tool_timeout")
+    )
+      abandon();
   }
 
   async function read(directory: string): Promise<Uint8Array> {
@@ -94,6 +122,7 @@ export function createTpm2KeyProvider(
     return await unseal(presence, directory, {
       timeoutMs: options.timeoutMs,
       onWarning: options.onWarning,
+      onAbandon: abandon,
     });
   }
 
@@ -104,7 +133,7 @@ export function createTpm2KeyProvider(
         return await read(directory);
       } catch (error) {
         note(error);
-        throw translate(error);
+        throw translateTpm2Error(error);
       }
     },
 
@@ -120,10 +149,11 @@ export function createTpm2KeyProvider(
       try {
         let presence: Tpm2Presence;
         try {
+          options.prepareDirectory?.(vaultId);
           presence = detect();
         } catch (error) {
           note(error);
-          throw translate(error);
+          throw translateTpm2Error(error);
         }
         try {
           await seal(presence, owned, directory, {
@@ -140,7 +170,7 @@ export function createTpm2KeyProvider(
               error.reason === "tool_output_too_large")
           )
             throw new TpmKeyError("vault_key_write_unconfirmed", error);
-          throw translate(error);
+          throw translateTpm2Error(error);
         }
         let stored: Uint8Array | undefined;
         try {

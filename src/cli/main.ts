@@ -11,9 +11,11 @@ import {
   probeCheckout,
 } from "../adapters/checkout.ts";
 import {
-  createKeychainKeyProvider,
-  keychainService,
-} from "../adapters/keychain.ts";
+  formatKeyWarning,
+  type KeySelection,
+  selectKeyProvider,
+} from "../adapters/key-backend.ts";
+import { TpmKeyError } from "../adapters/tpm2-provider.ts";
 import { observeMachine } from "../adapters/machine.ts";
 import { createTerminalPassphrase } from "../adapters/passphrase.ts";
 import { createProjectFiles } from "../adapters/project-files.ts";
@@ -98,6 +100,9 @@ export interface RunOptions {
   // The credential store the vault key lives in. Defaults to the platform
   // provider; tests and qualification probes override it.
   keyProvider?: KeyProvider;
+  // How the platform provider is chosen when keyProvider is not given: the
+  // platform and the TPM2 and Keychain seams. Tests and probes only.
+  keySelection?: KeySelection;
   // The directory the command acts in. Defaults to the process's working
   // directory; tests resolve projects in a temporary checkout.
   cwd?: string;
@@ -169,8 +174,7 @@ async function setupCommand(options: RunOptions): Promise<{
   const session = acquireSetupSession(directory);
   const store = createSqliteVaultStore({ directory });
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   const result = await runSetup({ session, store, keyProvider });
   return {
     output: {
@@ -223,8 +227,7 @@ async function initCommand(
     files: createProjectFiles(checkout.root),
     store: createSqliteVaultStore({ directory }),
     keyProvider:
-      options.keyProvider ??
-      createKeychainKeyProvider({ service: keychainService }),
+      options.keyProvider ?? selectKeyProvider(directory, options.keySelection),
     approver: options.approver ?? createTerminalConsent(),
     // Canonical, so the check against the (canonical) checkout root compares
     // two names for a location rather than two spellings of one.
@@ -291,8 +294,7 @@ async function backupCommand(
   if (typeof path !== "string") throw new WardError("missing_required_option");
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   const result = await runBackup({
     store: createSqliteVaultStore({ directory }),
     keyProvider,
@@ -347,8 +349,7 @@ async function restoreCommand(
   if (typeof path !== "string") throw new WardError("missing_required_option");
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   const result = await runRestore({
     store: createSqliteVaultStore({ directory }),
     keyProvider,
@@ -397,8 +398,7 @@ function reporting(options: RunOptions): {
   const checkout = locateCheckout(options.cwd ?? process.cwd());
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
-    options.keyProvider ??
-    createKeychainKeyProvider({ service: keychainService });
+    options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
   return {
     keyProvider,
     options: {
@@ -484,7 +484,7 @@ async function secretCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       values: options.secrets ?? createTerminalSecretValues(),
       grants: options.grantApprover ?? createTerminalGrantApprover(),
       now: options.now ?? (() => new Date()),
@@ -513,7 +513,7 @@ async function keyCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       now: options.now ?? (() => new Date()),
       newSecretId: () => randomUUID(),
     },
@@ -546,7 +546,7 @@ async function signCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       now: options.now ?? (() => new Date()),
       newId: options.newId ?? randomUUID,
       observeMachine: options.machine ?? observeMachine,
@@ -574,8 +574,7 @@ async function unregisterCommand(options: RunOptions): Promise<CommandOutput> {
     checkout,
     store: createSqliteVaultStore({ directory }),
     keyProvider:
-      options.keyProvider ??
-      createKeychainKeyProvider({ service: keychainService }),
+      options.keyProvider ?? selectKeyProvider(directory, options.keySelection),
     approver: options.unregisterApprover ?? createTerminalUnregisterApprover(),
   });
   return { kind: result.kind, data: result.data, text: result.text };
@@ -604,7 +603,7 @@ async function profileCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       approver: options.profileApprover ?? createTerminalProfileApprover(),
       now: options.now ?? (() => new Date()),
     },
@@ -631,7 +630,7 @@ async function checkCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
     },
   );
   return {
@@ -675,7 +674,7 @@ async function runCommand(
       store: createSqliteVaultStore({ directory }),
       keyProvider:
         options.keyProvider ??
-        createKeychainKeyProvider({ service: keychainService }),
+        selectKeyProvider(directory, options.keySelection),
       transport: options.transport ?? createHttpsTransport(),
       now: options.now ?? (() => new Date()),
       newId: options.newId ?? randomUUID,
@@ -797,17 +796,67 @@ export async function runWard(
   argv: readonly string[],
   options: RunOptions = {},
 ): Promise<RunResult> {
+  // Warnings from the key provider go to stderr in front of whatever else the
+  // command writes there (DEC-262 a23); the stdout envelope is untouched.
+  // The mode comes from the parsed flags, not argv: a token after `--` or an
+  // option's value is not a flag. An unparsable line falls back to the human form.
+  let json = false;
   try {
-    return await dispatch(argv, options);
+    const first = argv[0];
+    const command = first === undefined ? undefined : findCommand(first);
+    json =
+      command !== undefined &&
+      parseArguments(command, argv.slice(1)).flags.has("--json");
+  } catch {
+    json = false;
+  }
+  const warnings: string[] = [];
+  const heard = options.keySelection?.tpm2?.onWarning;
+  // The sink covers the TPM2 provider; Keychain's abandon reaches the result
+  // through the catch's codes (vault_key_unavailable and the unconfirmed write).
+  // One abandon sink for every root: a flush that timed out after a good
+  // unseal asks for the explicit exit on success and on any later failure.
+  let abandoned = false;
+  const heardAbandon = options.keySelection?.tpm2?.onAbandon;
+  const withSink: RunOptions = {
+    ...options,
+    keySelection: {
+      ...options.keySelection,
+      tpm2: {
+        ...options.keySelection?.tpm2,
+        onAbandon: () => {
+          abandoned = true;
+          heardAbandon?.();
+        },
+        onWarning: (warning) => {
+          // One line per command, however many unseals heard of the leak.
+          const line = formatKeyWarning(warning, json);
+          if (!warnings.includes(line)) warnings.push(line);
+          return heard?.(warning);
+        },
+      },
+    },
+  };
+  const told = (result: RunResult): RunResult => {
+    const out =
+      warnings.length === 0
+        ? result
+        : { ...result, stderr: `${warnings.join("")}${result.stderr}` };
+    if (abandoned) out.exitExplicitly = true;
+    return out;
+  };
+  try {
+    return told(await dispatch(argv, withSink));
   } catch (error) {
     const wardError =
       error instanceof WardError ? error : new WardError("uncaught");
     const result = failure(wardError);
     if (
       wardError.code === "vault_key_unavailable" ||
-      wardError.code === "vault_key_write_unconfirmed"
+      wardError.code === "vault_key_write_unconfirmed" ||
+      (wardError instanceof TpmKeyError && wardError.abandoned)
     )
       result.exitExplicitly = true;
-    return result;
+    return told(result);
   }
 }

@@ -129,6 +129,14 @@ export const errorCatalog = {
     message:
       "Ward could not confirm that the vault key was stored. A key may or may not now exist in the credential store.",
   },
+  // Backend selection (DEC-262 a16 rule 2). The refusal names the stores, from a
+  // fixed vocabulary, through WardError.stores; nothing else is carried.
+  vault_key_ambiguous: {
+    type: "conflict",
+    message:
+      "More than one credential store holds a key for this vault, so Ward will not pick one.",
+    hint: "This is a recovery condition: Ward did not change either key and will not choose between them.",
+  },
   vault_key_store_unsupported: {
     type: "validation",
     message:
@@ -167,7 +175,7 @@ export const errorCatalog = {
   tpm_state_directory_unusable: {
     type: "validation",
     message:
-      "Ward could not use its TPM key directory. Ward did not change a sealed key.",
+      "Ward could not use its TPM key directory. Check it for a sealed key before running `ward setup` again.",
   },
   tpm_blob_not_user_private: {
     type: "validation",
@@ -748,6 +756,19 @@ export const refusedHeaderCanonicalNames = Object.freeze([
   "X-Host",
 ] as const);
 
+// The credential stores Ward can name in a refusal (DEC-262 a16 rules 1 and 2).
+export const keyStoreNames = Object.freeze(["macOS Keychain", "TPM2"] as const);
+export type KeyStoreName = (typeof keyStoreNames)[number];
+
+// A fixed note a key refusal can add to its hint (DEC-262 a22, a23). The text
+// is constant, so no path or value can reach a hint through it, and it never
+// suggests a weaker store.
+export const keyRefusalNotes = Object.freeze({
+  secret_service_not_implemented:
+    "Secret Service is not implemented in this Ward build, so a Linux machine can be set up only on TPM2.",
+});
+export type KeyRefusalNote = keyof typeof keyRefusalNotes;
+
 export type RefusedHeaderName = (typeof refusedHeaderCanonicalNames)[number];
 
 export class WardError extends Error {
@@ -759,11 +780,16 @@ export class WardError extends Error {
   // constructor keeps it only when it is a member of the list above, so the
   // field cannot carry anything the declaration supplied.
   readonly refusedHeader: RefusedHeaderName | undefined;
+  // Which credential stores a key refusal names; kept only from the fixed list.
+  readonly stores: readonly KeyStoreName[];
+  readonly notes: readonly KeyRefusalNote[];
 
   constructor(
     code: ErrorCode,
     argumentPosition?: number,
     refusedHeader?: RefusedHeaderName,
+    stores: readonly KeyStoreName[] = [],
+    notes: readonly KeyRefusalNote[] = [],
   ) {
     super(errorCatalog[code].message);
     this.name = "WardError";
@@ -772,6 +798,8 @@ export class WardError extends Error {
     this.refusedHeader = refusedHeaderCanonicalNames.find(
       (known) => known === refusedHeader,
     );
+    this.stores = stores.filter((name) => keyStoreNames.includes(name));
+    this.notes = notes.filter((note) => note in keyRefusalNotes);
   }
 }
 
@@ -782,15 +810,23 @@ export function errorEnvelope(error: WardError): ErrorEnvelope {
     error.argumentPosition === undefined
       ? entry.message
       : `${entry.message} (argument ${error.argumentPosition})`;
-  const message =
+  const named =
     error.refusedHeader === undefined
       ? positioned
       : `${positioned} (refused header: ${error.refusedHeader})`;
+  const message =
+    error.stores.length === 0
+      ? named
+      : `${named} (${error.stores.length === 1 ? "store" : "stores"}: ${error.stores.join(", ")})`;
+  const hint = [
+    ...(entry.hint === undefined ? [] : [entry.hint]),
+    ...error.notes.map((note) => keyRefusalNotes[note]),
+  ].join(" ");
   return {
     error_type: entry.type,
     code: error.code,
     message,
-    ...(entry.hint === undefined ? {} : { hint: entry.hint }),
+    ...(hint === "" ? {} : { hint }),
     principal: null,
   };
 }

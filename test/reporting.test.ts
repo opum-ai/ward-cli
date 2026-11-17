@@ -1703,4 +1703,17 @@ describe("a TPM-backed key provider answers status without throwing", () => {
       expect(data.keyProvider.status).toBe("unavailable");
     }
   });
+
+  test("every TPM code is reported as an unavailable key", async () => {
+    for (const code of Object.values(tpm2ErrorCodes)) {
+      const { result, data } = await statusWith({
+        load: async () => {
+          throw new WardError(code);
+        },
+        create: async () => undefined,
+      });
+      expect(result.exitCode).toBe(exitCodes.success);
+      expect(data.keyProvider.status).toBe("unavailable");
+    }
+  });
 });

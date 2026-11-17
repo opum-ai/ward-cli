@@ -2,7 +2,7 @@ schema_version = 1
 name = "implementation"
 description = "Grounds a Ward implementation change in the vault format v1 and key-custody contract, the accepted ADRs the change implements, and the P0 limits it must not exceed."
 kind = "specialist"
-max_tokens = 26000
+max_tokens = 26200
 pinned = ["adr/0001-vault-storage-and-key-custody"]
 sources = [
   "runbooks/publish-a-mac-signed-ward-release-asset#purpose",
@@ -23,4 +23,5 @@ sources = [
   "adr/0016-ward-init-asks-its-file-choice-with-the-peers-multiselect#decision",
   "adr/0027-an-ed25519-sign-operation-sign-keys-are-a-kind-of-secret-record-never-exported#decision",
   "adr/0028-tpm2-key-custody-on-linux-tool-trust-the-leaked-session-slot-and-the-stored-format-template#decision",
+  "reference/ward-s-stderr-output-contract",
 ]
