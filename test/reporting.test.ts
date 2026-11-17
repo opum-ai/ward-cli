@@ -239,6 +239,9 @@ function harness() {
   ): RunOptions => ({
     wardDirectory: directory,
     keyProvider,
+    // The harness's provider is the Keychain's, so the report is the macOS one
+    // on every host (the Linux-only lines are tested with their own platform).
+    keySelection: { platform: "darwin" },
     approver,
     cwd,
     ...extra,
@@ -1866,6 +1869,7 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   E11 the human status drops the Secret Service line                         -> "on Linux the Secret Service gap is named, reported and never failed"
 //   E12 main.ts stops passing the platform to the report                       -> "on Linux the Secret Service gap...", "the backend field is always present..." (they run as linux on a darwin host)
 //   E13 status stops carrying keyProvider.backend                              -> "the backend field is always present...", "the existing status and doctor fields are unchanged" is NOT predicted (it checks only the old keys)
+// OBSERVED (bun 1.3.14, 2026-11-17; predictions above unchanged). E2-E4, E6-E11, E13 went red on exactly their predicted tests. Differences: E1 also reddened "two holders leave no backend in use" and "a later load does not inherit..." (an always-initialisation answer is wrong for both); E5 also reddened three existing doctor tests that assert the macOS check list ("a healthy checkout passes every check", "permissions: an insecure location fails...", "a stored approval from another build is named..."); E12 reddened only "on Linux the Secret Service gap...": the backend test did not go red because its injected provider answers backend() itself.
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a

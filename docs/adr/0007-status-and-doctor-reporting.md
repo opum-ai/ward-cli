@@ -72,6 +72,13 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   `instructions`. Each
   carries a stable code. Every check is evaluated independently, so one
   failure never suppresses the others' answers.
+- **Additive fields (DEC-262 a24).** Status always carries
+  `keyProvider.backend` (`macos-keychain`, `tpm2` or `null`), and on Linux
+  `keyProvider.notImplemented: ["secret-service"]`; doctor's `key_provider`
+  check may add `reason`, `path`, `stores` and a state's fixed wording, with the
+  codes `key_incomplete`, `key_unloadable`, `tool_untrusted`, `tool_incompatible`
+  and `vault_key_ambiguous`. On Linux doctor adds a `secret_service` check,
+  `skipped` with `not_implemented`. No existing field changes.
 - **A check's result is `pass`, `fail` or `skipped`.** `fail` means the
   check's subject is present and wrong, *or* present and cannot be evaluated:
   a blocked check must not read as a healthy one, and a failure that could not
