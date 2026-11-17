@@ -739,8 +739,9 @@ export interface DoctorCheck {
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
   // key_provider only (DEC-262 a24 Q2, a25): why the key could not be had, when
-  // the backend said. `reason` is the state's fixed wording, or its name when
-  // it has none (key_unloadable's doctor string is carried unchanged); `path`
+  // the backend said. `reason` is always prose: the state's fixed wording
+  // (key_unloadable's doctor string is carried unchanged) or the catalog's
+  // message for its code; `path`
   // is a tool that failed the trust walk; `stores` names the stores that both
   // hold a key; `version` is tool_incompatible's tpm2-tools version, data a
   // script compares. Prose beyond `reason` (the hint) is human output only and
@@ -847,7 +848,11 @@ function catalogEntry(code: ErrorCode | undefined): {
   message?: string;
   hint?: string;
 } {
-  return code === undefined ? {} : errorCatalog[code];
+  // `?? {}`: a code the catalog does not know fails closed to no wording, and
+  // the caller then reports the state name, rather than throwing out of doctor.
+  return code === undefined
+    ? {}
+    : ((errorCatalog[code] as object | undefined) ?? {});
 }
 
 function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
