@@ -710,11 +710,11 @@ export async function runStatus(
 export type DoctorCheckName =
   | "permissions"
   | "key_provider"
-  | "secret_service"
   | "schema"
   | "binding"
   | "stale_approvals"
-  | "instructions";
+  | "instructions"
+  | "secret_service";
 
 export type InstructionState =
   | "current"
@@ -729,16 +729,17 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
-  // key_provider only (DEC-262 a24 Q2): why the key could not be had, when the
-  // backend said. `reason` is the doctor state name; `path` is a tool that
-  // failed the trust walk; `stores` names the stores that both hold a key;
-  // `version`, `summary` and `hint` are the fixed wording of their states.
+  // key_provider only (DEC-262 a24 Q2, a25): why the key could not be had, when
+  // the backend said. `reason` is the state's fixed wording, or its name when
+  // it has none (key_unloadable's doctor string is carried unchanged); `path`
+  // is a tool that failed the trust walk; `stores` names the stores that both
+  // hold a key; `version` is tool_incompatible's tpm2-tools version, data a
+  // script compares. Prose beyond `reason` (the hint) is human output only and
+  // is never a field.
   readonly reason?: string;
   readonly path?: string;
   readonly stores?: readonly string[];
   readonly version?: string;
-  readonly summary?: string;
-  readonly hint?: string;
   // Named individually rather than counted, because the re-approve step is
   // per profile and per checkout (DEC-246 a2 clause 2), and only for this
   // project's records: other projects are a bare count (DEC-246 a3 Q1).
@@ -823,22 +824,23 @@ function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
     check: "key_provider",
     status: "fail",
     code,
-    reason: refusal.state,
+    reason: refusal.summary ?? refusal.state,
     ...(refusal.path === undefined ? {} : { path: refusal.path }),
-    ...(refusal.version === undefined ? {} : { version: refusal.version }),
-    ...(refusal.summary === undefined ? {} : { summary: refusal.summary }),
-    ...(refusal.hint === undefined ? {} : { hint: refusal.hint }),
+    ...(code === "tool_incompatible" && refusal.version !== undefined
+      ? { version: refusal.version }
+      : {}),
   };
 }
 
-// DEC-262 (a24) Q3: Secret Service is a named gap on Linux. It is reported and
-// never failed (ADR 0007: absence is reported, not failed); macOS has no such
-// line.
-function secretServiceCheck(): DoctorCheck {
+// DEC-262 (a24) Q3, (a25): Secret Service is a named gap on Linux, and the check
+// is reported on every platform in its fixed place. It is `skipped`, ADR 0007's
+// "reported, not failed" value for something absent here: `not_implemented` on
+// Linux, `not_applicable` elsewhere.
+function secretServiceCheck(linux: boolean): DoctorCheck {
   return {
     check: "secret_service",
     status: "skipped",
-    code: "not_implemented",
+    code: linux ? "not_implemented" : "not_applicable",
   };
 }
 
@@ -1074,7 +1076,7 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
 // What a key_provider failure adds beneath its line, in the same fields the
 // JSON carries, so the reason, the path and the stores are as visible in
 // human output as in JSON (DEC-262 a19, a24).
-function keyDetailLines(check: DoctorCheck): string[] {
+function keyDetailLines(check: DoctorCheck, hint?: string): string[] {
   const lines: string[] = [];
   if (check.reason !== undefined) lines.push(`    reason: ${check.reason}`);
   if (check.path !== undefined)
@@ -1082,12 +1084,11 @@ function keyDetailLines(check: DoctorCheck): string[] {
   if (check.version !== undefined) lines.push(`    version: ${check.version}`);
   if (check.stores !== undefined && check.stores.length > 0)
     lines.push(`    stores: ${check.stores.join(", ")}`);
-  if (check.summary !== undefined) lines.push(`    ${check.summary}`);
-  if (check.hint !== undefined) lines.push(`    ${check.hint}`);
+  if (hint !== undefined) lines.push(`    ${hint}`);
   return lines;
 }
 
-function doctorText(report: DoctorReport): string {
+function doctorText(report: DoctorReport, keyHint: string | undefined): string {
   const lines = report.checks.flatMap((check) => {
     const documents =
       check.documents === undefined
@@ -1095,7 +1096,10 @@ function doctorText(report: DoctorReport): string {
         : ` (claude: ${check.documents.claude}, codex: ${check.documents.codex})`;
     return [
       `  ${check.check.padEnd(16)}${check.status.padEnd(8)}${check.code}${documents}`,
-      ...keyDetailLines(check),
+      ...keyDetailLines(
+        check,
+        check.check === "key_provider" ? keyHint : undefined,
+      ),
       ...staleApprovalLines(
         check.staleApprovals ?? [],
         check.otherProjectStaleApprovals ?? 0,
@@ -1133,7 +1137,6 @@ export async function runDoctor(
   const checks: DoctorCheck[] = [
     permissionsCheck(observation.vault),
     keyCheck(observation.vault, observation.key),
-    ...(onLinux(options) ? [secretServiceCheck()] : []),
     schemaCheck(
       observation.manifest,
       observation.vault,
@@ -1155,12 +1158,19 @@ export async function runDoctor(
       options.checkouts,
     ),
     instructionsCheck(options.files),
+    // DEC-262 (a25): fixed order, every platform. 3d-2b adds `tpm2` before it.
+    secretServiceCheck(onLinux(options)),
   ];
   const ok = checks.every((check) => check.status !== "fail");
   const data: DoctorReport = { ok, checks };
   return {
     data,
-    text: doctorText(data),
+    text: doctorText(
+      data,
+      observation.key?.status === "unavailable"
+        ? observation.key.refusal?.hint
+        : undefined,
+    ),
     exitCode: ok ? exitCodes.success : exitCodes.validation,
   };
 }

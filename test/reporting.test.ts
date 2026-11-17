@@ -490,8 +490,19 @@ describe("ward doctor", () => {
       "binding",
       "stale_approvals",
       "instructions",
+      "secret_service",
     ]);
-    expect(data.checks.every((entry) => entry.status === "pass")).toBe(true);
+    // Every check passes but secret_service, which is skipped on every platform
+    // (DEC-262 a25) and never a failure.
+    expect(
+      data.checks
+        .filter((entry) => entry.check !== "secret_service")
+        .every((entry) => entry.status === "pass"),
+    ).toBe(true);
+    expect(checkFor(data, "secret_service")).toMatchObject({
+      status: "skipped",
+      code: "not_applicable",
+    });
     expect(checkFor(data, "instructions").documents).toEqual({
       claude: "current",
       codex: "current",
@@ -515,7 +526,7 @@ describe("ward doctor", () => {
       });
       // Every check still reports, and the checks the location blocks name
       // the block rather than reading as healthy.
-      expect(data.checks).toHaveLength(6);
+      expect(data.checks).toHaveLength(7);
       for (const check of data.checks) expect(check.code).toBeTruthy();
       expect(checkFor(data, "key_provider").code).toBe("vault_insecure");
       expect(checkFor(data, "instructions").status).toBe("pass");
@@ -758,7 +769,7 @@ describe("ward doctor", () => {
     expect(doctor.result.exitCode).toBe(exitCodes.validation);
     // The positive control for "the report reached stdout": every check is
     // present, so the read answered rather than throwing out of the command.
-    expect(doctor.data.checks).toHaveLength(6);
+    expect(doctor.data.checks).toHaveLength(7);
     // The schema is intact: the version mismatch is a record-level fact, not
     // a broken document (DEC-246 a2 clause 4's other half).
     expect(checkFor(doctor.data, "schema")).toMatchObject({
@@ -1870,6 +1881,14 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   E12 main.ts stops passing the platform to the report                       -> "on Linux the Secret Service gap...", "the backend field is always present..." (they run as linux on a darwin host)
 //   E13 status stops carrying keyProvider.backend                              -> "the backend field is always present...", "the existing status and doctor fields are unchanged" is NOT predicted (it checks only the old keys)
 // OBSERVED (bun 1.3.14, 2026-11-17; predictions above unchanged). E2-E4, E6-E11, E13 went red on exactly their predicted tests. Differences: E1 also reddened "two holders leave no backend in use" and "a later load does not inherit..." (an always-initialisation answer is wrong for both); E5 also reddened three existing doctor tests that assert the macOS check list ("a healthy checkout passes every check", "permissions: an insecure location fails...", "a stored approval from another build is named..."); E12 reddened only "on Linux the Secret Service gap...": the backend test did not go red because its injected provider answers backend() itself.
+// MUTANT REGISTER, DEC-262 (a25) round, written BEFORE any run. Bun 1.3.14 recorded on each observation. (The E5/E6 test "on macOS the backend is the keychain and nothing says Secret Service" is renamed "... and status says nothing of Secret Service" under (a25), which puts the check on every platform.)
+//   F1  reason carries the state name instead of the fixed wording             -> "each of the five key states renders in JSON and in human output"
+//   F2  summary and hint are added back as JSON keys                           -> "key_provider's JSON carries no summary or hint key..."
+//   F3  version is carried by every state that has one                         -> "version is carried only by tool_incompatible" (only if a state besides tool_incompatible sets one; PREDICTED TO SURVIVE: the classifier sets version only for tool_incompatible)
+//   F4  secret_service is dropped on macOS                                     -> "secret_service is the last check on every platform...", "on macOS the backend is the keychain...", "a healthy checkout passes every check and exits 0"
+//   F5  secret_service sits before instructions, not last                      -> "secret_service is the last check on every platform...", "a healthy checkout passes every check and exits 0"
+//   F6  secret_service says not_implemented on macOS                           -> "secret_service is the last check on every platform...", "on macOS the backend is the keychain...", "a healthy checkout passes every check and exits 0"
+//   F7  the hint is dropped from the human doctor output                       -> "key_provider's JSON carries no summary or hint key, and the hint is human output only"
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a
@@ -1937,7 +1956,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
       "key_unloadable",
       tpm("tool_failed", "tpm2_load"),
       "key_unloadable",
-      { summary: keyUnloadableSummary, hint: keyUnloadableHint },
+      { reason: keyUnloadableSummary },
     ],
     [
       "tool_untrusted",
@@ -1972,6 +1991,62 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
           name,
           true,
         ]);
+    }
+  });
+
+  test("key_provider's JSON carries no summary or hint key, and the hint is human output only", async () => {
+    for (const [name, provider] of five) {
+      const check = keyCheck((await reports(provider)).doctorData);
+      expect([name, "summary" in (check ?? {})]).toEqual([name, false]);
+      expect([name, "hint" in (check ?? {})]).toEqual([name, false]);
+    }
+    const unloadable = await reports(tpm("tool_failed", "tpm2_load"));
+    expect(unloadable.doctorText).toContain(keyUnloadableSummary);
+    expect(unloadable.doctorText).toContain(keyUnloadableHint);
+    expect(JSON.stringify(unloadable.doctorData)).not.toContain(
+      keyUnloadableHint,
+    );
+  });
+
+  test("version is carried only by tool_incompatible", async () => {
+    for (const [name, provider] of five) {
+      const check = keyCheck((await reports(provider)).doctorData);
+      expect([name, "version" in (check ?? {})]).toEqual([
+        name,
+        name === "tool_incompatible",
+      ]);
+    }
+  });
+
+  test("secret_service is the last check on every platform, skipped, never failed", async () => {
+    const linux = await reports(tpm("key_incomplete"), "linux");
+    const mac = await reports(
+      createKeychainKeyProvider({
+        service: SERVICE,
+        entry: new MemoryKeychain().entry,
+        timeoutMs: 2_000,
+      }),
+      "darwin",
+    );
+    for (const [r, code] of [
+      [linux, "not_implemented"],
+      [mac, "not_applicable"],
+    ] as const) {
+      const last = r.doctorData.checks.at(-1);
+      expect(last).toMatchObject({
+        check: "secret_service",
+        status: "skipped",
+        code,
+      });
+      // The fixed prefix: the six checks of ADR 0007, in order.
+      expect(r.doctorData.checks.slice(0, 6).map((c) => c.check)).toEqual([
+        "permissions",
+        "key_provider",
+        "schema",
+        "binding",
+        "stale_approvals",
+        "instructions",
+      ]);
     }
   });
 
@@ -2032,7 +2107,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
     ).toBeNull();
   });
 
-  test("on macOS the backend is the keychain and nothing says Secret Service", async () => {
+  test("on macOS the backend is the keychain and status says nothing of Secret Service", async () => {
     const r = await reports(
       createKeychainKeyProvider({
         service: SERVICE,
@@ -2043,10 +2118,10 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
     );
     expect(r.status.keyProvider.notImplemented).toBeUndefined();
     expect(r.statusText).not.toContain("Secret Service");
-    expect(r.doctorText).not.toContain("secret_service");
-    expect(r.doctorData.checks.map((c) => c.check)).not.toContain(
-      "secret_service",
-    );
+    // The check itself is on every platform, and says it does not apply here.
+    expect(
+      r.doctorData.checks.find((c) => c.check === "secret_service"),
+    ).toMatchObject({ status: "skipped", code: "not_applicable" });
   });
 
   test("on Linux the Secret Service gap is named, reported and never failed", async () => {
@@ -2079,6 +2154,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
       "binding",
       "stale_approvals",
       "instructions",
+      "secret_service",
     ])
       expect(r.doctorData.checks.map((c) => c.check)).toContain(name);
   });
