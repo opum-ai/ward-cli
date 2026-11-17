@@ -10,6 +10,7 @@
 // pinned to print neither the canonical name nor any declared byte. Synthetic
 // names and values only.
 import "./support/no-real-keychain.ts";
+import { noTpmHost } from "./support/no-real-tpm-host.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
@@ -103,6 +104,7 @@ async function world(overrides: Record<string, unknown>) {
     runWard(options.json === false ? args : [...args, "--json"], {
       wardDirectory: directory,
       keyProvider,
+      keySelection: { tpm2Host: noTpmHost },
       approver: registration,
       profileApprover,
       secrets: values,

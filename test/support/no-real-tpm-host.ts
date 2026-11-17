@@ -16,10 +16,20 @@
 // Compiled fixtures are separate processes and are not covered; each names its
 // own host.
 import { afterEach, mock } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Tpm2Host } from "../../src/adapters/tpm2-tools.ts";
 
 export const realTpmHostRefusal =
   "test processes must not reach the real TPM host";
+
+// A host with no TPM at all, for an in-process command test that runs doctor on
+// Linux (where the TPM probe is wired) without reaching the real device: the
+// device is a path that does not exist, so detection reports tpm_absent.
+export const noTpmHost: Tpm2Host = {
+  path: "",
+  device: join(tmpdir(), "ward-no-such-tpmrm0"),
+};
 
 const real = await import("../../src/adapters/tpm2-tools.ts");
 // Captured before the mock replaces the module: the namespace's bindings are

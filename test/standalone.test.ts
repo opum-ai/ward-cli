@@ -18,6 +18,7 @@
 // real keychain, so the packaged confirmation of this gate is T26's run of the
 // qualification build under the same stripped PATH.
 import "./support/no-real-keychain.ts";
+import { noTpmHost } from "./support/no-real-tpm-host.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -97,6 +98,7 @@ async function workflow(path: string): Promise<string[]> {
       const result = await runWard([...args, "--json"], {
         wardDirectory: directory,
         keyProvider,
+        keySelection: { tpm2Host: noTpmHost },
         approver: yes,
         profileApprover: yes,
         unregisterApprover: yes,

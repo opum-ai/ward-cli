@@ -20,6 +20,7 @@
 //     claims to (raw, base64, hex), in a sidecar, and in a backup-named file.
 // Assertions report a label, never the value under test.
 import "./support/no-real-keychain.ts";
+import { noTpmHost } from "./support/no-real-tpm-host.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
@@ -143,6 +144,7 @@ describe("T05: no synthetic plaintext on disk after any command path", () => {
       return runWard([...args, "--json"], {
         wardDirectory: dir.directory,
         keyProvider: dir.keyProvider,
+        keySelection: { tpm2Host: noTpmHost },
         approver: yes as RegistrationApprover,
         profileApprover: yes as ProfileApprover,
         grantApprover: yes as GrantApprover,
