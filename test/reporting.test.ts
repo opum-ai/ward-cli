@@ -14,6 +14,7 @@
 // and a throwaway checkout; nothing touches the developer's ~/.ward, real
 // keychain or repositories.
 import "./support/no-real-keychain.ts";
+import { realTpmHostRefusal } from "./support/no-real-tpm-host.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -2667,6 +2668,36 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     expect(viaDetect.state.state).toBe("access_refused");
   });
 
+  // The #352 reviewer's item A (WCLI-21 3d-2b ii-b).
+  test("with a vault, the detect seam is honoured and no tool runs against the host", async () => {
+    const h = harness();
+    const checkout = worktree(`tpm2-vdetect-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const vaultId = h.store.header()?.vaultId as string;
+    let detected = 0;
+    const diagnoser = tpm2Diagnoser(join(tmpdir(), "ward-x"), {
+      platform: "linux",
+      tpm2: {
+        detect: () => {
+          detected += 1;
+          throw new Tpm2Error("tpm_not_accessible");
+        },
+      },
+    });
+    expect((await diagnoser(vaultId)).state.state).toBe("access_refused");
+    expect(detected).toBe(1);
+  });
+
+  test("a test that reaches the real TPM host fails loudly, on the vault path and on detection alone", async () => {
+    const vaultId = "v".repeat(26);
+    const diagnoser = tpm2Diagnoser(join(tmpdir(), "ward-x"), {
+      platform: "linux",
+    });
+    await expect(diagnoser(vaultId)).rejects.toThrow(realTpmHostRefusal);
+    await expect(diagnoser(undefined)).rejects.toThrow(realTpmHostRefusal);
+  });
+
   // DEC-262 (a27) proofs.
   test("a host fault that also breaks the key fails once in key_provider, and tpm2 skips naming it, with doctor at exit 6", async () => {
     const path = "/synthetic/tpm2_unseal";
@@ -2751,3 +2782,8 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     expect(asked[2]).toBeUndefined();
   });
 });
+
+// MUTANT REGISTER, WCLI-21 3d-2b ii-b FIRST COMMIT (the #352 reviewer's items A-C), written BEFORE any run. Bun 1.3.14 on each observation.
+//   P1  tpm2Diagnoser's vault path ignores the detect seam again                 -> "with a vault, the detect seam is honoured and no tool runs against the host"
+//   P2  the preload guard's diagnoseTpm2 wrapper stops refusing the real host     -> "a test that reaches the real TPM host fails loudly..." (vault path)
+//   P3  the preload guard's detectTpm2 wrapper stops refusing the real host       -> the same test (detection-alone path)

@@ -743,9 +743,11 @@ export interface DoctorCheck {
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
   // key_provider and tpm2 (DEC-262 a24 Q2, a25, a26): why the key could not be
-  // had, or why no TPM is usable, when the backend said. `reason` is always prose: the state's fixed wording
-  // (key_unloadable's doctor string is carried unchanged), the catalog's
-  // message for its code, or the fixed unknownRefusalReason; `path`
+  // had, or why no TPM is usable, when the backend said. `reason` is always
+  // prose: the state's fixed wording (key_unloadable's doctor string is carried
+  // unchanged), the catalog's message for its code, or the check's own fixed
+  // fallback (unknownRefusalReason for key_provider, tpmProbeReason for tpm2);
+  // `path`
   // is a tool that failed the trust walk; `stores` names the stores that both
   // hold a key; `version` is tool_incompatible's tpm2-tools version, data a
   // script compares. Prose beyond `reason` (the hint) is human output only and
@@ -860,13 +862,13 @@ export const tpmProbeReason =
 
 // The catalog's fixed wording for a refusal's contract code, so `reason` is
 // always prose, never a bare state token (DEC-262 a25 pick 3).
-
 function catalogEntry(code: ErrorCode | undefined): {
   message?: string;
   hint?: string;
 } {
   // `?? {}`: a code the catalog does not know fails closed to no wording, and
-  // the caller then says unknownRefusalReason, rather than throwing out of
+  // the caller then says its own fixed fallback (unknownRefusalReason for
+  // key_provider, tpmProbeReason for tpm2), rather than throwing out of
   // doctor.
   return code === undefined
     ? {}

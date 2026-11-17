@@ -87,7 +87,8 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   (a25, a26) is `pass` with `ok`, or `skipped` with `tpm2_absent` (no TPM is
   usable; `reason` is prose naming which, `path` for an untrusted tool) or
   `not_applicable` (off Linux, or no TPM probe wired); it never fails doctor and never repeats a key
-  fault, which `key_provider` reports once. `leaked_slot` is not a code: a
+  fault as a failure: doctor fails once, in `key_provider` (a27), and where the
+  fault is a host state `tpm2` skips naming it. `leaked_slot` is not a code: a
   saved-session count cannot attribute a leak to Ward. No existing field
   changes.
 - **A check's result is `pass`, `fail` or `skipped`.** `fail` means the

@@ -206,8 +206,11 @@ export interface KeySelection {
 // adapter's diagnosis of that vault's blob directory (diagnoseTpm2); with none
 // it is detection alone (detectTpm2: presence, access, tools), and no tool runs
 // against a directory that does not exist. Both look at `selection.tpm2Host`
-// (the real host when unset), and the no-vault path honours `tpm2.detect`. The abandon sink is the command's own, so a timed-out
-// tool still makes the command exit explicitly.
+// (the real host when unset). A `tpm2.detect` seam is honoured on BOTH paths
+// (the #352 reviewer's item A): a caller that supplies one gets detection alone
+// and no tool runs, unless it also supplies the `diagnoseTpm2` seam. The abandon
+// sink is the command's own, so a timed-out tool still makes the command exit
+// explicitly.
 export function tpm2Diagnoser(
   wardDirectory: string,
   selection: KeySelection = {},
@@ -215,7 +218,11 @@ export function tpm2Diagnoser(
   if (selection.diagnose !== undefined) return selection.diagnose;
   const directoryFor = tpm2DirectoryFor(wardDirectory);
   return async (vaultId): Promise<TpmDiagnosis> => {
-    if (vaultId !== undefined)
+    if (
+      vaultId !== undefined &&
+      (selection.diagnoseTpm2 !== undefined ||
+        selection.tpm2?.detect === undefined)
+    )
       return await (selection.diagnoseTpm2 ?? diagnoseTpm2)(
         selection.tpm2Host ?? {},
         directoryFor(vaultId),

@@ -5,4 +5,7 @@
 # repository root. Bun reads this file from the working directory only, so
 # every test that can reach the adapter also imports the mock first, and
 # test/test-isolation.test.ts enforces that (WCLI-5).
-preload = ["./test/support/no-real-keychain.ts"]
+preload = [
+  "./test/support/no-real-keychain.ts",
+  "./test/support/no-real-tpm-host.ts",
+]
