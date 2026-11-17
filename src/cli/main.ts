@@ -409,6 +409,7 @@ function reporting(options: RunOptions): {
       keyProvider,
       checkouts: { probe: probeCheckout },
       classifyKeyRefusal: keyRefusalState,
+      platform: options.keySelection?.platform ?? process.platform,
     },
   };
 }

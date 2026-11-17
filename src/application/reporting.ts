@@ -47,6 +47,7 @@ import {
 } from "../domain/vault-state.ts";
 import { agentTargetDocuments, wardBlockBody } from "./bridges.ts";
 import type {
+  KeyBackendId,
   KeyProvider,
   KeyRefusalClassifier,
   KeyRefusalState,
@@ -64,7 +65,33 @@ export interface ReportingOptions {
   // root, since the application layer cannot reach the adapter. Absent means
   // no backend detail is kept, and a TPM2 refusal is still `unavailable`.
   readonly classifyKeyRefusal?: KeyRefusalClassifier;
+  // The platform the report is about (the selection's own, else the host's).
+  // Linux alone reports the Secret Service gap (DEC-262 a24 Q3).
+  readonly platform?: string;
 }
+
+function onLinux(options: ReportingOptions): boolean {
+  return (options.platform ?? process.platform) === "linux";
+}
+
+// The store a report names (DEC-262 a24 Q1). Unsupported and ambiguous have
+// none to name. A provider that cannot say reads as the platform's own store.
+function backendIn(
+  options: ReportingOptions,
+  key: KeyObservation | undefined,
+): KeyBackendId | null {
+  if (key?.status === "unsupported" || key?.status === "ambiguous") return null;
+  const reported = options.keyProvider.backend?.();
+  if (reported !== undefined) return reported;
+  return (options.platform ?? process.platform) === "darwin"
+    ? "macos-keychain"
+    : null;
+}
+
+const backendDisplay: Record<KeyBackendId, string> = {
+  "macos-keychain": "macOS Keychain",
+  tpm2: "TPM2",
+};
 
 // A checkout a stored record names, seen from here. Most stale approvals were
 // written by a different directory than the one being reported — a deleted
@@ -403,6 +430,12 @@ export interface StatusReport {
       | "invalid"
       | "unsupported"
       | "unchecked";
+    // Always present (DEC-262 a24 Q1): the store holding the key, or where a
+    // new one would go; null when no backend is usable on this host, which
+    // `status` above says why.
+    readonly backend: KeyBackendId | null;
+    // Present on Linux only (a24 Q3): what Ward does not implement, by name.
+    readonly notImplemented?: readonly ["secret-service"];
   };
   // Empty rather than absent when there are none, so a caller can tell "none"
   // from "this report does not say".
@@ -610,6 +643,10 @@ function statusText(report: StatusReport): string {
     `  binding:       ${report.binding.status}`,
     `  vault:         ${vault}`,
     `  key provider:  ${report.keyProvider.status}`,
+    `  key backend:   ${report.keyProvider.backend === null ? "none" : backendDisplay[report.keyProvider.backend]}`,
+    ...(report.keyProvider.notImplemented === undefined
+      ? []
+      : ["  Secret Service: not implemented"]),
     ...staleApprovalLines(
       report.staleApprovals,
       report.otherProjectStaleApprovals,
@@ -657,6 +694,10 @@ export async function runStatus(
         : { status: vault.status },
     keyProvider: {
       status: key === undefined ? "unchecked" : reportedKeyStatus(key),
+      backend: backendIn(options, key),
+      ...(onLinux(options)
+        ? { notImplemented: ["secret-service"] as const }
+        : {}),
     },
     staleApprovals: stale.named,
     otherProjectStaleApprovals: stale.otherProjects,
@@ -669,6 +710,7 @@ export async function runStatus(
 export type DoctorCheckName =
   | "permissions"
   | "key_provider"
+  | "secret_service"
   | "schema"
   | "binding"
   | "stale_approvals"
@@ -687,6 +729,16 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
+  // key_provider only (DEC-262 a24 Q2): why the key could not be had, when the
+  // backend said. `reason` is the doctor state name; `path` is a tool that
+  // failed the trust walk; `stores` names the stores that both hold a key;
+  // `version`, `summary` and `hint` are the fixed wording of their states.
+  readonly reason?: string;
+  readonly path?: string;
+  readonly stores?: readonly string[];
+  readonly version?: string;
+  readonly summary?: string;
+  readonly hint?: string;
   // Named individually rather than counted, because the re-approve step is
   // per profile and per checkout (DEC-246 a2 clause 2), and only for this
   // project's records: other projects are a bare count (DEC-246 a3 Q1).
@@ -732,18 +784,62 @@ function keyCheck(
     return { check, status: "skipped", code: "vault_absent" };
   if (key === undefined)
     return { check, status: "fail", code: `vault_${vault.status}` };
+  if (key.status === "ambiguous")
+    return {
+      check,
+      status: "fail",
+      code: "vault_key_ambiguous",
+      reason: "vault_key_ambiguous",
+      stores: key.stores,
+    };
   switch (reportedKeyStatus(key)) {
     case "present":
       return { check, status: "pass", code: "present" };
     case "missing":
       return { check, status: "fail", code: "missing" };
     case "unavailable":
-      return { check, status: "fail", code: "unavailable" };
+      return key.status === "unavailable" && key.refusal !== undefined
+        ? refusedKeyCheck(key.refusal)
+        : { check, status: "fail", code: "unavailable" };
     case "invalid":
       return { check, status: "fail", code: "invalid" };
     case "unsupported":
       return { check, status: "fail", code: "unsupported" };
   }
+}
+
+// The states a TPM refusal reports under their own code (DEC-262 a24 Q2);
+// every other refusal stays `unavailable` and names its state in `reason`.
+const keyStateCodes: ReadonlySet<string> = new Set([
+  "key_incomplete",
+  "key_unloadable",
+  "tool_untrusted",
+  "tool_incompatible",
+]);
+
+function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
+  const code = keyStateCodes.has(refusal.state) ? refusal.state : "unavailable";
+  return {
+    check: "key_provider",
+    status: "fail",
+    code,
+    reason: refusal.state,
+    ...(refusal.path === undefined ? {} : { path: refusal.path }),
+    ...(refusal.version === undefined ? {} : { version: refusal.version }),
+    ...(refusal.summary === undefined ? {} : { summary: refusal.summary }),
+    ...(refusal.hint === undefined ? {} : { hint: refusal.hint }),
+  };
+}
+
+// DEC-262 (a24) Q3: Secret Service is a named gap on Linux. It is reported and
+// never failed (ADR 0007: absence is reported, not failed); macOS has no such
+// line.
+function secretServiceCheck(): DoctorCheck {
+  return {
+    check: "secret_service",
+    status: "skipped",
+    code: "not_implemented",
+  };
 }
 
 // Every versioned document this build reads: the project manifest, the vault
@@ -975,6 +1071,22 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
   return { check, status: "skipped", code: "absent", documents };
 }
 
+// What a key_provider failure adds beneath its line, in the same fields the
+// JSON carries, so the reason, the path and the stores are as visible in
+// human output as in JSON (DEC-262 a19, a24).
+function keyDetailLines(check: DoctorCheck): string[] {
+  const lines: string[] = [];
+  if (check.reason !== undefined) lines.push(`    reason: ${check.reason}`);
+  if (check.path !== undefined)
+    lines.push(`    path: ${escapeForDisplay(check.path)}`);
+  if (check.version !== undefined) lines.push(`    version: ${check.version}`);
+  if (check.stores !== undefined && check.stores.length > 0)
+    lines.push(`    stores: ${check.stores.join(", ")}`);
+  if (check.summary !== undefined) lines.push(`    ${check.summary}`);
+  if (check.hint !== undefined) lines.push(`    ${check.hint}`);
+  return lines;
+}
+
 function doctorText(report: DoctorReport): string {
   const lines = report.checks.flatMap((check) => {
     const documents =
@@ -983,6 +1095,7 @@ function doctorText(report: DoctorReport): string {
         : ` (claude: ${check.documents.claude}, codex: ${check.documents.codex})`;
     return [
       `  ${check.check.padEnd(16)}${check.status.padEnd(8)}${check.code}${documents}`,
+      ...keyDetailLines(check),
       ...staleApprovalLines(
         check.staleApprovals ?? [],
         check.otherProjectStaleApprovals ?? 0,
@@ -1020,6 +1133,7 @@ export async function runDoctor(
   const checks: DoctorCheck[] = [
     permissionsCheck(observation.vault),
     keyCheck(observation.vault, observation.key),
+    ...(onLinux(options) ? [secretServiceCheck()] : []),
     schemaCheck(
       observation.manifest,
       observation.vault,

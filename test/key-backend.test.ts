@@ -160,8 +160,74 @@ function backend(
   probe: KeyBackend["probe"],
   provider: KeyProvider = stubProvider(async () => synthetic(0x11)),
 ): KeyBackend {
-  return { name, provider, probe };
+  return {
+    name,
+    id: name === "TPM2" ? "tpm2" : "macos-keychain",
+    provider,
+    probe,
+  };
 }
+
+describe("the router says which store it settled on (DEC-262 a24)", () => {
+  const held = async () => ({ held: true as const });
+  const notHeld = async () => ({ held: false as const });
+
+  test("the holder of the key is the backend in use, even when initialisation would pick another", async () => {
+    const tpm = backend("TPM2", held);
+    const keychain = backend("macOS Keychain", notHeld);
+    const router = createRoutingKeyProvider({
+      backends: [keychain, tpm],
+      initialisation: () => keychain,
+    });
+    await router.load(VAULT_ID);
+    expect(router.backend?.()).toBe("tpm2");
+  });
+
+  test("before any load, or when no store holds the key, it is where a new key would go", async () => {
+    const tpm = backend("TPM2", notHeld);
+    const router = createRoutingKeyProvider({
+      backends: [tpm],
+      initialisation: () => tpm,
+    });
+    expect(router.backend?.()).toBe("tpm2");
+    await router.load(VAULT_ID).catch(() => undefined);
+    expect(router.backend?.()).toBe("tpm2");
+  });
+
+  test("two holders leave no backend in use", async () => {
+    const router = createRoutingKeyProvider({
+      backends: [backend("macOS Keychain", held), backend("TPM2", held)],
+      initialisation: () => backend("TPM2", held),
+    });
+    await router.load(VAULT_ID).catch(() => undefined);
+    expect(router.backend?.()).toBeNull();
+  });
+
+  test("a host that can take no new key reports none", () => {
+    const router = createRoutingKeyProvider({
+      backends: [backend("TPM2", notHeld)],
+      initialisation: () => {
+        throw new Tpm2Error("tpm_absent");
+      },
+    });
+    expect(router.backend?.()).toBeNull();
+  });
+
+  test("a later load does not inherit an earlier load's store", async () => {
+    let tpmHolds = true;
+    const tpm = backend("TPM2", async () => ({ held: tpmHolds }));
+    const keychain = backend("macOS Keychain", notHeld);
+    const router = createRoutingKeyProvider({
+      backends: [tpm, keychain],
+      initialisation: () => keychain,
+    });
+    await router.load(VAULT_ID);
+    expect(router.backend?.()).toBe("tpm2");
+    tpmHolds = false;
+    await router.load(VAULT_ID).catch(() => undefined);
+    expect(router.backend?.()).toBe("macos-keychain");
+  });
+});
 
 describe("the router picks by presence of the key itself", () => {
   test("an existing vault keeps the backend that holds its key", async () => {

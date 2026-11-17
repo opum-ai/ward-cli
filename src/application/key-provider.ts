@@ -1,6 +1,10 @@
 // The port through which Ward reaches the vault key (spec §6.4). The key is
 // held in memory for one invocation at most; no implementation caches it
 // across processes.
+// The credential store a vault's key lives in, as a report names it (DEC-262
+// a24). Linux's Secret Service is a named gap, not a backend.
+export type KeyBackendId = "macos-keychain" | "tpm2";
+
 export interface KeyProvider {
   // Resolves the 32-byte vault key, and never creates one. Rejects with
   // vault_key_missing, vault_key_unavailable, vault_key_invalid,
@@ -24,6 +28,11 @@ export interface KeyProvider {
   // pending native call may still be running, so the process should exit
   // explicitly once the command's output is written, even on success.
   abandonedCall?(): boolean;
+  // The store the last load found the key in, or where a new key would go when
+  // none was found; null when no store is usable (or two held the key). A
+  // provider that cannot say leaves it out and the report falls back to the
+  // platform's own store.
+  backend?(): KeyBackendId | null;
 }
 
 // What a backend's refusal means for a report, carried beside the observation

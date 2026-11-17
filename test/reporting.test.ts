@@ -36,7 +36,10 @@ import {
   locateCheckout,
   probeCheckout,
 } from "../src/adapters/checkout.ts";
-import { keyRefusalState } from "../src/adapters/key-backend.ts";
+import {
+  keyRefusalState,
+  selectKeyProvider,
+} from "../src/adapters/key-backend.ts";
 import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
 import {
   keyUnloadableHint,
@@ -1787,7 +1790,7 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       json(doctor.stdout).data as { checks: { check: string; code: string }[] }
     ).checks;
     expect(checks.find((c) => c.check === "key_provider")?.code).toBe(
-      "unavailable",
+      "vault_key_ambiguous",
     );
   });
 
@@ -1846,5 +1849,233 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
     await expect(
       observeKey(failing(new Error("synthetic")), "v", keyRefusalState),
     ).rejects.toThrow("synthetic");
+  });
+});
+
+// MUTANT REGISTER, slice 3d-2a(ii), written BEFORE any run. Bun 1.3.14 recorded on each observation.
+//   E1  the router's backend() always answers where a new key would go        -> test/key-backend.test.ts "the holder of the key is the backend in use..."
+//   E2  two holders leave the settled store undefined (not null)               -> test/key-backend.test.ts "two holders leave no backend in use"
+//   E3  load() does not reset the settled store first                          -> test/key-backend.test.ts "a later load does not inherit an earlier load's store"
+//   E4  backendIn ignores the provider and answers by platform alone           -> "the backend field is always present..."
+//   E5  the secret_service check is added on every platform                    -> "on macOS the backend is the keychain and nothing says Secret Service"
+//   E6  notImplemented is added on every platform                              -> "on macOS the backend is the keychain..."
+//   E7  key_incomplete is dropped from the codes reported under their own name -> "each of the five key states renders..."
+//   E8  the ambiguous check drops its stores                                   -> "each of the five key states renders..."
+//   E9  the human doctor output drops the path line                            -> "each of the five key states renders...", "a tool_untrusted state shows the word and the path..."
+//   E10 refusedKeyCheck drops summary and hint                                 -> "each of the five key states renders..."
+//   E11 the human status drops the Secret Service line                         -> "on Linux the Secret Service gap is named, reported and never failed"
+//   E12 main.ts stops passing the platform to the report                       -> "on Linux the Secret Service gap...", "the backend field is always present..." (they run as linux on a darwin host)
+//   E13 status stops carrying keyProvider.backend                              -> "the backend field is always present...", "the existing status and doctor fields are unchanged" is NOT predicted (it checks only the old keys)
+// DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
+// key_provider codes renders in JSON and in human output; a broken key exits 6
+// and is shown on key_provider; the backend field is always present, null on a
+// Linux host with no TPM; the Secret Service line is on Linux and not on macOS;
+// the existing fields are unchanged; the key_unloadable strings are unchanged.
+// Proofs that belong to 3d-2b: the tpm2 attention check leaves doctor's exit at
+// 0, and it never repeats a key fault.
+describe("DEC-262 (a24): the key backend and the key states in status and doctor", () => {
+  const tpm = (
+    reason: Tpm2Reason,
+    detail?: string,
+    path?: string,
+  ): KeyProvider => ({
+    load: async () => {
+      throw new TpmKeyError(
+        tpm2ErrorCodes[reason],
+        new Tpm2Error(reason, detail, path === undefined ? {} : { path }),
+      );
+    },
+    create: async () => undefined,
+    backend: () => "tpm2",
+  });
+  const ambiguous: KeyProvider = {
+    load: async () => {
+      throw new WardError("vault_key_ambiguous", undefined, undefined, [
+        "macOS Keychain",
+        "TPM2",
+      ]);
+    },
+    create: async () => undefined,
+    backend: () => null,
+  };
+
+  async function reports(keyProvider: KeyProvider, platform = "linux") {
+    const h = harness();
+    const checkout = worktree(`a24-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const options = h.options(checkout, {
+      keyProvider,
+      keySelection: { platform },
+    });
+    const status = await runWard(["status", "--json"], options);
+    const statusText = await runWard(["status"], options);
+    const doctor = await runWard(["doctor", "--json"], options);
+    const doctorText = await runWard(["doctor"], options);
+    return {
+      status: json(status.stdout).data as StatusData & {
+        keyProvider: { backend: unknown; notImplemented?: unknown };
+      },
+      statusText: statusText.stdout,
+      doctor,
+      doctorData: json(doctor.stdout).data as DoctorData,
+      doctorText: doctorText.stdout,
+    };
+  }
+  const keyCheck = (data: DoctorData) =>
+    data.checks.find((c) => c.check === "key_provider") as
+      | (DoctorData["checks"][number] & Record<string, unknown>)
+      | undefined;
+
+  const five: [string, KeyProvider, string, Record<string, unknown>][] = [
+    ["key_incomplete", tpm("key_incomplete"), "key_incomplete", {}],
+    [
+      "key_unloadable",
+      tpm("tool_failed", "tpm2_load"),
+      "key_unloadable",
+      { summary: keyUnloadableSummary, hint: keyUnloadableHint },
+    ],
+    [
+      "tool_untrusted",
+      tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
+      "tool_untrusted",
+      { path: "/synthetic/tpm2_unseal" },
+    ],
+    [
+      "tool_incompatible",
+      tpm("tool_incompatible", "tpm2-tools 5.6"),
+      "tool_incompatible",
+      { version: "5.6" },
+    ],
+    [
+      "vault_key_ambiguous",
+      ambiguous,
+      "vault_key_ambiguous",
+      { stores: ["macOS Keychain", "TPM2"] },
+    ],
+  ];
+
+  test("each of the five key states renders in JSON and in human output", async () => {
+    for (const [name, provider, code, fields] of five) {
+      const r = await reports(provider);
+      const check = keyCheck(r.doctorData);
+      expect([name, check?.code, check?.status]).toEqual([name, code, "fail"]);
+      expect([name, check]).toMatchObject([name, fields]);
+      // Human output carries the code and every field the JSON carries.
+      expect(r.doctorText).toContain(code);
+      for (const value of Object.values(fields).flat())
+        expect([name, r.doctorText.includes(String(value))]).toEqual([
+          name,
+          true,
+        ]);
+    }
+  });
+
+  test("a tool_untrusted state shows the word and the path in human output and JSON", async () => {
+    const r = await reports(
+      tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
+    );
+    expect(r.doctorText).toContain("untrusted");
+    expect(r.doctorText).toContain("/synthetic/tpm2_unseal");
+    expect(JSON.stringify(r.doctorData)).toContain("tool_untrusted");
+    expect(JSON.stringify(r.doctorData)).toContain("/synthetic/tpm2_unseal");
+  });
+
+  test("a broken key exits 6 and the failure is on key_provider", async () => {
+    const r = await reports(tpm("key_incomplete"));
+    expect(r.doctor.exitCode).toBe(exitCodes.validation);
+    expect(keyCheck(r.doctorData)?.status).toBe("fail");
+  });
+
+  test("a TPM refusal outside the five stays unavailable and names its state", async () => {
+    const r = await reports(tpm("tpm_not_accessible"));
+    expect(keyCheck(r.doctorData)).toMatchObject({
+      code: "unavailable",
+      reason: "access_refused",
+    });
+  });
+
+  test("the backend field is always present: the held store, and null with no TPM", async () => {
+    const held = await reports(tpm("key_incomplete"));
+    expect(held.status.keyProvider.backend).toBe("tpm2");
+    expect(held.statusText).toContain("key backend:   TPM2");
+    const none = await reports(ambiguous);
+    expect(none.status.keyProvider).toHaveProperty("backend", null);
+    expect(none.statusText).toContain("key backend:   none");
+    // A real selection on a Linux host with no TPM and no vault: nothing is
+    // usable for a new key, so the backend is null and status still answers.
+    const h = harness();
+    const checkout = worktree(`a24-none-${++cases}`);
+    const provider = selectKeyProvider(h.directory, {
+      platform: "linux",
+      tpm2: {
+        detect: () => {
+          throw new Tpm2Error("tpm_absent");
+        },
+      },
+    });
+    const result = await runWard(
+      ["status", "--json"],
+      h.options(checkout, {
+        keyProvider: provider,
+        keySelection: { platform: "linux" },
+      }),
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(
+      (json(result.stdout).data as { keyProvider: { backend: unknown } })
+        .keyProvider.backend,
+    ).toBeNull();
+  });
+
+  test("on macOS the backend is the keychain and nothing says Secret Service", async () => {
+    const r = await reports(
+      createKeychainKeyProvider({
+        service: SERVICE,
+        entry: new MemoryKeychain().entry,
+        timeoutMs: 2_000,
+      }),
+      "darwin",
+    );
+    expect(r.status.keyProvider.notImplemented).toBeUndefined();
+    expect(r.statusText).not.toContain("Secret Service");
+    expect(r.doctorText).not.toContain("secret_service");
+    expect(r.doctorData.checks.map((c) => c.check)).not.toContain(
+      "secret_service",
+    );
+  });
+
+  test("on Linux the Secret Service gap is named, reported and never failed", async () => {
+    const r = await reports(tpm("key_incomplete"));
+    expect(r.status.keyProvider.notImplemented).toEqual(["secret-service"]);
+    expect(r.statusText).toContain("Secret Service: not implemented");
+    const check = r.doctorData.checks.find((c) => c.check === "secret_service");
+    expect(check).toMatchObject({ code: "not_implemented" });
+    expect(check?.status).not.toBe("fail");
+  });
+
+  test("the existing status and doctor fields are unchanged", async () => {
+    const r = await reports(tpm("key_incomplete"));
+    expect(Object.keys(r.status).sort()).toEqual(
+      [
+        "binding",
+        "checkout",
+        "keyProvider",
+        "manifest",
+        "otherProjectStaleApprovals",
+        "staleApprovals",
+        "vault",
+      ].sort(),
+    );
+    expect(r.status.keyProvider.status).toBe("unavailable");
+    for (const name of [
+      "permissions",
+      "key_provider",
+      "schema",
+      "binding",
+      "stale_approvals",
+      "instructions",
+    ])
+      expect(r.doctorData.checks.map((c) => c.check)).toContain(name);
   });
 });
