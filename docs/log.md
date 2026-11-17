@@ -76,6 +76,8 @@
 - 2026-11-17T08:33:16-06:00 456202021ce4b8e670fd806921a2e7d8cc6de55c feat(WCLI-21): ADR 0007 names the (a24) additive fields, budgets raised to hold it, observations annotated
 - 2026-11-17T08:37:41-06:00 7b9efab5986a75167f0a4bea387482a44b396564 docs(WCLI-21): ADR 0007 states (a25), implementation budget 26400, observations annotated
 - 2026-11-17T08:59:31-06:00 b5e056efb6408778214731d4c234845e603a43ef feat(WCLI-21): backend in use, key states and the Secret Service gap in status and doctor (DEC-262 a24/a25, slice 3d-2a ii) (#350)
+- 2026-11-17T10:05:16-06:00 d89fa36999d9cd907b4d33ac22adcc7312423ca7 feat(WCLI-21): doctor's tpm2 check and the count of eight (DEC-262 a25/a26, slice 3d-2b ii-a) (#352)
+- 2026-11-17T10:16:14-06:00 c1ae07ab4e0a75fed194532b2f24b77783cc8776 fix(WCLI-21): the vault doctor path honours tpm2.detect, and a test reaching the real TPM host fails loudly (#352 reviewer items A-C)
 
 ## docs/runbooks
 

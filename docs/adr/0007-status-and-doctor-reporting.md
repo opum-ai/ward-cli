@@ -84,9 +84,15 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   `vault_key_ambiguous`; a hint is human output, never a field. Doctor adds
   `secret_service` after the six, on every platform: `skipped`, with
   `not_implemented` on Linux and `not_applicable` elsewhere. The `tpm2` check
-  (a25, a26) is `pass` with `ok`, or `skipped` with `tpm2_absent` (no TPM is
-  usable; `reason` is prose naming which, `path` for an untrusted tool) or
-  `not_applicable` (off Linux, or no TPM probe wired); it never fails doctor and never repeats a key
+  (a25, a26) is `pass` with `ok` or `saved_sessions` (carrying `count`), or
+  `skipped` with `tpm2_absent` (no TPM is usable; `reason` is prose naming
+  which, `path` for an untrusted tool) or `not_applicable` (off Linux, or no TPM
+  probe wired). With a vault whose saved-session count could not be read (an
+  absent, untrusted, failed or unrecognised `tpm2_getcap`), it stays `pass`
+  with `ok` and adds `savedSessions: "unavailable"`, a `reason` and, for an
+  untrusted tool, its `path`, in human output and JSON (a19, a26 Q2). With no
+  vault no count is taken and `savedSessions` and `count` are absent (a27 Q1).
+  It never fails doctor and never repeats a key
   fault as a failure: doctor fails once, in `key_provider` (a27), and where the
   fault is a host state `tpm2` skips naming it. `leaked_slot` is not a code: a
   saved-session count cannot attribute a leak to Ward. No existing field

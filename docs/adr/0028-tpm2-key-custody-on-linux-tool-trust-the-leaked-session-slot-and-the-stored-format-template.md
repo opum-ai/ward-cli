@@ -159,7 +159,10 @@ output and its JSON, asserting `tool_untrusted` and the word "untrusted"; the pr
 (reason and detail, never the `WardError`) goes through `tpm2StateFor`; detection is fresh before a
 load; the count is never rendered as zero when detection failed (NN1); a lone `.priv` counts as the
 TPM holding a key in the presence check (N3 c); and N7 above. WCLI-21's note holds the full
-carry list.
+carry list. Slice 3d-2b(ii-b) builds doctor's surface for the count (a26, a27): with a vault,
+`tpm2` is `pass` with `saved_sessions` carrying `count`, or `ok` with `savedSessions:
+"unavailable"`, a reason and, for an untrusted `tpm2_getcap`, its path; with no vault the count is
+not taken and the key is absent (NN1). Neither fails doctor.
 
 ## Measured
 
