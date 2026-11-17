@@ -1955,6 +1955,7 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   H4  version is emitted for any state that carries one (F3)                 -> "version is carried only for tool_incompatible, whatever the classifier hands back"
 //   H5  a platform that is neither macOS nor Linux falls to initialisation()   -> test/key-backend.test.ts "a platform that is neither macOS nor Linux reports none, with no vault"
 //   H6  the key_provider check gains a `summary` key                           -> "each of the five key states is exactly its check object..."
+// OBSERVED (#350 round-1 fixes, bun 1.3.14, 2026-11-17; predictions above unchanged). H1-H5 went red on exactly their predicted tests; F3 is now killed by H4's test. H6 also reddened "key_provider's JSON carries no summary or hint key..." and "a TPM refusal outside the five..." (both read the key set).
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a
