@@ -2626,6 +2626,7 @@ describe("the TPM2 doctor states", () => {
   //   I3 the sink is called unguarded                         -> "an abandon sink that throws does not change what doctor reports"
   //   I4 every tool failure calls the sink                    -> "an ordinary tool failure does not tell the abandon sink"
   //   I5 (test/reporting.test.ts) catalogEntry loses its `?? {}`  -> "a code the catalog does not know fails closed to the state name, never a throw"
+  // OBSERVED (bun 1.3.14, 2026-11-17; predictions unchanged). I1, I2, I4, I5 went red on exactly their predicted tests. I3 went red on exactly its predicted test when run alone; in the first combined run it stalled the suite (an unguarded listener throw), so that run was killed and I3 re-run alone.
   // WCLI-21 3d-2b(i): doctor's own tool runs tell the abandon sink, so the
   // command exits explicitly, and the doctor state stays what it was.
   const diagnoseSunk = async (
