@@ -2631,6 +2631,7 @@ describe("the TPM2 doctor states", () => {
   //   J1 diagnoseWith's createprimary timeout does not tell the sink      -> "a createprimary that times out tells the abandon sink once..."
   //   J2 diagnoseWith's sink call is unguarded                            -> "an abandon sink that throws does not change what doctor reports" (its load variant)
   //   J3 (test/reporting.test.ts) the catalog fail-closed value is the state name again -> "a code the catalog does not know fails closed to fixed prose, never a throw"
+  // OBSERVED (#351 round-1 fixes, bun 1.3.14, 2026-11-17; predictions unchanged). J2 and J3 went red on exactly their predicted tests (J2 run alone, as I3 stalls a combined run). J1 also reddened the load-timeout test, since the mutant skips the sink for every tool_timeout at that site, not only createprimary's.
   // WCLI-21 3d-2b(i): doctor's own tool runs tell the abandon sink, so the
   // command exits explicitly, and the doctor state stays what it was.
   const diagnoseSunk = async (
