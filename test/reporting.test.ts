@@ -3019,3 +3019,4 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 // MUTANT REGISTER, WCLI-21 3d-2b ii-b ROUND 2, DEC-262 (a28), written BEFORE any run. Bun 1.3.14 on each observation.
 //   S1  tpm2 stops consulting key_provider's refusal (the (a28) consult is dropped) -> "with a vault, an unseal that fails tool_incompatible gives key_provider fail, tpm2 skipped/tpm2_absent naming it..." (tpm2 flips to pass/ok)
 //   S2  the consult skips for any refusal, not only host states                     -> "a key fault is reported once, in key_provider, and tpm2 does not repeat it" (key_incomplete would flip tpm2 to skipped)
+// OBSERVED (3d-2b ii-b round 2, (a28), bun 1.3.14, 2026-11-17; predictions above unchanged). S1 went red on exactly the (a28) test (tpm2 flips to pass/ok); S2 went red on exactly "a key fault is reported once...".
