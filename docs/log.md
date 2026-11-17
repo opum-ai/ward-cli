@@ -36,6 +36,7 @@
 - 2026-10-28T09:19:42-05:00 e7cf35ce5fa6d028358f183fb59bfc63f3b2cb2c feat(WCLI-92): ship opum-ward from a lean plugin/ directory (#204)
 - 2026-11-03T10:48:55-06:00 f612a61ecf307c966edbc339dd4a38b668624661 fix(WCLI-140): the legacy hint names ward init only where init can run; docs and field naming (#267)
 - 2026-11-16T22:37:42-06:00 61fb355bef4ad4c3f3ed6bf00b4253ef327ae365 docs(WCLI-21): Ward's stderr output contract concept, pinned by a test and linked from ADR 0028
+- 2026-11-16T23:37:21-06:00 fe4694069a53c78f57903155a2e93a255440deef feat(WCLI-21): backend selection, the tpm dir and the 12-site swap (slice 3d-1b) (#341)
 
 ## docs/adr
 
