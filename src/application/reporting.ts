@@ -928,6 +928,10 @@ const savedSessionsUnavailableReason: Record<
     "tpm2_getcap printed something Ward does not recognise, so Ward could not count saved TPM sessions. That is not a count of zero.",
 };
 
+// What clears a visible saved-session count (DEC-262 a15 item 2): a TPM reset
+// or a reboot. Said in human output beneath the count, never a JSON field.
+const savedSessionsClearedBy = "a reset or reboot";
+
 // A usable TPM is `pass`, with an attention state beside it when the vault's
 // diagnosis found one (DEC-262 a26): visible saved sessions carry their count
 // under `saved_sessions`; an unreadable count is `ok` with `savedSessions:
@@ -1255,8 +1259,12 @@ function keyDetailLines(check: DoctorCheck, hint?: string): string[] {
     lines.push(`    version: ${escapeForDisplay(check.version)}`);
   if (check.stores !== undefined && check.stores.length > 0)
     lines.push(`    stores: ${check.stores.join(", ")}`);
-  if (check.count !== undefined)
+  if (check.count !== undefined) {
     lines.push(`    saved sessions: ${check.count}`);
+    // DEC-262 (a15 item 2): the count names what clears it. Human output only;
+    // the JSON carries the count and nothing else.
+    lines.push(`    cleared by: ${savedSessionsClearedBy}`);
+  }
   if (check.savedSessions !== undefined)
     lines.push(`    saved sessions: ${check.savedSessions}`);
   if (hint !== undefined) lines.push(`    ${hint}`);

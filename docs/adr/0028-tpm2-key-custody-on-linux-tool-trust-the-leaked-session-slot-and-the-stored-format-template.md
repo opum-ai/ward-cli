@@ -90,8 +90,8 @@ behaviour is:
   when the unseal's error is a `Tpm2Error`; a non-`Tpm2Error` failure keeps `flushFailure` too (N4,
   closed: the test "a non-Tpm2Error unseal failure keeps flushFailure" pins it).
 - **`diagnoseTpm2`** (adapter-level; `ward doctor` calls it with a vault (detection alone without one), and its
-  `tpm2` check follows DEC-262 a26: `ok`, or `tpm2_absent` with prose, never a failure; the count
-  itself is rendered in a later slice) reports the
+  `tpm2` check follows DEC-262 a26: `ok` or `saved_sessions` with the count, or `tpm2_absent` with
+  prose, never a failure) reports the
   **visible saved-session handle count** as an attention state that does not fail doctor and names
   what clears it: a reset or a reboot. The count comes from `tpm2_getcap handles-saved-session`,
   which is not a required tool: it is resolved and trust-walked on its own. A count that cannot be

@@ -92,6 +92,12 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   with `ok` and adds `savedSessions: "unavailable"`, a `reason` and, for an
   untrusted tool, its `path`, in human output and JSON (a19, a26 Q2). With no
   vault no count is taken and `savedSessions` and `count` are absent (a27 Q1).
+  A count of zero is plain `ok` with neither key, so absence never means "zero
+  was counted": it also covers a vault that is insecure, busy, malformed or
+  unreadable, where no vault is diagnosed. `tpm2` cannot tell those apart; a
+  script that needs to reads the vault's own checks (`permissions`, `schema`).
+  Human output adds `cleared by: a reset or reboot` beneath a count (a15 item
+  2); the JSON carries the count only.
   It never fails doctor and never repeats a key
   fault as a failure: doctor fails once, in `key_provider` (a27), and where the
   fault is a host state `tpm2` skips naming it. `leaked_slot` is not a code: a

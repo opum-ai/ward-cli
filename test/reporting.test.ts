@@ -14,7 +14,10 @@
 // and a throwaway checkout; nothing touches the developer's ~/.ward, real
 // keychain or repositories.
 import "./support/no-real-keychain.ts";
-import { realTpmHostRefusal } from "./support/no-real-tpm-host.ts";
+import {
+  realTpmHostRefusal,
+  takeRealTpmHostTrips,
+} from "./support/no-real-tpm-host.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
@@ -44,11 +47,15 @@ import {
 } from "../src/adapters/key-backend.ts";
 import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
 import {
+  detectTpm2,
+  detectTpm2ForTest,
+  diagnoseTpm2ForTest,
   keyUnloadableHint,
   keyUnloadableSummary,
   Tpm2Error,
   type Tpm2Reason,
   tpm2ErrorCodes,
+  tpmDevicePath,
 } from "../src/adapters/tpm2-tools.ts";
 import {
   type KeyProvider,
@@ -2700,6 +2707,24 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     });
     await expect(diagnoser(vaultId)).rejects.toThrow(realTpmHostRefusal);
     await expect(diagnoser(undefined)).rejects.toThrow(realTpmHostRefusal);
+    // Each trip is recorded, so the global afterEach would fail a test that
+    // reached the host without meaning to, even where doctor folds the throw
+    // into a quiet tpm2_absent. This test did it on purpose and takes them.
+    expect(takeRealTpmHostTrips()).toEqual(["diagnoseTpm2", "detectTpm2"]);
+    // The "ForTest" entry points and an explicitly named real device are the
+    // real host too.
+    const named = { path: "", device: tpmDevicePath };
+    expect(() => detectTpm2ForTest(named, {})).toThrow(realTpmHostRefusal);
+    await expect(
+      (async () =>
+        await diagnoseTpm2ForTest(named, {}, join(tmpdir(), "ward-x")))(),
+    ).rejects.toThrow(realTpmHostRefusal);
+    expect(() => detectTpm2(named)).toThrow(realTpmHostRefusal);
+    expect(takeRealTpmHostTrips()).toEqual([
+      "detectTpm2ForTest",
+      "diagnoseTpm2ForTest",
+      "detectTpm2",
+    ]);
   });
 
   // DEC-262 (a27) proofs.
@@ -2779,6 +2804,15 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
     });
     expect(r.text).toContain("saved_sessions");
     expect(r.text).toContain("saved sessions: 2");
+    // What clears it is named in human output only (a15 item 2); the JSON keeps
+    // the count and nothing else.
+    expect(r.text).toContain("cleared by: a reset or reboot");
+    expect(Object.keys(tpm2Of(r.data) ?? {}).sort()).toEqual([
+      "check",
+      "code",
+      "count",
+      "status",
+    ]);
     expect(r.result.exitCode).toBe(exitCodes.success);
   });
 
@@ -2941,3 +2975,11 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 //   Q9  every unavailable reason shares one wording                               -> "each unavailable reason has its own fixed wording and only an untrusted tool carries a path"
 //   Q10 tpm2Diagnoser's vault path drops savedSessions from the diagnosis         -> "the diagnoser hands the vault's saved-session answer to the check and none without a vault"
 // OBSERVED (3d-2b ii-b, bun 1.3.14, 2026-11-17; predictions above unchanged). Q1-Q10 each went red on their predicted tests. Extras beyond the prediction: Q4 and Q9 also reddened "each unavailable reason has its own fixed wording..." (Q4: the untrusted path; Q9: the shared wording) and Q9 also reddened the untrusted test (its reason must say untrusted); Q6 also reddened the reasons test (status pass).
+// MUTANT REGISTER, WCLI-21 3d-2b ii-b ROUND 2 (the #355 verdict: B1, N1-N3), written BEFORE any run. Bun 1.3.14 on each observation.
+//   R1  the human output drops the "cleared by" line                              -> "a visible saved-session count is pass/saved_sessions carrying its count..." (its text assertion)
+//   R2  the JSON saved_sessions check gains a clearedBy key                        -> the same test (its exact key set)
+//   R3  the guard stops recording trips                                           -> "a test that reaches the real TPM host fails loudly..." (the takeRealTpmHostTrips assertions)
+//   R4  the ForTest wrappers stop refusing                                        -> the same test (the second block)
+//   R5  the guard stops refusing an explicitly named /dev/tpmrm0                  -> the same test (the named-device assertions)
+//   R6  no-real-keychain.ts stops importing the guard                             -> test-isolation.test.ts "the keychain mock carries the real-TPM-host guard..."
+// The global afterEach (N1) has no in-suite mutant, since a test cannot observe its own afterEach failing; it is exercised by hand with a scratch test that trips the guard and does not take the record.

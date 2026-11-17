@@ -5,6 +5,9 @@
 // Bun reads bunfig.toml from the working directory only. Compiled fixtures
 // are separate processes and are not covered; none of them calls the store.
 import { mock } from "bun:test";
+// The real-TPM-host guard rides on the same first import (WCLI-21 ii-b N3), so a
+// test run from outside the repository root is covered by it too.
+import "./no-real-tpm-host.ts";
 
 export const realKeychainRefusal =
   "test processes must not reach the real credential store";
