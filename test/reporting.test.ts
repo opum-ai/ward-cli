@@ -36,8 +36,11 @@ import {
   locateCheckout,
   probeCheckout,
 } from "../src/adapters/checkout.ts";
+import { keyRefusalState } from "../src/adapters/key-backend.ts";
 import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
 import {
+  keyUnloadableHint,
+  keyUnloadableSummary,
   Tpm2Error,
   type Tpm2Reason,
   tpm2ErrorCodes,
@@ -48,7 +51,11 @@ import { createProjectFiles } from "../src/adapters/project-files.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
 import type { RegistrationApprover } from "../src/application/approvals.ts";
 import { wardBlockBody } from "../src/application/bridges.ts";
-import { runDoctor, runStatus } from "../src/application/reporting.ts";
+import {
+  observeKey,
+  runDoctor,
+  runStatus,
+} from "../src/application/reporting.ts";
 import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
@@ -1715,5 +1722,129 @@ describe("a TPM-backed key provider answers status without throwing", () => {
       expect(result.exitCode).toBe(exitCodes.success);
       expect(data.keyProvider.status).toBe("unavailable");
     }
+  });
+});
+
+// MUTANT REGISTER, slice 3d-2a, written BEFORE any run. Bun 1.3.14 recorded on each observation.
+//   D1 observeKey has no vault_key_ambiguous case (falls through to the throw) -> "a vault two stores hold is ambiguous and names both", "status and doctor answer on an ambiguous vault instead of throwing"
+//   D2 ambiguous is read as missing                                           -> the same two tests
+//   D3 ambiguous drops its stores                                             -> "a vault two stores hold is ambiguous and names both"
+//   D4 reportedKeyStatus passes "ambiguous" through to the report              -> "status and doctor answer on an ambiguous vault instead of throwing"
+//   D5 observeKey never attaches the refusal                                  -> "a TPM refusal carries its doctor state...", "a load the tools rejected carries...", "a lone private blob keeps its own state..."
+//   D6 a tpm_key_incomplete is read as a missing key                          -> "a lone private blob keeps its own state and is never missing", "a lone private blob is never reported as a missing key"
+//   D7 keyRefusalState builds the state from a bare Tpm2Error(reason)         -> "a TPM refusal carries its doctor state...", "a load the tools rejected carries..."
+//   D8 keyRefusalState answers for an error that is not a TpmKeyError         -> "without a classifier, or from a refusal that is not a TPM load, no state is attached"
+//   D9 main.ts stops passing classifyKeyRefusal                               -> PREDICTED TO SURVIVE: nothing renders the refusal until the held ruling, so no runWard output can show it; wiring is pinned when the renderers land.
+// OBSERVED (bun 1.3.14, 2026-11-17; predictions above unchanged). D1-D5, D7, D8 went red on exactly their predicted tests. D6 also reddened "every TPM code is reported as an unavailable key" and "without a classifier..." (the mutant hits every tpm_key_incomplete, which those two also load). D9 not run: predicted to survive.
+describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
+  const failing = (error: unknown): KeyProvider => ({
+    load: async () => {
+      throw error;
+    },
+    create: async () => undefined,
+  });
+  const tpm = (reason: Tpm2Reason, detail?: string, path?: string) =>
+    new TpmKeyError(
+      tpm2ErrorCodes[reason],
+      new Tpm2Error(reason, detail, path === undefined ? {} : { path }),
+    );
+
+  test("a vault two stores hold is ambiguous and names both", async () => {
+    const stores = ["macOS Keychain", "TPM2"] as const;
+    const observed = await observeKey(
+      failing(
+        new WardError("vault_key_ambiguous", undefined, undefined, [...stores]),
+      ),
+      "v",
+    );
+    expect(observed).toEqual({ status: "ambiguous", stores: [...stores] });
+  });
+
+  test("status and doctor answer on an ambiguous vault instead of throwing", async () => {
+    const h = harness();
+    const checkout = worktree(`ambiguous-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const keyProvider = failing(
+      new WardError("vault_key_ambiguous", undefined, undefined, [
+        "macOS Keychain",
+        "TPM2",
+      ]),
+    );
+    const status = await runWard(
+      ["status", "--json"],
+      h.options(checkout, { keyProvider }),
+    );
+    expect(status.exitCode).toBe(exitCodes.success);
+    expect((json(status.stdout).data as StatusData).keyProvider.status).toBe(
+      "unavailable",
+    );
+    const doctor = await runWard(
+      ["doctor", "--json"],
+      h.options(checkout, { keyProvider }),
+    );
+    const checks = (
+      json(doctor.stdout).data as { checks: { check: string; code: string }[] }
+    ).checks;
+    expect(checks.find((c) => c.check === "key_provider")?.code).toBe(
+      "unavailable",
+    );
+  });
+
+  test("a TPM refusal carries its doctor state, never the WardError's text", async () => {
+    const observed = await observeKey(
+      failing(tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal")),
+      "v",
+      keyRefusalState,
+    );
+    expect(observed).toMatchObject({
+      status: "unavailable",
+      refusal: { state: "tool_untrusted", path: "/synthetic/tpm2_unseal" },
+    });
+  });
+
+  test("a load the tools rejected carries the unchanged key_unloadable wording", async () => {
+    const observed = await observeKey(
+      failing(tpm("tool_failed", "tpm2_load")),
+      "v",
+      keyRefusalState,
+    );
+    expect(observed).toMatchObject({
+      status: "unavailable",
+      refusal: {
+        state: "key_unloadable",
+        summary: keyUnloadableSummary,
+        hint: keyUnloadableHint,
+      },
+    });
+  });
+
+  test("a lone private blob keeps its own state and is never missing", async () => {
+    const observed = await observeKey(
+      failing(tpm("key_incomplete")),
+      "v",
+      keyRefusalState,
+    );
+    expect(observed.status).toBe("unavailable");
+    expect(observed).toMatchObject({ refusal: { state: "key_incomplete" } });
+  });
+
+  test("without a classifier, or from a refusal that is not a TPM load, no state is attached", async () => {
+    expect(await observeKey(failing(tpm("key_incomplete")), "v")).toEqual({
+      status: "unavailable",
+    });
+    expect(
+      await observeKey(
+        failing(new WardError(tpm2ErrorCodes.tpm_not_accessible)),
+        "v",
+        keyRefusalState,
+      ),
+    ).toEqual({ status: "unavailable" });
+  });
+
+  test("an unrecognised failure still throws", async () => {
+    await expect(
+      observeKey(failing(new Error("synthetic")), "v", keyRefusalState),
+    ).rejects.toThrow("synthetic");
   });
 });

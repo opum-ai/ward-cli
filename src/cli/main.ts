@@ -13,6 +13,7 @@ import {
 import {
   formatKeyWarning,
   type KeySelection,
+  keyRefusalState,
   selectKeyProvider,
 } from "../adapters/key-backend.ts";
 import { TpmKeyError } from "../adapters/tpm2-provider.ts";
@@ -407,6 +408,7 @@ function reporting(options: RunOptions): {
       store: createSqliteVaultStore({ directory }),
       keyProvider,
       checkouts: { probe: probeCheckout },
+      classifyKeyRefusal: keyRefusalState,
     },
   };
 }
