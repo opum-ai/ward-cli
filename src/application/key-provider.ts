@@ -25,3 +25,25 @@ export interface KeyProvider {
   // explicitly once the command's output is written, even on success.
   abandonedCall?(): boolean;
 }
+
+// What a backend's refusal means for a report, carried beside the observation
+// so a renderer never parses a message (DEC-262 a15, a18, a19, a20). The shape
+// matches the TPM2 adapter's doctor state; the application layer holds only
+// this structural type and receives the classifier from the composition root.
+export interface KeyRefusalState {
+  readonly state: string;
+  readonly code?: string;
+  // tool_untrusted: the tool or directory that failed the trust walk.
+  readonly path?: string;
+  // tool_incompatible: the tpm2-tools version, "unknown" when unreadable.
+  readonly version?: string;
+  // key_unloadable only: the wording a report must use unchanged.
+  readonly summary?: string;
+  readonly hint?: string;
+}
+
+// Classifies a key load failure. Undefined means the error carries no backend
+// detail (a Keychain refusal, or an error that is not from a TPM2 load).
+export type KeyRefusalClassifier = (
+  error: unknown,
+) => KeyRefusalState | undefined;

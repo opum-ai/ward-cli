@@ -46,7 +46,11 @@ import {
   type VaultState,
 } from "../domain/vault-state.ts";
 import { agentTargetDocuments, wardBlockBody } from "./bridges.ts";
-import type { KeyProvider } from "./key-provider.ts";
+import type {
+  KeyProvider,
+  KeyRefusalClassifier,
+  KeyRefusalState,
+} from "./key-provider.ts";
 import type { ProjectFiles } from "./project-files.ts";
 import type { VaultStore } from "./vault-store.ts";
 
@@ -56,6 +60,10 @@ export interface ReportingOptions {
   readonly store: VaultStore;
   readonly keyProvider: KeyProvider;
   readonly checkouts: StaleCheckoutProbe;
+  // Reads a TPM2 refusal into its doctor state. Supplied by the composition
+  // root, since the application layer cannot reach the adapter. Absent means
+  // no backend detail is kept, and a TPM2 refusal is still `unavailable`.
+  readonly classifyKeyRefusal?: KeyRefusalClassifier;
 }
 
 // A checkout a stored record names, seen from here. Most stale approvals were
@@ -126,9 +134,24 @@ type VaultObservation =
 type KeyObservation =
   | { status: "present"; key: Uint8Array }
   | { status: "missing" }
-  | { status: "unavailable" }
+  // `refusal` is the backend's own reading of why (DEC-262 a15 to a20); it is
+  // carried for the renderers of slice 3d-2 and not yet shown.
+  | { status: "unavailable"; refusal?: KeyRefusalState }
+  // Two stores hold a key for this vault (a16 rule 2). The names are carried
+  // from WardError.stores, never a path. Until the ruling on how a report shows
+  // it, every renderer reports this as `unavailable` (see reportedKeyStatus).
+  | { status: "ambiguous"; stores: readonly string[] }
   | { status: "invalid" }
   | { status: "unsupported" };
+
+type ReportedKeyStatus = Exclude<KeyObservation["status"], "ambiguous">;
+
+// What the existing report contract can say about a key observation. Ambiguous
+// reads as unavailable until opum-doc rules on its own value, so the contract
+// does not move in this slice and the report answers instead of throwing.
+function reportedKeyStatus(key: KeyObservation): ReportedKeyStatus {
+  return key.status === "ambiguous" ? "unavailable" : key.status;
+}
 
 // `unsupported` is not about the document's own version, which now has a
 // single format and answers `malformed` when it is not this build's (DEC-38).
@@ -224,6 +247,7 @@ function observeVault(store: VaultStore): VaultObservation {
 async function observeKey(
   keyProvider: KeyProvider,
   vaultId: string,
+  classify?: KeyRefusalClassifier,
 ): Promise<KeyObservation> {
   try {
     return { status: "present", key: await keyProvider.load(vaultId) };
@@ -233,6 +257,11 @@ async function observeKey(
         return { status: "missing" };
       case "vault_key_unavailable":
         return { status: "unavailable" };
+      case "vault_key_ambiguous":
+        return {
+          status: "ambiguous",
+          stores: error instanceof WardError ? error.stores : [],
+        };
       case "vault_key_invalid":
         return { status: "invalid" };
       case "vault_key_store_unsupported":
@@ -241,9 +270,14 @@ async function observeKey(
         // Every TPM2 code (DEC-262 a15) means the TPM did not give the key:
         // fail closed as unavailable. A lone private blob (tpm_key_incomplete)
         // is a recovery condition and is NEVER read as a missing key, which is
-        // what lets setup run (WCLI-21 N3 a). Slice 3d-2 renders the states.
-        if (wardCode(error)?.startsWith("tpm_") === true)
-          return { status: "unavailable" };
+        // what lets setup run (WCLI-21 N3 a). The refusal's state rides along
+        // for the renderers of slice 3d-2.
+        if (wardCode(error)?.startsWith("tpm_") === true) {
+          const refusal = classify?.(error);
+          return refusal === undefined
+            ? { status: "unavailable" }
+            : { status: "unavailable", refusal };
+        }
         throw error;
     }
   }
@@ -295,7 +329,11 @@ async function observe(options: ReportingOptions): Promise<Observation> {
   const vault = observeVault(options.store);
   if (vault.status !== "present")
     return { manifest, vault, key: undefined, state: undefined };
-  const key = await observeKey(options.keyProvider, vault.vaultId);
+  const key = await observeKey(
+    options.keyProvider,
+    vault.vaultId,
+    options.classifyKeyRefusal,
+  );
   let state: StateObservation | undefined;
   try {
     if (key.status === "present") state = observeState(options.store, key.key);
@@ -617,7 +655,9 @@ export async function runStatus(
             formatVersion: vault.formatVersion,
           }
         : { status: vault.status },
-    keyProvider: { status: key === undefined ? "unchecked" : key.status },
+    keyProvider: {
+      status: key === undefined ? "unchecked" : reportedKeyStatus(key),
+    },
     staleApprovals: stale.named,
     otherProjectStaleApprovals: stale.otherProjects,
   };
@@ -692,7 +732,7 @@ function keyCheck(
     return { check, status: "skipped", code: "vault_absent" };
   if (key === undefined)
     return { check, status: "fail", code: `vault_${vault.status}` };
-  switch (key.status) {
+  switch (reportedKeyStatus(key)) {
     case "present":
       return { check, status: "pass", code: "present" };
     case "missing":
@@ -748,7 +788,9 @@ function schemaCheck(
   if (vault.status === "present") {
     if (state === undefined) {
       const reason =
-        key === undefined ? "state_unreadable" : `key_${key.status}`;
+        key === undefined
+          ? "state_unreadable"
+          : `key_${reportedKeyStatus(key)}`;
       return { check, status: "fail", code: reason };
     }
     switch (state.status) {
@@ -806,7 +848,8 @@ function bindingCheck(
   if (vault.status !== "present")
     return { check, status: "fail", code: `vault_${vault.status}` };
   if (state === undefined) {
-    const reason = key === undefined ? "state_unreadable" : `key_${key.status}`;
+    const reason =
+      key === undefined ? "state_unreadable" : `key_${reportedKeyStatus(key)}`;
     return { check, status: "fail", code: reason };
   }
   if (state.status !== "present")
@@ -845,7 +888,8 @@ function staleApprovalsCheck(
   if (vault.status !== "present")
     return { check, status: "fail", code: `vault_${vault.status}` };
   if (state === undefined) {
-    const reason = key === undefined ? "state_unreadable" : `key_${key.status}`;
+    const reason =
+      key === undefined ? "state_unreadable" : `key_${reportedKeyStatus(key)}`;
     return { check, status: "fail", code: reason };
   }
   if (state.status !== "present")
@@ -1006,3 +1050,5 @@ export async function runDoctor(
     exitCode: ok ? exitCodes.success : exitCodes.validation,
   };
 }
+
+export const observeKeyForTest = observeKey;

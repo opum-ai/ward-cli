@@ -1,5 +1,8 @@
 import { join } from "node:path";
-import type { KeyProvider } from "../application/key-provider.ts";
+import type {
+  KeyProvider,
+  KeyRefusalState,
+} from "../application/key-provider.ts";
 import { type KeyStoreName, WardError } from "../contract/errors.ts";
 import { isVaultId } from "../domain/envelope.ts";
 import { createKeychainKeyProvider, keychainService } from "./keychain.ts";
@@ -15,6 +18,7 @@ import {
   preparePrivateDirectory,
   Tpm2Error,
   tpm2ErrorCodes,
+  tpm2StateFor,
   type Tpm2Warning,
 } from "./tpm2-tools.ts";
 
@@ -224,4 +228,11 @@ export function selectKeyProvider(
       return tpm2;
     },
   });
+}
+
+// The report-side reading of a TPM2 load failure: the doctor state of the
+// Tpm2Error the provider kept, never of the WardError (whose catalog text
+// carries no path or version). Anything else has no backend detail.
+export function keyRefusalState(error: unknown): KeyRefusalState | undefined {
+  return error instanceof TpmKeyError ? tpm2StateFor(error.tpm2) : undefined;
 }
