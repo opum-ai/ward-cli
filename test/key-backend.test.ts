@@ -48,6 +48,13 @@
 //   H8  a failing command loses the warning                         -> "a warning before a failing command still reaches stderr"
 //   H9  the output-contract sentence is deleted from ADR 0028       -> "the output contract documents the stderr warning"
 //   H10 the warning is appended AFTER the error envelope (order swapped) -> "a warning before a failing command still reaches stderr"
+// MUTANT REGISTER, round 3 (the #341 round-2 verdict), written BEFORE any run of these. Bun is recorded on each observation.
+//   A1  the runWard sink does not OR the abandon into a success result        -> "a good unseal whose flush timed out asks for an explicit exit on a root that never read the provider flag"
+//   A2  the runWard sink is not applied on the failure path                   -> "the same abandon survives a later non-TPM failure"
+//   A3  the provider's abandon does not call options.onAbandon                -> "a good unseal whose flush timed out asks for ... never read the provider flag", "the same abandon survives a later non-TPM failure"
+//   A4  the sink sets the flag even with no abandon (always true)             -> "a good unseal without an abandon does not ask for one"
+//   A5  a sentence of the code's human warning drifts from the concept        -> "the stderr contract concept pins the warning forms"
+//   (nit 3, JSON mode from parsed flags, has no test: no command reaches a differing argv without a project, so it is a code-only change.)
 // MUTANT REGISTER, round 2 of the #341 review (B1-B4 and the nits), written and committed BEFORE any run of these.
 //   Q1  TpmKeyError.abandoned ignores a flushFailure of tool_timeout        -> "a propagated flush timeout still asks for an explicit exit"
 //   Q2  runWard's catch ignores the TpmKeyError abandoned mark              -> "a propagated tool timeout still asks for an explicit exit", "a propagating ward command whose tpm2 tool times out exits"
@@ -657,6 +664,9 @@ describe("DEC-262 (a23): the init hint and the leak warning", () => {
       "the error envelope is always the last stderr line",
     );
     expect(concept).toContain("never a path or a handle");
+    const leak = { code: "tpm_session_leaked" as const };
+    expect(concept).toContain(formatKeyWarning(leak, false).trim());
+    expect(concept).toContain(formatKeyWarning(leak, true).trim());
   });
 });
 
@@ -671,6 +681,7 @@ describe("#341 round 2: explicit exit, naming, notes and de-duplication", () => 
     args: string[],
     unseal: unknown,
     extra: Record<string, unknown> = {},
+    register = false,
   ) {
     const base = fresh();
     const ward = join(base, ".ward");
@@ -686,6 +697,18 @@ describe("#341 round 2: explicit exit, naming, notes and de-duplication", () => 
       keySelection: selection(async () => synthetic()),
     });
     expect(setup.exitCode).toBe(0);
+    if (register) {
+      const checkout = join(base, "checkout");
+      mkdirSync(join(checkout, ".git"), { recursive: true });
+      const init = await runWard(["init", "--json"], {
+        wardDirectory: ward,
+        keySelection: selection(async () => synthetic()),
+        approver: { available: () => true, ask: () => "approved" as const },
+        cwd: checkout,
+      });
+      expect(init.exitCode).toBe(0);
+      extra = { cwd: checkout, ...extra };
+    }
     return await runWard(args, {
       wardDirectory: ward,
       keySelection: selection(unseal),
@@ -718,6 +741,72 @@ describe("#341 round 2: explicit exit, naming, notes and de-duplication", () => 
       throw timeoutFlush();
     });
     expect(result.exitExplicitly).toBe(true);
+  });
+
+  const abandoningUnseal = async (
+    _presence: unknown,
+    _directory: unknown,
+    options: { onAbandon?: () => void },
+  ) => {
+    options.onAbandon?.();
+    return synthetic();
+  };
+
+  test("a good unseal whose flush timed out asks for an explicit exit on a root that never read the provider flag", async () => {
+    const result = await afterSetup(
+      ["key", "generate", "k1", "--json"],
+      abandoningUnseal,
+      {},
+      true,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.exitExplicitly).toBe(true);
+  });
+
+  test("the same abandon survives a later non-TPM failure", async () => {
+    const base = fresh();
+    const result = await afterSetup(
+      [
+        "backup",
+        "--output",
+        join(base, "no-such-directory", "out.bak"),
+        "--json",
+      ],
+      abandoningUnseal,
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(
+      JSON.parse(result.stderr.trim().split("\n").pop() as string).code,
+    ).not.toMatch(/^tpm_|^vault_key_/);
+    expect(result.exitExplicitly).toBe(true);
+  });
+
+  test("a good unseal without an abandon does not ask for one", async () => {
+    const result = await afterSetup(
+      ["key", "generate", "k1", "--json"],
+      async () => synthetic(),
+      {},
+      true,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.exitExplicitly).toBeUndefined();
+  });
+
+  test("without --json the warning is the human sentence on a root that has no flag for it", async () => {
+    const leak = { code: "tpm_session_leaked" as const };
+    const result = await afterSetup(
+      ["secret", "list"],
+      async (
+        _p: unknown,
+        _d: unknown,
+        options: { onWarning?: (w: typeof leak) => unknown },
+      ) => {
+        options.onWarning?.(leak);
+        return synthetic();
+      },
+    );
+    expect(result.stderr).toContain("warning: tpm_session_leaked");
+    expect(result.stderr).not.toContain('{"warning"');
   });
 
   test("a refusal that is not a timeout does not ask for one", async () => {

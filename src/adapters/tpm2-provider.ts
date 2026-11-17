@@ -44,6 +44,9 @@ export interface Tpm2ProviderOptions {
   directoryFor: (vaultId: string) => string;
   // Hears of a possibly leaked saved-session slot. It receives the code only.
   onWarning?: (warning: Tpm2Warning) => unknown;
+  // Hears that a call was abandoned (a tool timed out, or its flush did), so
+  // the caller can exit explicitly whichever command it was running.
+  onAbandon?: () => void;
   timeoutMs?: number;
   // Creates this vault's parent directories before a seal, refusing one that
   // is not private (blob_not_user_private) and never repairing it. Absent means
@@ -88,6 +91,10 @@ export function createTpm2KeyProvider(
   // path is "a timed-out tool marks the call abandoned" in
   // test/tpm2-provider.test.ts.
   let abandoned = false;
+  const abandon = () => {
+    abandoned = true;
+    options.onAbandon?.();
+  };
 
   // Fresh detection on every call: access can be revoked between two calls,
   // and a stale presence would let that read as an unloadable key.
@@ -103,7 +110,7 @@ export function createTpm2KeyProvider(
       error instanceof Tpm2Error &&
       (error.reason === "tool_timeout" || error.flushFailure === "tool_timeout")
     )
-      abandoned = true;
+      abandon();
   }
 
   async function read(directory: string): Promise<Uint8Array> {
@@ -111,9 +118,7 @@ export function createTpm2KeyProvider(
     return await unseal(presence, directory, {
       timeoutMs: options.timeoutMs,
       onWarning: options.onWarning,
-      onAbandon: () => {
-        abandoned = true;
-      },
+      onAbandon: abandon,
     });
   }
 

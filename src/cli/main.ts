@@ -798,15 +798,34 @@ export async function runWard(
 ): Promise<RunResult> {
   // Warnings from the key provider go to stderr in front of whatever else the
   // command writes there (DEC-262 a23); the stdout envelope is untouched.
-  const json = argv.includes("--json");
+  // The mode comes from the parsed flags, not argv: a token after `--` or an
+  // option's value is not a flag. An unparsable line falls back to the human form.
+  let json = false;
+  try {
+    const first = argv[0];
+    const command = first === undefined ? undefined : findCommand(first);
+    json =
+      command !== undefined &&
+      parseArguments(command, argv.slice(1)).flags.has("--json");
+  } catch {
+    json = false;
+  }
   const warnings: string[] = [];
   const heard = options.keySelection?.tpm2?.onWarning;
+  // One abandon sink for every root: a flush that timed out after a good
+  // unseal asks for the explicit exit on success and on any later failure.
+  let abandoned = false;
+  const heardAbandon = options.keySelection?.tpm2?.onAbandon;
   const withSink: RunOptions = {
     ...options,
     keySelection: {
       ...options.keySelection,
       tpm2: {
         ...options.keySelection?.tpm2,
+        onAbandon: () => {
+          abandoned = true;
+          heardAbandon?.();
+        },
         onWarning: (warning) => {
           // One line per command, however many unseals heard of the leak.
           const line = formatKeyWarning(warning, json);
@@ -816,10 +835,14 @@ export async function runWard(
       },
     },
   };
-  const told = (result: RunResult): RunResult =>
-    warnings.length === 0
-      ? result
-      : { ...result, stderr: `${warnings.join("")}${result.stderr}` };
+  const told = (result: RunResult): RunResult => {
+    const out =
+      warnings.length === 0
+        ? result
+        : { ...result, stderr: `${warnings.join("")}${result.stderr}` };
+    if (abandoned) out.exitExplicitly = true;
+    return out;
+  };
   try {
     return told(await dispatch(argv, withSink));
   } catch (error) {
