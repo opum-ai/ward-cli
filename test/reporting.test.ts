@@ -3030,3 +3030,4 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 // OBSERVED (3d-2b ii-b round 2, (a28), bun 1.3.14, 2026-11-17; predictions above unchanged). S1 went red on exactly the (a28) test (tpm2 flips to pass/ok); S2 went red on exactly "a key fault is reported once...".
 // MUTANT REGISTER, WCLI-21 3d-2b ii-b ROUND 2, the round-1 APPROVE's nit (respelled and symlinked device), written BEFORE any run. Bun 1.3.14 on each observation.
 //   T1  the guard compares the device as a plain string again                      -> "a test that reaches the real TPM host fails loudly..." (the respelled and symlinked device assertions)
+// OBSERVED (nit, bun 1.3.14, 2026-11-17; prediction above unchanged). T1 went red on exactly the guard test.
