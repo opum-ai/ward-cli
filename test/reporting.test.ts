@@ -36,7 +36,10 @@ import {
   locateCheckout,
   probeCheckout,
 } from "../src/adapters/checkout.ts";
-import { keyRefusalState } from "../src/adapters/key-backend.ts";
+import {
+  keyRefusalState,
+  selectKeyProvider,
+} from "../src/adapters/key-backend.ts";
 import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
 import {
   keyUnloadableHint,
@@ -236,6 +239,9 @@ function harness() {
   ): RunOptions => ({
     wardDirectory: directory,
     keyProvider,
+    // The harness's provider is the Keychain's, so the report is the macOS one
+    // on every host (the Linux-only lines are tested with their own platform).
+    keySelection: { platform: "darwin" },
     approver,
     cwd,
     ...extra,
@@ -484,8 +490,19 @@ describe("ward doctor", () => {
       "binding",
       "stale_approvals",
       "instructions",
+      "secret_service",
     ]);
-    expect(data.checks.every((entry) => entry.status === "pass")).toBe(true);
+    // Every check passes but secret_service, which is skipped on every platform
+    // (DEC-262 a25) and never a failure.
+    expect(
+      data.checks
+        .filter((entry) => entry.check !== "secret_service")
+        .every((entry) => entry.status === "pass"),
+    ).toBe(true);
+    expect(checkFor(data, "secret_service")).toMatchObject({
+      status: "skipped",
+      code: "not_applicable",
+    });
     expect(checkFor(data, "instructions").documents).toEqual({
       claude: "current",
       codex: "current",
@@ -509,7 +526,7 @@ describe("ward doctor", () => {
       });
       // Every check still reports, and the checks the location blocks name
       // the block rather than reading as healthy.
-      expect(data.checks).toHaveLength(6);
+      expect(data.checks).toHaveLength(7);
       for (const check of data.checks) expect(check.code).toBeTruthy();
       expect(checkFor(data, "key_provider").code).toBe("vault_insecure");
       expect(checkFor(data, "instructions").status).toBe("pass");
@@ -752,7 +769,7 @@ describe("ward doctor", () => {
     expect(doctor.result.exitCode).toBe(exitCodes.validation);
     // The positive control for "the report reached stdout": every check is
     // present, so the read answered rather than throwing out of the command.
-    expect(doctor.data.checks).toHaveLength(6);
+    expect(doctor.data.checks).toHaveLength(7);
     // The schema is intact: the version mismatch is a record-level fact, not
     // a broken document (DEC-246 a2 clause 4's other half).
     expect(checkFor(doctor.data, "schema")).toMatchObject({
@@ -1783,12 +1800,24 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       ["doctor", "--json"],
       h.options(checkout, { keyProvider }),
     );
-    const checks = (
-      json(doctor.stdout).data as { checks: { check: string; code: string }[] }
-    ).checks;
-    expect(checks.find((c) => c.check === "key_provider")?.code).toBe(
-      "unavailable",
-    );
+    // The WHOLE array and the exit code: every check that reads the key's
+    // status renders it from one place, so a site that stopped doing so would
+    // leak an unruled code here.
+    expect(doctor.exitCode).toBe(exitCodes.validation);
+    const checks = (json(doctor.stdout).data as DoctorData).checks.map((c) => [
+      c.check,
+      c.status,
+      c.code,
+    ]);
+    expect(checks).toEqual([
+      ["permissions", "pass", "private"],
+      ["key_provider", "fail", "vault_key_ambiguous"],
+      ["schema", "fail", "key_unavailable"],
+      ["binding", "fail", "key_unavailable"],
+      ["stale_approvals", "fail", "key_unavailable"],
+      ["instructions", "skipped", "absent"],
+      ["secret_service", "skipped", "not_applicable"],
+    ]);
   });
 
   test("a TPM refusal carries its doctor state, never the WardError's text", async () => {
@@ -1797,9 +1826,15 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       "v",
       keyRefusalState,
     );
-    expect(observed).toMatchObject({
+    // toEqual, so a refusal that also carried the error's message, or any
+    // other key, fails: it is exactly the state, its code and the path.
+    expect(observed).toEqual({
       status: "unavailable",
-      refusal: { state: "tool_untrusted", path: "/synthetic/tpm2_unseal" },
+      refusal: {
+        state: "tool_untrusted",
+        code: tpm2ErrorCodes.tool_untrusted,
+        path: "/synthetic/tpm2_unseal",
+      },
     });
   });
 
@@ -1809,10 +1844,11 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       "v",
       keyRefusalState,
     );
-    expect(observed).toMatchObject({
+    expect(observed).toEqual({
       status: "unavailable",
       refusal: {
         state: "key_unloadable",
+        code: tpm2ErrorCodes.tool_failed,
         summary: keyUnloadableSummary,
         hint: keyUnloadableHint,
       },
@@ -1825,8 +1861,13 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       "v",
       keyRefusalState,
     );
-    expect(observed.status).toBe("unavailable");
-    expect(observed).toMatchObject({ refusal: { state: "key_incomplete" } });
+    expect(observed).toEqual({
+      status: "unavailable",
+      refusal: {
+        state: "key_incomplete",
+        code: tpm2ErrorCodes.key_incomplete,
+      },
+    });
   });
 
   test("without a classifier, or from a refusal that is not a TPM load, no state is attached", async () => {
@@ -1842,9 +1883,445 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
     ).toEqual({ status: "unavailable" });
   });
 
+  test("a classifier that throws fails closed to a plain unavailable key", async () => {
+    expect(
+      await observeKey(failing(tpm("key_incomplete")), "v", () => {
+        throw new Error("synthetic classifier fault");
+      }),
+    ).toEqual({ status: "unavailable" });
+  });
+
+  test("an incompatible tool's version is carried", async () => {
+    expect(
+      await observeKey(
+        failing(tpm("tool_incompatible", "tpm2-tools 5.6")),
+        "v",
+        keyRefusalState,
+      ),
+    ).toEqual({
+      status: "unavailable",
+      refusal: {
+        state: "tool_incompatible",
+        code: tpm2ErrorCodes.tool_incompatible,
+        version: "5.6",
+      },
+    });
+  });
+
   test("an unrecognised failure still throws", async () => {
     await expect(
       observeKey(failing(new Error("synthetic")), "v", keyRefusalState),
     ).rejects.toThrow("synthetic");
+  });
+});
+
+// MUTANT REGISTER, slice 3d-2a(ii), written BEFORE any run. Bun 1.3.14 recorded on each observation.
+//   E1  the router's backend() always answers where a new key would go        -> test/key-backend.test.ts "the holder of the key is the backend in use..."
+//   E2  two holders leave the settled store undefined (not null)               -> test/key-backend.test.ts "two holders leave no backend in use"
+//   E3  load() does not reset the settled store first                          -> test/key-backend.test.ts "a later load does not inherit an earlier load's store"
+//   E4  backendIn ignores the provider and answers by platform alone           -> "the backend field is always present..."
+//   E5  the secret_service check is added on every platform                    -> "on macOS the backend is the keychain and nothing says Secret Service"
+//   E6  notImplemented is added on every platform                              -> "on macOS the backend is the keychain..."
+//   E7  key_incomplete is dropped from the codes reported under their own name -> "each of the five key states renders..."
+//   E8  the ambiguous check drops its stores                                   -> "each of the five key states renders..."
+//   E9  the human doctor output drops the path line                            -> "each of the five key states renders...", "a tool_untrusted state shows the word and the path..."
+//   E10 refusedKeyCheck drops summary and hint                                 -> "each of the five key states renders..."
+//   E11 the human status drops the Secret Service line                         -> "on Linux the Secret Service gap is named, reported and never failed"
+//   E12 main.ts stops passing the platform to the report                       -> "on Linux the Secret Service gap...", "the backend field is always present..." (they run as linux on a darwin host)
+//   E13 status stops carrying keyProvider.backend                              -> "the backend field is always present...", "the existing status and doctor fields are unchanged" is NOT predicted (it checks only the old keys)
+// OBSERVED (bun 1.3.14, 2026-11-17; predictions above unchanged). E2-E4, E6-E11, E13 went red on exactly their predicted tests. Differences: E1 also reddened "two holders leave no backend in use" and "a later load does not inherit..." (an always-initialisation answer is wrong for both); E5 also reddened three existing doctor tests that assert the macOS check list ("a healthy checkout passes every check", "permissions: an insecure location fails...", "a stored approval from another build is named..."); E12 reddened only "on Linux the Secret Service gap...": the backend test did not go red because its injected provider answers backend() itself.
+// MUTANT REGISTER, DEC-262 (a25) round, written BEFORE any run. Bun 1.3.14 recorded on each observation. (The E5/E6 test "on macOS the backend is the keychain and nothing says Secret Service" is renamed "... and status says nothing of Secret Service" under (a25), which puts the check on every platform.)
+//   F1  reason carries the state name instead of the fixed wording             -> "each of the five key states renders in JSON and in human output"
+//   F2  summary and hint are added back as JSON keys                           -> "key_provider's JSON carries no summary or hint key..."
+//   F3  version is carried by every state that has one                         -> "version is carried only by tool_incompatible" (only if a state besides tool_incompatible sets one; PREDICTED TO SURVIVE: the classifier sets version only for tool_incompatible)
+//   F4  secret_service is dropped on macOS                                     -> "secret_service is the last check on every platform...", "on macOS the backend is the keychain...", "a healthy checkout passes every check and exits 0"
+//   F5  secret_service sits before instructions, not last                      -> "secret_service is the last check on every platform...", "a healthy checkout passes every check and exits 0"
+//   F6  secret_service says not_implemented on macOS                           -> "secret_service is the last check on every platform...", "on macOS the backend is the keychain...", "a healthy checkout passes every check and exits 0"
+//   F7  the hint is dropped from the human doctor output                       -> "key_provider's JSON carries no summary or hint key, and the hint is human output only"
+// OBSERVED (a25 round, bun 1.3.14, 2026-11-17; predictions above unchanged). F2, F5, F7 went red on exactly their predicted tests; F3 survived, as predicted. F1 also reddened the hint test (it reads the reason); F4 also reddened three existing doctor tests that list the checks; F6 also reddened "a healthy checkout passes every check and exits 0".
+// MUTANT REGISTER, #347 review carry-in round, written BEFORE any run. Bun 1.3.14 on each observation. D9 above is now PINNED (see G5); it was "not run: predicted to survive" until rendering existed.
+//   G1  the human doctor prints the path unescaped                             -> "a path and a version from the host are escaped before they are printed"
+//   G2  the human doctor prints the version unescaped                          -> "a path and a version from the host are escaped before they are printed"
+//   G3  the classifier call is not guarded                                     -> "a classifier that throws fails closed to a plain unavailable key"
+//   G4  the ambiguous recovery hint is dropped from the human output           -> "an ambiguous vault shows its recovery hint in human output only"
+//   G5  main.ts stops passing classifyKeyRefusal (D9)                          -> "each of the five key states renders in JSON and in human output" (key_incomplete, key_unloadable, tool_untrusted and tool_incompatible lose their codes)
+//   G6  schemaCheck stops rendering the key status through reportedKeyStatus   -> "status and doctor answer on an ambiguous vault instead of throwing" (its whole-array assertion)
+//   G7  the ambiguous check reports exit 0 (key check passes)                  -> "status and doctor answer on an ambiguous vault..." and "a broken key exits 6..."
+// OBSERVED (carry-in round, bun 1.3.14, 2026-11-17; predictions above unchanged). G1-G4, G7 went red on their predicted tests (G7 also reddened the five-state test, since the ambiguous provider is one of the five). G5 reddened six tests, not only the predicted one: every test that reads a classified state goes with it, which is the D9 pin. G6 was run once per `key_${reportedKeyStatus(key)}` site (three exist in schemaCheck, bindingCheck and staleApprovalsCheck; keyCheck switches on it directly) and each site reddened exactly the ambiguous whole-array test.
+// MUTANT REGISTER, #350 round-1 fixes, written BEFORE any run. Bun 1.3.14 on each observation. F3 (above) was predicted to survive and did; H4 is its kill.
+//   H1  reason falls back to the bare state token (no catalog message)         -> "each of the five key states is exactly its check object...", "a TPM refusal outside the five stays unavailable and names its state"
+//   H2  the recovery hint has no catalog fallback                              -> "each of the five key states is exactly its check object..." (key_incomplete, ambiguous), "a TPM refusal outside the five stays unavailable..."
+//   H3  key_unloadable's summary constant is reworded                          -> "each of the five key states is exactly its check object..." (a literal, so the constant moving is caught)
+//   H4  version is emitted for any state that carries one (F3)                 -> "version is carried only for tool_incompatible, whatever the classifier hands back"
+//   H5  a platform that is neither macOS nor Linux falls to initialisation()   -> test/key-backend.test.ts "a platform that is neither macOS nor Linux reports none, with no vault"
+//   H6  the key_provider check gains a `summary` key                           -> "each of the five key states is exactly its check object..."
+// OBSERVED (#350 round-1 fixes, bun 1.3.14, 2026-11-17; predictions above unchanged). H1-H5 went red on exactly their predicted tests; F3 is now killed by H4's test. H6 also reddened "key_provider's JSON carries no summary or hint key..." and "a TPM refusal outside the five..." (both read the key set).
+// DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
+// key_provider codes renders in JSON and in human output; a broken key exits 6
+// and is shown on key_provider; the backend field is always present, null on a
+// Linux host with no TPM; the Secret Service line is on Linux and not on macOS;
+// the existing fields are unchanged; the key_unloadable strings are unchanged.
+// Proofs that belong to 3d-2b: the tpm2 attention check leaves doctor's exit at
+// 0, and it never repeats a key fault.
+describe("DEC-262 (a24): the key backend and the key states in status and doctor", () => {
+  const tpm = (
+    reason: Tpm2Reason,
+    detail?: string,
+    path?: string,
+  ): KeyProvider => ({
+    load: async () => {
+      throw new TpmKeyError(
+        tpm2ErrorCodes[reason],
+        new Tpm2Error(reason, detail, path === undefined ? {} : { path }),
+      );
+    },
+    create: async () => undefined,
+    backend: () => "tpm2",
+  });
+  const ambiguous: KeyProvider = {
+    load: async () => {
+      throw new WardError("vault_key_ambiguous", undefined, undefined, [
+        "macOS Keychain",
+        "TPM2",
+      ]);
+    },
+    create: async () => undefined,
+    backend: () => null,
+  };
+
+  async function reports(keyProvider: KeyProvider, platform = "linux") {
+    const h = harness();
+    const checkout = worktree(`a24-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const options = h.options(checkout, {
+      keyProvider,
+      keySelection: { platform },
+    });
+    const status = await runWard(["status", "--json"], options);
+    const statusText = await runWard(["status"], options);
+    const doctor = await runWard(["doctor", "--json"], options);
+    const doctorText = await runWard(["doctor"], options);
+    return {
+      status: json(status.stdout).data as StatusData & {
+        keyProvider: { backend: unknown; notImplemented?: unknown };
+      },
+      statusText: statusText.stdout,
+      doctor,
+      doctorData: json(doctor.stdout).data as DoctorData,
+      doctorText: doctorText.stdout,
+    };
+  }
+  const keyCheck = (data: DoctorData) =>
+    data.checks.find((c) => c.check === "key_provider") as
+      | (DoctorData["checks"][number] & Record<string, unknown>)
+      | undefined;
+
+  // Each state's full key_provider check and its human hint, by LITERAL string,
+  // so the public contract is pinned by the text and not by the constant that
+  // produces it (DEC-262 a25). `toEqual` pins the key set: exactly
+  // {check, status, code, reason, path?, stores?, version?}.
+  const five: [
+    string,
+    KeyProvider,
+    Record<string, unknown>,
+    string | undefined,
+  ][] = [
+    [
+      "key_incomplete",
+      tpm("key_incomplete"),
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "key_incomplete",
+        reason:
+          "A sealed vault key exists but its pair is incomplete, so Ward cannot load it. Ward did not change it.",
+      },
+      "Do not run `ward setup`: this is a recovery condition, and Ward will not create a new key over a sealed one.",
+    ],
+    [
+      "key_unloadable",
+      tpm("tool_failed", "tpm2_load"),
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "key_unloadable",
+        reason:
+          "The sealed vault key could not be loaded. A TPM clear (tpm2_clear) is a likely cause, among others.",
+      },
+      "Do not run `ward setup`: the cause may be recoverable, and setup would destroy the only copy of the sealed key.",
+    ],
+    [
+      "tool_untrusted",
+      tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "tool_untrusted",
+        reason:
+          "A tpm2 tool is not in a location Ward trusts to receive the vault key, so Ward did not run it.",
+        path: "/synthetic/tpm2_unseal",
+      },
+      undefined,
+    ],
+    [
+      "tool_incompatible",
+      tpm("tool_incompatible", "tpm2-tools 5.6"),
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "tool_incompatible",
+        reason:
+          "A tpm2 tool printed something Ward does not recognise when it was asked whether the session encrypts the unsealed key, so Ward refused to unseal. This is a tool compatibility problem, not a report that encryption is off.",
+        version: "5.6",
+      },
+      undefined,
+    ],
+    [
+      "vault_key_ambiguous",
+      ambiguous,
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "vault_key_ambiguous",
+        reason:
+          "More than one credential store holds a key for this vault, so Ward will not pick one.",
+        stores: ["macOS Keychain", "TPM2"],
+      },
+      "This is a recovery condition: Ward did not change either key and will not choose between them.",
+    ],
+  ];
+
+  test("each of the five key states is exactly its check object in JSON, and its hint is in human output", async () => {
+    for (const [name, provider, expected, hint] of five) {
+      const r = await reports(provider);
+      expect([name, keyCheck(r.doctorData) as unknown]).toEqual([
+        name,
+        expected,
+      ]);
+      // Human output carries the code, the reason, and every field the JSON does.
+      expect(r.doctorText).toContain(String(expected.code));
+      expect(r.doctorText).toContain(String(expected.reason));
+      if (expected.path !== undefined)
+        expect(r.doctorText).toContain(String(expected.path));
+      if (expected.version !== undefined)
+        expect(r.doctorText).toContain(String(expected.version));
+      if (hint !== undefined) expect(r.doctorText).toContain(hint);
+    }
+  });
+
+  test("key_provider's JSON carries no summary or hint key, and the hint is human output only", async () => {
+    for (const [name, provider] of five) {
+      const check = keyCheck((await reports(provider)).doctorData);
+      expect([name, "summary" in (check ?? {})]).toEqual([name, false]);
+      expect([name, "hint" in (check ?? {})]).toEqual([name, false]);
+    }
+    const unloadable = await reports(tpm("tool_failed", "tpm2_load"));
+    expect(unloadable.doctorText).toContain(keyUnloadableSummary);
+    expect(unloadable.doctorText).toContain(keyUnloadableHint);
+    expect(JSON.stringify(unloadable.doctorData)).not.toContain(
+      keyUnloadableHint,
+    );
+  });
+
+  test("version is carried only by tool_incompatible", async () => {
+    for (const [name, provider] of five) {
+      const check = keyCheck((await reports(provider)).doctorData);
+      expect([name, "version" in (check ?? {})]).toEqual([
+        name,
+        name === "tool_incompatible",
+      ]);
+    }
+  });
+
+  test("secret_service is the last check on every platform, skipped, never failed", async () => {
+    const linux = await reports(tpm("key_incomplete"), "linux");
+    const mac = await reports(
+      createKeychainKeyProvider({
+        service: SERVICE,
+        entry: new MemoryKeychain().entry,
+        timeoutMs: 2_000,
+      }),
+      "darwin",
+    );
+    for (const [r, code] of [
+      [linux, "not_implemented"],
+      [mac, "not_applicable"],
+    ] as const) {
+      const last = r.doctorData.checks.at(-1);
+      expect(last).toMatchObject({
+        check: "secret_service",
+        status: "skipped",
+        code,
+      });
+      // The fixed prefix: the six checks of ADR 0007, in order.
+      expect(r.doctorData.checks.slice(0, 6).map((c) => c.check)).toEqual([
+        "permissions",
+        "key_provider",
+        "schema",
+        "binding",
+        "stale_approvals",
+        "instructions",
+      ]);
+    }
+  });
+
+  test("a tool_untrusted state shows the word and the path in human output and JSON", async () => {
+    const r = await reports(
+      tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
+    );
+    expect(r.doctorText).toContain("untrusted");
+    expect(r.doctorText).toContain("/synthetic/tpm2_unseal");
+    expect(JSON.stringify(r.doctorData)).toContain("tool_untrusted");
+    expect(JSON.stringify(r.doctorData)).toContain("/synthetic/tpm2_unseal");
+  });
+
+  test("version is carried only for tool_incompatible, whatever the classifier hands back", async () => {
+    const h = harness();
+    const checkout = worktree(`f3-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const identity = locateCheckout(checkout);
+    const doctor = await runDoctor({
+      checkout: identity,
+      files: createProjectFiles(identity.root),
+      store: h.store,
+      keyProvider: tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
+      checkouts: { probe: probeCheckout },
+      platform: "linux",
+      classifyKeyRefusal: () => ({
+        state: "tool_untrusted",
+        code: tpm2ErrorCodes.tool_untrusted,
+        path: "/synthetic/tpm2_unseal",
+        version: "x",
+      }),
+    });
+    expect(
+      "version" in
+        (doctor.data.checks.find((c) => c.check === "key_provider") ?? {}),
+    ).toBe(false);
+  });
+
+  test("a path and a version from the host are escaped before they are printed", async () => {
+    const hostile = "\u001b[31m/synthetic/tpm2_unseal\u0007";
+    const untrusted = await reports(tpm("tool_untrusted", undefined, hostile));
+    expect(untrusted.doctorText).not.toContain("\u001b");
+    expect(untrusted.doctorText).not.toContain("\u0007");
+    expect(untrusted.doctorText).toContain("/synthetic/tpm2_unseal");
+    const incompatible = await reports(
+      tpm("tool_incompatible", "tpm2-tools 5.6\u001b[31m"),
+    );
+    expect(incompatible.doctorText).not.toContain("\u001b");
+    expect(incompatible.doctorText).toContain("5.6");
+  });
+
+  test("an ambiguous vault shows its recovery hint in human output only", async () => {
+    const r = await reports(ambiguous);
+    expect(r.doctorText).toContain("recovery condition");
+    expect(JSON.stringify(r.doctorData)).not.toContain("recovery condition");
+  });
+
+  test("a broken key exits 6 and the failure is on key_provider", async () => {
+    const r = await reports(tpm("key_incomplete"));
+    expect(r.doctor.exitCode).toBe(exitCodes.validation);
+    expect(keyCheck(r.doctorData)?.status).toBe("fail");
+  });
+
+  test("a TPM refusal outside the five stays unavailable and names its state", async () => {
+    const r = await reports(tpm("tpm_not_accessible"));
+    // Prose under the code `unavailable`, never a bare state token.
+    expect(keyCheck(r.doctorData) as unknown).toEqual({
+      check: "key_provider",
+      status: "fail",
+      code: "unavailable",
+      reason:
+        "The TPM2 device is present but this user cannot use it, so Ward did not touch it.",
+    });
+    expect(r.doctorText).toContain("Join the group that owns /dev/tpmrm0");
+  });
+
+  test("the backend field is always present: the held store, and null with no TPM", async () => {
+    const held = await reports(tpm("key_incomplete"));
+    expect(held.status.keyProvider.backend).toBe("tpm2");
+    expect(held.statusText).toContain("key backend:   TPM2");
+    const none = await reports(ambiguous);
+    expect(none.status.keyProvider).toHaveProperty("backend", null);
+    expect(none.statusText).toContain("key backend:   none");
+    // A real selection on a Linux host with no TPM and no vault: nothing is
+    // usable for a new key, so the backend is null and status still answers.
+    const h = harness();
+    const checkout = worktree(`a24-none-${++cases}`);
+    const provider = selectKeyProvider(h.directory, {
+      platform: "linux",
+      tpm2: {
+        detect: () => {
+          throw new Tpm2Error("tpm_absent");
+        },
+      },
+    });
+    const result = await runWard(
+      ["status", "--json"],
+      h.options(checkout, {
+        keyProvider: provider,
+        keySelection: { platform: "linux" },
+      }),
+    );
+    expect(result.exitCode).toBe(exitCodes.success);
+    expect(
+      (json(result.stdout).data as { keyProvider: { backend: unknown } })
+        .keyProvider.backend,
+    ).toBeNull();
+  });
+
+  test("on macOS the backend is the keychain and status says nothing of Secret Service", async () => {
+    const r = await reports(
+      createKeychainKeyProvider({
+        service: SERVICE,
+        entry: new MemoryKeychain().entry,
+        timeoutMs: 2_000,
+      }),
+      "darwin",
+    );
+    expect(r.status.keyProvider.notImplemented).toBeUndefined();
+    expect(r.statusText).not.toContain("Secret Service");
+    // The check itself is on every platform, and says it does not apply here.
+    expect(
+      r.doctorData.checks.find((c) => c.check === "secret_service"),
+    ).toMatchObject({ status: "skipped", code: "not_applicable" });
+  });
+
+  test("on Linux the Secret Service gap is named, reported and never failed", async () => {
+    const r = await reports(tpm("key_incomplete"));
+    expect(r.status.keyProvider.notImplemented).toEqual(["secret-service"]);
+    expect(r.statusText).toContain("Secret Service: not implemented");
+    const check = r.doctorData.checks.find((c) => c.check === "secret_service");
+    expect(check).toMatchObject({ code: "not_implemented" });
+    expect(check?.status).not.toBe("fail");
+  });
+
+  test("the existing status and doctor fields are unchanged", async () => {
+    const r = await reports(tpm("key_incomplete"));
+    expect(Object.keys(r.status).sort()).toEqual(
+      [
+        "binding",
+        "checkout",
+        "keyProvider",
+        "manifest",
+        "otherProjectStaleApprovals",
+        "staleApprovals",
+        "vault",
+      ].sort(),
+    );
+    expect(r.status.keyProvider.status).toBe("unavailable");
+    for (const name of [
+      "permissions",
+      "key_provider",
+      "schema",
+      "binding",
+      "stale_approvals",
+      "instructions",
+      "secret_service",
+    ])
+      expect(r.doctorData.checks.map((c) => c.check)).toContain(name);
   });
 });

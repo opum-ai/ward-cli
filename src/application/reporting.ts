@@ -1,7 +1,8 @@
 // `ward status` and `ward doctor` (spec §8): the two read-only reports over
 // the state every other command acts on. Status answers what this checkout
 // and its backend look like right now; doctor runs the same observation as
-// six named checks and exits 6 when one of them is wrong. They share this
+// its named checks (DEC-262 a25 fixes their order) and exits 6 when one of
+// them is wrong. They share this
 // module because they must never disagree: a status run and a doctor run
 // read the same facts through the same ports, in the same order.
 //
@@ -33,7 +34,7 @@
 // `ward check` (WCLI-9), not this command. Doctor exits 0 when no check
 // failed and 6 when any did, with every check reported either way.
 import { type ExitCode, exitCodes } from "../contract/envelope.ts";
-import { WardError } from "../contract/errors.ts";
+import { type ErrorCode, errorCatalog, WardError } from "../contract/errors.ts";
 import type { AgentTarget } from "../contract/manifest.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { managedBlockStatus } from "../domain/managed-block.ts";
@@ -47,9 +48,11 @@ import {
 } from "../domain/vault-state.ts";
 import { agentTargetDocuments, wardBlockBody } from "./bridges.ts";
 import type {
+  KeyBackendId,
   KeyProvider,
   KeyRefusalClassifier,
   KeyRefusalState,
+  KeyRefusalStateName,
 } from "./key-provider.ts";
 import type { ProjectFiles } from "./project-files.ts";
 import type { VaultStore } from "./vault-store.ts";
@@ -64,7 +67,33 @@ export interface ReportingOptions {
   // root, since the application layer cannot reach the adapter. Absent means
   // no backend detail is kept, and a TPM2 refusal is still `unavailable`.
   readonly classifyKeyRefusal?: KeyRefusalClassifier;
+  // The platform the report is about (the selection's own, else the host's).
+  // Linux alone reports the Secret Service gap (DEC-262 a24 Q3).
+  readonly platform?: string;
 }
+
+function onLinux(options: ReportingOptions): boolean {
+  return (options.platform ?? process.platform) === "linux";
+}
+
+// The store a report names (DEC-262 a24 Q1). Unsupported and ambiguous have
+// none to name. A provider that cannot say reads as the platform's own store.
+function backendIn(
+  options: ReportingOptions,
+  key: KeyObservation | undefined,
+): KeyBackendId | null {
+  if (key?.status === "unsupported" || key?.status === "ambiguous") return null;
+  const reported = options.keyProvider.backend?.();
+  if (reported !== undefined) return reported;
+  return (options.platform ?? process.platform) === "darwin"
+    ? "macos-keychain"
+    : null;
+}
+
+const backendDisplay: Record<KeyBackendId, string> = {
+  "macos-keychain": "macOS Keychain",
+  tpm2: "TPM2",
+};
 
 // A checkout a stored record names, seen from here. Most stale approvals were
 // written by a different directory than the one being reported — a deleted
@@ -134,12 +163,12 @@ type VaultObservation =
 type KeyObservation =
   | { status: "present"; key: Uint8Array }
   | { status: "missing" }
-  // `refusal` is the backend's own reading of why (DEC-262 a15 to a20); it is
-  // carried for the renderers of slice 3d-2 and not yet shown.
+  // `refusal` is the backend's own reading of why (DEC-262 a15 to a20); doctor
+  // reports its state as the check's code or reason (DEC-262 a24, a25).
   | { status: "unavailable"; refusal?: KeyRefusalState }
   // Two stores hold a key for this vault (a16 rule 2). The names are carried
-  // from WardError.stores, never a path. Until the ruling on how a report shows
-  // it, every renderer reports this as `unavailable` (see reportedKeyStatus).
+  // from WardError.stores, never a path. Doctor reports it as its own code;
+  // status keeps its existing `unavailable` value (see reportedKeyStatus).
   | { status: "ambiguous"; stores: readonly string[] }
   | { status: "invalid" }
   | { status: "unsupported" };
@@ -273,7 +302,14 @@ export async function observeKey(
         // what lets setup run (WCLI-21 N3 a). The refusal's state rides along
         // for the renderers of slice 3d-2.
         if (wardCode(error)?.startsWith("tpm_") === true) {
-          const refusal = classify?.(error);
+          // A classifier that throws must not take the report down: fail
+          // closed to a plain unavailable key.
+          let refusal: KeyRefusalState | undefined;
+          try {
+            refusal = classify?.(error);
+          } catch {
+            refusal = undefined;
+          }
           return refusal === undefined
             ? { status: "unavailable" }
             : { status: "unavailable", refusal };
@@ -403,6 +439,12 @@ export interface StatusReport {
       | "invalid"
       | "unsupported"
       | "unchecked";
+    // Always present (DEC-262 a24 Q1): the store holding the key, or where a
+    // new one would go; null when no backend is usable on this host, which
+    // `status` above says why.
+    readonly backend: KeyBackendId | null;
+    // Present on Linux only (a24 Q3): what Ward does not implement, by name.
+    readonly notImplemented?: readonly ["secret-service"];
   };
   // Empty rather than absent when there are none, so a caller can tell "none"
   // from "this report does not say".
@@ -610,6 +652,10 @@ function statusText(report: StatusReport): string {
     `  binding:       ${report.binding.status}`,
     `  vault:         ${vault}`,
     `  key provider:  ${report.keyProvider.status}`,
+    `  key backend:   ${report.keyProvider.backend === null ? "none" : backendDisplay[report.keyProvider.backend]}`,
+    ...(report.keyProvider.notImplemented === undefined
+      ? []
+      : ["  Secret Service: not implemented"]),
     ...staleApprovalLines(
       report.staleApprovals,
       report.otherProjectStaleApprovals,
@@ -657,6 +703,10 @@ export async function runStatus(
         : { status: vault.status },
     keyProvider: {
       status: key === undefined ? "unchecked" : reportedKeyStatus(key),
+      backend: backendIn(options, key),
+      ...(onLinux(options)
+        ? { notImplemented: ["secret-service"] as const }
+        : {}),
     },
     staleApprovals: stale.named,
     otherProjectStaleApprovals: stale.otherProjects,
@@ -672,7 +722,8 @@ export type DoctorCheckName =
   | "schema"
   | "binding"
   | "stale_approvals"
-  | "instructions";
+  | "instructions"
+  | "secret_service";
 
 export type InstructionState =
   | "current"
@@ -687,6 +738,17 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
+  // key_provider only (DEC-262 a24 Q2, a25): why the key could not be had, when
+  // the backend said. `reason` is the state's fixed wording, or its name when
+  // it has none (key_unloadable's doctor string is carried unchanged); `path`
+  // is a tool that failed the trust walk; `stores` names the stores that both
+  // hold a key; `version` is tool_incompatible's tpm2-tools version, data a
+  // script compares. Prose beyond `reason` (the hint) is human output only and
+  // is never a field.
+  readonly reason?: string;
+  readonly path?: string;
+  readonly stores?: readonly string[];
+  readonly version?: string;
   // Named individually rather than counted, because the re-approve step is
   // per profile and per checkout (DEC-246 a2 clause 2), and only for this
   // project's records: other projects are a bare count (DEC-246 a3 Q1).
@@ -732,18 +794,87 @@ function keyCheck(
     return { check, status: "skipped", code: "vault_absent" };
   if (key === undefined)
     return { check, status: "fail", code: `vault_${vault.status}` };
+  if (key.status === "ambiguous")
+    return {
+      check,
+      status: "fail",
+      code: "vault_key_ambiguous",
+      reason: errorCatalog.vault_key_ambiguous.message,
+      stores: key.stores,
+    };
   switch (reportedKeyStatus(key)) {
     case "present":
       return { check, status: "pass", code: "present" };
     case "missing":
       return { check, status: "fail", code: "missing" };
     case "unavailable":
-      return { check, status: "fail", code: "unavailable" };
+      return key.status === "unavailable" && key.refusal !== undefined
+        ? refusedKeyCheck(key.refusal)
+        : { check, status: "fail", code: "unavailable" };
     case "invalid":
       return { check, status: "fail", code: "invalid" };
     case "unsupported":
       return { check, status: "fail", code: "unsupported" };
   }
+}
+
+// The states a TPM refusal reports under their own code (DEC-262 a24 Q2);
+// every other refusal stays `unavailable` and names its state in `reason`. The
+// Record is exhaustive: a new state is a compile error until it is placed.
+const keyStateCode: Record<KeyRefusalStateName, string> = {
+  key_incomplete: "key_incomplete",
+  key_unloadable: "key_unloadable",
+  tool_untrusted: "tool_untrusted",
+  tool_incompatible: "tool_incompatible",
+  ready: "unavailable",
+  unsupported: "unavailable",
+  access_refused: "unavailable",
+  tools_absent: "unavailable",
+  tpm_unusable: "unavailable",
+  session_not_encrypted: "unavailable",
+  blob_not_user_private: "unavailable",
+  key_not_sealed: "unavailable",
+  key_exists: "unavailable",
+  directory_unusable: "unavailable",
+  tool_timeout: "unavailable",
+  tool_output_too_large: "unavailable",
+  tool_failed: "unavailable",
+};
+
+// The catalog's fixed wording for a refusal's contract code, so `reason` is
+// always prose, never a bare state token (DEC-262 a25 pick 3).
+function catalogEntry(code: ErrorCode | undefined): {
+  message?: string;
+  hint?: string;
+} {
+  return code === undefined ? {} : errorCatalog[code];
+}
+
+function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
+  const code = keyStateCode[refusal.state];
+  return {
+    check: "key_provider",
+    status: "fail",
+    code,
+    reason:
+      refusal.summary ?? catalogEntry(refusal.code).message ?? refusal.state,
+    ...(refusal.path === undefined ? {} : { path: refusal.path }),
+    ...(code === "tool_incompatible" && refusal.version !== undefined
+      ? { version: refusal.version }
+      : {}),
+  };
+}
+
+// DEC-262 (a24) Q3, (a25): Secret Service is a named gap on Linux, and the check
+// is reported on every platform in its fixed place. It is `skipped`, ADR 0007's
+// "reported, not failed" value for something absent here: `not_implemented` on
+// Linux, `not_applicable` elsewhere.
+function secretServiceCheck(linux: boolean): DoctorCheck {
+  return {
+    check: "secret_service",
+    status: "skipped",
+    code: linux ? "not_implemented" : "not_applicable",
+  };
 }
 
 // Every versioned document this build reads: the project manifest, the vault
@@ -975,7 +1106,35 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
   return { check, status: "skipped", code: "absent", documents };
 }
 
-function doctorText(report: DoctorReport): string {
+// What a key_provider failure adds beneath its line, in the same fields the
+// JSON carries, so the reason, the path and the stores are as visible in
+// human output as in JSON (DEC-262 a19, a24).
+// The recovery step a failed key check adds in human output only. Ambiguity
+// carries the catalog's recovery wording; a TPM state carries its own hint.
+function keyRecoveryHint(key: KeyObservation | undefined): string | undefined {
+  if (key?.status === "ambiguous") return errorCatalog.vault_key_ambiguous.hint;
+  if (key?.status !== "unavailable" || key.refusal === undefined)
+    return undefined;
+  // key_unloadable carries its own hint; every other state falls back to the
+  // catalog's recovery wording for its code (key_incomplete's "do not run
+  // setup" is written there).
+  return key.refusal.hint ?? catalogEntry(key.refusal.code).hint;
+}
+
+function keyDetailLines(check: DoctorCheck, hint?: string): string[] {
+  const lines: string[] = [];
+  if (check.reason !== undefined) lines.push(`    reason: ${check.reason}`);
+  if (check.path !== undefined)
+    lines.push(`    path: ${escapeForDisplay(check.path)}`);
+  if (check.version !== undefined)
+    lines.push(`    version: ${escapeForDisplay(check.version)}`);
+  if (check.stores !== undefined && check.stores.length > 0)
+    lines.push(`    stores: ${check.stores.join(", ")}`);
+  if (hint !== undefined) lines.push(`    ${hint}`);
+  return lines;
+}
+
+function doctorText(report: DoctorReport, keyHint: string | undefined): string {
   const lines = report.checks.flatMap((check) => {
     const documents =
       check.documents === undefined
@@ -983,6 +1142,10 @@ function doctorText(report: DoctorReport): string {
         : ` (claude: ${check.documents.claude}, codex: ${check.documents.codex})`;
     return [
       `  ${check.check.padEnd(16)}${check.status.padEnd(8)}${check.code}${documents}`,
+      ...keyDetailLines(
+        check,
+        check.check === "key_provider" ? keyHint : undefined,
+      ),
       ...staleApprovalLines(
         check.staleApprovals ?? [],
         check.otherProjectStaleApprovals ?? 0,
@@ -1041,12 +1204,14 @@ export async function runDoctor(
       options.checkouts,
     ),
     instructionsCheck(options.files),
+    // DEC-262 (a25): fixed order, every platform. 3d-2b adds `tpm2` before it.
+    secretServiceCheck(onLinux(options)),
   ];
   const ok = checks.every((check) => check.status !== "fail");
   const data: DoctorReport = { ok, checks };
   return {
     data,
-    text: doctorText(data),
+    text: doctorText(data, keyRecoveryHint(observation.key)),
     exitCode: ok ? exitCodes.success : exitCodes.validation,
   };
 }

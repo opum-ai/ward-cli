@@ -72,6 +72,9 @@
 - 2026-11-08T15:08:32-06:00 8133f1c69da6e0fef5b4820a0794d8a124ea12e7 docs(WCLI-155): CI runs on the GitHub-hosted ubuntu-24.04-arm runner, not self-hosted (#300)
 - 2026-11-14T20:22:38-06:00 344ca6d6c51939a46216ea641e4d73acaed3f21d docs(WCLI-21): ADR 0028, TPM2 key custody on Linux (slice 3c) (#334)
 - 2026-11-14T21:13:29-06:00 d9adb6d77dff01f91f5881b3a6c38db230402a21 feat(WCLI-21): the DEC-262 (a23) conditions: init hint, leak warning on stderr, contract entry
+- 2026-11-17T08:24:59-06:00 f28d4affea23a346c932134731b2190a2b3a703a docs(WCLI-168): ADR 0028 names the TPM2 blob directory as part of the stored format (#346)
+- 2026-11-17T08:33:16-06:00 456202021ce4b8e670fd806921a2e7d8cc6de55c feat(WCLI-21): ADR 0007 names the (a24) additive fields, budgets raised to hold it, observations annotated
+- 2026-11-17T08:37:41-06:00 7b9efab5986a75167f0a4bea387482a44b396564 docs(WCLI-21): ADR 0007 states (a25), implementation budget 26400, observations annotated
 
 ## docs/runbooks
 

@@ -1,6 +1,11 @@
+import type { ErrorCode } from "../contract/errors.ts";
 // The port through which Ward reaches the vault key (spec §6.4). The key is
 // held in memory for one invocation at most; no implementation caches it
 // across processes.
+// The credential store a vault's key lives in, as a report names it (DEC-262
+// a24). Linux's Secret Service is a named gap, not a backend.
+export type KeyBackendId = "macos-keychain" | "tpm2";
+
 export interface KeyProvider {
   // Resolves the 32-byte vault key, and never creates one. Rejects with
   // vault_key_missing, vault_key_unavailable, vault_key_invalid,
@@ -24,15 +29,42 @@ export interface KeyProvider {
   // pending native call may still be running, so the process should exit
   // explicitly once the command's output is written, even on success.
   abandonedCall?(): boolean;
+  // The store the last load found the key in, or where a new key would go when
+  // none was found; null when no store is usable (or two held the key). A
+  // provider that cannot say leaves it out and the report falls back to the
+  // platform's own store.
+  backend?(): KeyBackendId | null;
 }
 
 // What a backend's refusal means for a report, carried beside the observation
 // so a renderer never parses a message (DEC-262 a15, a18, a19, a20). The shape
 // matches the TPM2 adapter's doctor state; the application layer holds only
 // this structural type and receives the classifier from the composition root.
+// Every state a backend can name for a refusal. The adapter's own state type is
+// this one, so a new state is a compile error where it is made and where a
+// report maps it to a code.
+export type KeyRefusalStateName =
+  | "ready"
+  | "unsupported"
+  | "access_refused"
+  | "tools_absent"
+  | "tpm_unusable"
+  | "tool_untrusted"
+  | "tool_incompatible"
+  | "session_not_encrypted"
+  | "blob_not_user_private"
+  | "key_not_sealed"
+  | "key_incomplete"
+  | "key_unloadable"
+  | "key_exists"
+  | "directory_unusable"
+  | "tool_timeout"
+  | "tool_output_too_large"
+  | "tool_failed";
+
 export interface KeyRefusalState {
-  readonly state: string;
-  readonly code?: string;
+  readonly state: KeyRefusalStateName;
+  readonly code?: ErrorCode;
   // tool_untrusted: the tool or directory that failed the trust walk.
   readonly path?: string;
   // tool_incompatible: the tpm2-tools version, "unknown" when unreadable.

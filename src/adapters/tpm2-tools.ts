@@ -26,6 +26,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import type { KeyRefusalStateName } from "../application/key-provider.ts";
 import { type ErrorCode, WardError } from "../contract/errors.ts";
 import { isPrivateEntry } from "./sqlite-vault-store.ts";
 
@@ -1320,29 +1321,13 @@ export async function unsealKey(
 }
 
 // --- doctor states (DEC-262 a15, a16, a17) -----------------------------------
-// A pure adapter-level diagnosis. Nothing here is wired into `ward doctor`
-// (slice 3d does that, mapping a diagnosis into a check); the states are read
+// A pure adapter-level diagnosis. `diagnoseTpm2` is not wired into `ward doctor`
+// yet (slice 3d-2b does that); `tpm2StateFor` already feeds doctor's
+// `key_provider` check through the key refusal. The states are read
 // from Tpm2Error.reason and Tpm2Error.detail, never from the WardError, whose
 // catalog text carries no path or version.
 
-export type Tpm2StateName =
-  | "ready"
-  | "unsupported"
-  | "access_refused"
-  | "tools_absent"
-  | "tpm_unusable"
-  | "tool_untrusted"
-  | "tool_incompatible"
-  | "session_not_encrypted"
-  | "blob_not_user_private"
-  | "key_not_sealed"
-  | "key_incomplete"
-  | "key_unloadable"
-  | "key_exists"
-  | "directory_unusable"
-  | "tool_timeout"
-  | "tool_output_too_large"
-  | "tool_failed";
+export type Tpm2StateName = KeyRefusalStateName;
 
 export interface Tpm2State {
   readonly state: Tpm2StateName;

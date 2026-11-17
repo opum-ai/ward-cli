@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type {
+  KeyBackendId,
   KeyProvider,
   KeyRefusalState,
 } from "../application/key-provider.ts";
@@ -29,6 +30,8 @@ import {
 
 export interface KeyBackend {
   readonly name: KeyStoreName;
+  // How a report names this store (DEC-262 a24).
+  readonly id: KeyBackendId;
   readonly provider: KeyProvider;
   // Whether this store holds the vault's key. A store that cannot say rejects,
   // and the refusal names it; it is never read as "not held". A backend that
@@ -54,8 +57,13 @@ export function createRoutingKeyProvider(options: {
   // Where a NEW key goes. Throws when no backend can take one.
   initialisation: () => KeyBackend;
 }): KeyProvider {
+  // The store the last load settled on; null when none could be (two held the
+  // key); undefined before any load or when no store held it, which reads as
+  // the store a new key would go to.
+  let settled: KeyBackendId | null | undefined;
   return {
     async load(vaultId) {
+      settled = undefined;
       const holders: { backend: KeyBackend; key?: Uint8Array }[] = [];
       try {
         for (const backend of options.backends) {
@@ -71,19 +79,22 @@ export function createRoutingKeyProvider(options: {
               ...(result.key === undefined ? {} : { key: result.key }),
             });
         }
-        if (holders.length > 1)
+        if (holders.length > 1) {
+          settled = null;
           throw new WardError(
             "vault_key_ambiguous",
             undefined,
             undefined,
             holders.map((holder) => holder.backend.name),
           );
+        }
       } catch (error) {
         for (const holder of holders) holder.key?.fill(0);
         throw error;
       }
       const holder = holders[0];
       if (holder === undefined) throw new WardError("vault_key_missing");
+      settled = holder.backend.id;
       if (holder.key !== undefined) return holder.key;
       try {
         return await holder.backend.provider.load(vaultId);
@@ -98,12 +109,22 @@ export function createRoutingKeyProvider(options: {
 
     abandonedCall: () =>
       options.backends.some((backend) => backend.provider.abandonedCall?.()),
+
+    backend() {
+      if (settled !== undefined) return settled;
+      try {
+        return options.initialisation().id;
+      } catch {
+        return null;
+      }
+    },
   };
 }
 
 export function keychainBackend(provider: KeyProvider): KeyBackend {
   return {
     name: "macOS Keychain",
+    id: "macos-keychain",
     provider,
     async probe(vaultId) {
       try {
@@ -123,6 +144,7 @@ export function tpm2Backend(
 ): KeyBackend {
   return {
     name: "TPM2",
+    id: "tpm2",
     provider,
     async probe(vaultId) {
       if (!isVaultId(vaultId)) throw new WardError("vault_record_malformed");
@@ -193,10 +215,13 @@ export function selectKeyProvider(
   if (platform !== "linux") {
     // macOS holds keys in the Keychain. Any other platform reaches the same
     // provider, which refuses it as vault_key_store_unsupported.
-    return createRoutingKeyProvider({
+    const router = createRoutingKeyProvider({
       backends: [keychain],
       initialisation: () => keychain,
     });
+    // Only macOS has a usable store here: elsewhere the provider refuses with
+    // vault_key_store_unsupported, so no backend is in use (DEC-262 a24 Q1).
+    return platform === "darwin" ? router : { ...router, backend: () => null };
   }
   const directoryFor = tpm2DirectoryFor(wardDirectory);
   const detect = selection.tpm2?.detect ?? (() => detectTpm2());
