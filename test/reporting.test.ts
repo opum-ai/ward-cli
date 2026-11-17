@@ -2203,7 +2203,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
     expect(check ? "version" in check : true).toBe(false);
   });
 
-  test("a code the catalog does not know fails closed to the state name, never a throw", async () => {
+  test("a code the catalog does not know fails closed to fixed prose, never a throw", async () => {
     const h = harness();
     const checkout = worktree(`nocatalog-${++cases}`);
     await h.setUp(checkout);
@@ -2226,7 +2226,8 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
       check: "key_provider",
       status: "fail",
       code: "unavailable",
-      reason: "access_refused",
+      reason:
+        "The credential store did not give the vault key, and Ward has no more specific wording for why.",
     });
     expect(doctor.exitCode).toBe(exitCodes.validation);
   });

@@ -2627,6 +2627,10 @@ describe("the TPM2 doctor states", () => {
   //   I4 every tool failure calls the sink                    -> "an ordinary tool failure does not tell the abandon sink"
   //   I5 (test/reporting.test.ts) catalogEntry loses its `?? {}`  -> "a code the catalog does not know fails closed to the state name, never a throw"
   // OBSERVED (bun 1.3.14, 2026-11-17; predictions unchanged). I1, I2, I4, I5 went red on exactly their predicted tests. I3 went red on exactly its predicted test when run alone; in the first combined run it stalled the suite (an unguarded listener throw), so that run was killed and I3 re-run alone.
+  // MUTANT REGISTER, #351 round-1 fixes, written BEFORE any run. Bun 1.3.14 on each observation.
+  //   J1 diagnoseWith's createprimary timeout does not tell the sink      -> "a createprimary that times out tells the abandon sink once..."
+  //   J2 diagnoseWith's sink call is unguarded                            -> "an abandon sink that throws does not change what doctor reports" (its load variant)
+  //   J3 (test/reporting.test.ts) the catalog fail-closed value is the state name again -> "a code the catalog does not know fails closed to fixed prose, never a throw"
   // WCLI-21 3d-2b(i): doctor's own tool runs tell the abandon sink, so the
   // command exits explicitly, and the doctor state stays what it was.
   const diagnoseSunk = async (
@@ -2654,15 +2658,37 @@ describe("the TPM2 doctor states", () => {
     });
   });
 
-  // tpm2_createprimary is not varied here: sealing the fixture uses it too, so
-  // a hanging fake would hang the fixture. diagnoseWith treats both the same.
-  test("a load that times out tells the abandon sink and the state is tool_timeout", async () => {
+  test("a load that times out tells the abandon sink once and the state is tool_timeout", async () => {
     let told = 0;
     const out = await diagnoseSunk({ tpm2_load: "hang" }, () => {
       told += 1;
     });
     expect(out.state.state).toBe("tool_timeout");
-    expect(told).toBeGreaterThanOrEqual(1);
+    // The default getcap fake prints nothing, so exactly one abandon is the
+    // load's.
+    expect(told).toBe(1);
+  });
+
+  // The fixture is sealed with working tools, then tpm2_createprimary is made
+  // to hang for the diagnosis alone (sealing uses it too).
+  test("a createprimary that times out tells the abandon sink once, the state is tool_timeout, and no load runs", async () => {
+    const host = await sealed();
+    installFakeTools(host.bin, host.records, { tpm2_createprimary: "hang" });
+    let told = 0;
+    const out = await diagnoseTpm2ForTest(
+      { path: host.bin, device: DEVICE },
+      { trustRoot: root },
+      host.directory,
+      {
+        timeoutMs: 400,
+        onAbandon: () => {
+          told += 1;
+        },
+      },
+    );
+    expect(out.state.state).toBe("tool_timeout");
+    expect(told).toBe(1);
+    expect(loadCalls(host.records)).toBe(false);
   });
 
   test("an ordinary tool failure does not tell the abandon sink", async () => {
@@ -2680,10 +2706,18 @@ describe("the TPM2 doctor states", () => {
   });
 
   test("an abandon sink that throws does not change what doctor reports", async () => {
-    const out = await diagnoseSunk({ tpm2_getcap: "hang" }, () => {
+    const throwing = () => {
       throw new Error("synthetic listener fault");
+    };
+    // getcap's site: the state is still ready and the count unavailable.
+    expect(await diagnoseSunk({ tpm2_getcap: "hang" }, throwing)).toEqual({
+      state: { state: "ready" },
+      savedSessions: { unavailable: "tool_failed" },
     });
-    expect(out.savedSessions).toEqual({ unavailable: "tool_failed" });
+    // diagnoseWith's site: the state is still tool_timeout.
+    expect(
+      (await diagnoseSunk({ tpm2_load: "hang" }, throwing)).state.state,
+    ).toBe("tool_timeout");
   });
 
   test("the unseal path and diagnoseTpm2 agree: a failing load is key_unloadable by either, an incompatible printout is tool_incompatible and never key_unloadable", async () => {

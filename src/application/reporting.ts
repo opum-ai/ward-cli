@@ -844,6 +844,11 @@ const keyStateCode: Record<KeyRefusalStateName, string> = {
 
 // The catalog's fixed wording for a refusal's contract code, so `reason` is
 // always prose, never a bare state token (DEC-262 a25 pick 3).
+// What `reason` says when the catalog has no wording for a refusal's code (or
+// the refusal carries none): fixed prose, never the state token.
+export const unknownRefusalReason =
+  "The credential store did not give the vault key, and Ward has no more specific wording for why.";
+
 function catalogEntry(code: ErrorCode | undefined): {
   message?: string;
   hint?: string;
@@ -862,7 +867,9 @@ function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
     status: "fail",
     code,
     reason:
-      refusal.summary ?? catalogEntry(refusal.code).message ?? refusal.state,
+      refusal.summary ??
+      catalogEntry(refusal.code).message ??
+      unknownRefusalReason,
     ...(refusal.path === undefined ? {} : { path: refusal.path }),
     ...(code === "tool_incompatible" && refusal.version !== undefined
       ? { version: refusal.version }
