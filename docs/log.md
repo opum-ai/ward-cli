@@ -78,6 +78,8 @@
 - 2026-11-17T08:59:31-06:00 b5e056efb6408778214731d4c234845e603a43ef feat(WCLI-21): backend in use, key states and the Secret Service gap in status and doctor (DEC-262 a24/a25, slice 3d-2a ii) (#350)
 - 2026-11-17T10:05:16-06:00 d89fa36999d9cd907b4d33ac22adcc7312423ca7 feat(WCLI-21): doctor's tpm2 check and the count of eight (DEC-262 a25/a26, slice 3d-2b ii-a) (#352)
 - 2026-11-17T10:16:14-06:00 c1ae07ab4e0a75fed194532b2f24b77783cc8776 fix(WCLI-21): the vault doctor path honours tpm2.detect, and a test reaching the real TPM host fails loudly (#352 reviewer items A-C)
+- 2026-11-17T10:32:21-06:00 2254091bdcce7425244333554e1129cb906a2105 docs(WCLI-21): ADR 0007 and 0028 state the saved-session attention check; lore budgets raised to hold them (slice 3d-2b ii-b)
+- 2026-11-17T10:46:08-06:00 58c52693d328f695fad45a04a738519cd4be6bb1 fix(WCLI-21): doctor says what clears a saved-session count; the TPM host guard fails the test that trips it (#355 round 1 B1, N1-N3, N5, N6)
 
 ## docs/runbooks
 

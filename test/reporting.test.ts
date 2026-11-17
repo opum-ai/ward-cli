@@ -2983,3 +2983,4 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 //   R5  the guard stops refusing an explicitly named /dev/tpmrm0                  -> the same test (the named-device assertions)
 //   R6  no-real-keychain.ts stops importing the guard                             -> test-isolation.test.ts "the keychain mock carries the real-TPM-host guard..."
 // The global afterEach (N1) has no in-suite mutant, since a test cannot observe its own afterEach failing; it is exercised by hand with a scratch test that trips the guard and does not take the record.
+// OBSERVED (3d-2b ii-b round 2, bun 1.3.14, 2026-11-17; predictions above unchanged). R1-R6 each went red on exactly their predicted test and no other. The afterEach (N1) by hand: a scratch test that calls detectTpm2() and swallows the throw failed with "test processes must not reach the real TPM host (detectTpm2)"; the scratch file was removed.
