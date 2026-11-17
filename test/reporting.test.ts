@@ -2690,7 +2690,11 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
   });
 
   test("a test that reaches the real TPM host fails loudly, on the vault path and on detection alone", async () => {
-    const vaultId = "v".repeat(26);
+    const h = harness();
+    const checkout = worktree(`tpm2-real-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const vaultId = h.store.header()?.vaultId as string;
     const diagnoser = tpm2Diagnoser(join(tmpdir(), "ward-x"), {
       platform: "linux",
     });

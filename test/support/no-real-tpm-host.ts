@@ -12,6 +12,13 @@ export const realTpmHostRefusal =
   "test processes must not reach the real TPM host";
 
 const real = await import("../../src/adapters/tpm2-tools.ts");
+// Captured before the mock replaces the module: the namespace's bindings are
+// live, so reading them later would find the wrappers and recurse.
+const snapshot = { ...real };
+const originals = {
+  detectTpm2: real.detectTpm2,
+  diagnoseTpm2: real.diagnoseTpm2,
+};
 
 function refuseRealHost(host: Tpm2Host | undefined): void {
   if (host === undefined || host.device === undefined)
@@ -19,13 +26,13 @@ function refuseRealHost(host: Tpm2Host | undefined): void {
 }
 
 mock.module("../../src/adapters/tpm2-tools.ts", () => ({
-  ...real,
+  ...snapshot,
   detectTpm2: (host?: Tpm2Host) => {
     refuseRealHost(host);
-    return real.detectTpm2(host);
+    return originals.detectTpm2(host);
   },
   diagnoseTpm2: (...args: Parameters<typeof real.diagnoseTpm2>) => {
     refuseRealHost(args[0]);
-    return real.diagnoseTpm2(...args);
+    return originals.diagnoseTpm2(...args);
   },
 }));
