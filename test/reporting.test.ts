@@ -2196,10 +2196,40 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
         version: "x",
       }),
     });
-    expect(
-      "version" in
-        (doctor.data.checks.find((c) => c.check === "key_provider") ?? {}),
-    ).toBe(false);
+    const check = doctor.data.checks.find((c) => c.check === "key_provider");
+    // Positive control: the classifier WAS read (the state's own code is
+    // there), so the absence of `version` is the rule at work, not a no-op.
+    expect(check?.code).toBe("tool_untrusted");
+    expect(check ? "version" in check : true).toBe(false);
+  });
+
+  test("a code the catalog does not know fails closed to fixed prose, never a throw", async () => {
+    const h = harness();
+    const checkout = worktree(`nocatalog-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const identity = locateCheckout(checkout);
+    const doctor = await runDoctor({
+      checkout: identity,
+      files: createProjectFiles(identity.root),
+      store: h.store,
+      keyProvider: tpm("tool_failed"),
+      checkouts: { probe: probeCheckout },
+      platform: "linux",
+      classifyKeyRefusal: () => ({
+        state: "access_refused",
+        code: "tpm_not_in_the_catalog" as never,
+      }),
+    });
+    const check = doctor.data.checks.find((c) => c.check === "key_provider");
+    expect(check).toEqual({
+      check: "key_provider",
+      status: "fail",
+      code: "unavailable",
+      reason:
+        "The credential store did not give the vault key, and Ward has no more specific wording for why.",
+    });
+    expect(doctor.exitCode).toBe(exitCodes.validation);
   });
 
   test("a path and a version from the host are escaped before they are printed", async () => {

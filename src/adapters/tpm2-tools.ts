@@ -314,8 +314,9 @@ function shebangLine(label: string, path: string): string | undefined {
 // The interpreter as the kernel reads it: after any spaces and tabs, up to the
 // next space, tab or the end of the line; what follows (leading and trailing
 // spaces and tabs trimmed, as Linux does) is passed as ONE argument. A "\r" is
-// not stripped; it is outside printable ASCII, so a CRLF script is refused by
-// that check, which refuses any such byte rather than interpreting it.
+// not stripped. A "\r" in the INTERPRETER token is refused, because that token
+// is checked as printable ASCII. A "\r" in the ARGUMENT is not: "#!/bin/sh -e\r"
+// passes, since the argument is byte-checked only when the interpreter is env.
 function shebangParts(
   toolPath: string,
   line: string,
@@ -1441,11 +1442,31 @@ export function tpm2StateFor(error: Tpm2Error): Tpm2State {
   return { state, code };
 }
 
+// A timeout of a tool Ward ran, or of the flush after it: the killed tool may
+// have left a child holding a pipe, so the caller must hear that the call was
+// abandoned (WCLI-158) even when the answer is a doctor state, not a refusal.
+function timedOut(error: unknown): boolean {
+  return (
+    error instanceof Tpm2Error &&
+    (error.reason === "tool_timeout" || error.flushFailure === "tool_timeout")
+  );
+}
+
+// Tells the sink, guarded: a listener's failure must not change the answer.
+function abandoned(onAbandon: (() => void) | undefined): void {
+  try {
+    onAbandon?.();
+  } catch {
+    // A listener's failure must not change what doctor reports.
+  }
+}
+
 async function countSavedSessions(
   presence: Tpm2Presence,
   host: Tpm2Host,
   policy: ToolTrustPolicy,
   timeoutMs: number | undefined,
+  onAbandon?: () => void,
 ): Promise<Tpm2SavedSessions | Tpm2SavedSessionsUnavailable | undefined> {
   const resolved = resolveTool(
     diagnosticTool,
@@ -1482,7 +1503,10 @@ async function countSavedSessions(
     return lines.length === 0
       ? undefined
       : { count: lines.length, clearedBy: "reset or reboot" };
-  } catch {
+  } catch (error) {
+    // The count stays "unavailable", never zero and never a failure, but a
+    // timed-out tpm2_getcap is still an abandoned call.
+    if (timedOut(error)) abandoned(onAbandon);
     return { unavailable: "tool_failed" };
   }
 }
@@ -1495,7 +1519,7 @@ async function countSavedSessions(
 export async function diagnoseTpm2(
   host: Tpm2Host,
   directory: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; onAbandon?: () => void } = {},
 ): Promise<Tpm2Diagnosis> {
   return await diagnoseWith(host, {}, directory, options);
 }
@@ -1505,7 +1529,7 @@ export async function diagnoseTpm2ForTest(
   host: Tpm2Host,
   policy: ToolTrustPolicy,
   directory: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; onAbandon?: () => void } = {},
 ): Promise<Tpm2Diagnosis> {
   return await diagnoseWith(host, policy, directory, options);
 }
@@ -1514,7 +1538,7 @@ async function diagnoseWith(
   host: Tpm2Host,
   policy: ToolTrustPolicy,
   directory: string,
-  options: { timeoutMs?: number },
+  options: { timeoutMs?: number; onAbandon?: () => void },
 ): Promise<Tpm2Diagnosis> {
   let presence: Tpm2Presence;
   try {
@@ -1528,6 +1552,9 @@ async function diagnoseWith(
     await withLoadedKey(presence, directory, async () => undefined, options);
   } catch (error) {
     if (!(error instanceof Tpm2Error)) throw error;
+    // The state is a doctor state, not a refusal, but a timed-out createprimary
+    // or load is still an abandoned call.
+    if (timedOut(error)) abandoned(options.onAbandon);
     state = tpm2StateFor(error);
   }
   const savedSessions = await countSavedSessions(
@@ -1535,6 +1562,7 @@ async function diagnoseWith(
     host,
     policy,
     options.timeoutMs,
+    options.onAbandon,
   );
   return savedSessions === undefined ? { state } : { state, savedSessions };
 }

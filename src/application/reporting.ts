@@ -739,8 +739,9 @@ export interface DoctorCheck {
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
   // key_provider only (DEC-262 a24 Q2, a25): why the key could not be had, when
-  // the backend said. `reason` is the state's fixed wording, or its name when
-  // it has none (key_unloadable's doctor string is carried unchanged); `path`
+  // the backend said. `reason` is always prose: the state's fixed wording
+  // (key_unloadable's doctor string is carried unchanged) or the catalog's
+  // message for its code; `path`
   // is a tool that failed the trust walk; `stores` names the stores that both
   // hold a key; `version` is tool_incompatible's tpm2-tools version, data a
   // script compares. Prose beyond `reason` (the hint) is human output only and
@@ -843,11 +844,20 @@ const keyStateCode: Record<KeyRefusalStateName, string> = {
 
 // The catalog's fixed wording for a refusal's contract code, so `reason` is
 // always prose, never a bare state token (DEC-262 a25 pick 3).
+// What `reason` says when the catalog has no wording for a refusal's code (or
+// the refusal carries none): fixed prose, never the state token.
+export const unknownRefusalReason =
+  "The credential store did not give the vault key, and Ward has no more specific wording for why.";
+
 function catalogEntry(code: ErrorCode | undefined): {
   message?: string;
   hint?: string;
 } {
-  return code === undefined ? {} : errorCatalog[code];
+  // `?? {}`: a code the catalog does not know fails closed to no wording, and
+  // the caller then reports the state name, rather than throwing out of doctor.
+  return code === undefined
+    ? {}
+    : ((errorCatalog[code] as object | undefined) ?? {});
 }
 
 function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
@@ -857,7 +867,9 @@ function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
     status: "fail",
     code,
     reason:
-      refusal.summary ?? catalogEntry(refusal.code).message ?? refusal.state,
+      refusal.summary ??
+      catalogEntry(refusal.code).message ??
+      unknownRefusalReason,
     ...(refusal.path === undefined ? {} : { path: refusal.path }),
     ...(code === "tool_incompatible" && refusal.version !== undefined
       ? { version: refusal.version }
