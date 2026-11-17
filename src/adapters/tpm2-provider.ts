@@ -93,7 +93,11 @@ export function createTpm2KeyProvider(
   let abandoned = false;
   const abandon = () => {
     abandoned = true;
-    options.onAbandon?.();
+    try {
+      options.onAbandon?.();
+    } catch {
+      // A listener's failure must not change the refusal being reported.
+    }
   };
 
   // Fresh detection on every call: access can be revoked between two calls,

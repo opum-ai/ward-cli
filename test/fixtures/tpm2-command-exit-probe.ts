@@ -36,6 +36,14 @@ if (setup.exitCode !== 0) {
   console.log(`setup failed ${setup.stderr}`);
   process.exit(1);
 }
+const init = await runWard(["init", "--json"], {
+  ...options(10_000),
+  approver: { available: () => true, ask: () => "approved" as const },
+});
+if (init.exitCode !== 0) {
+  console.log(`init failed ${init.stderr}`);
+  process.exit(1);
+}
 installFakeTools(bin, records, { tpm2_unseal: "grandchild-hang" });
 const doctor = await runWard(["doctor", "--json"], options(1_500));
 const checks = (
@@ -60,5 +68,13 @@ const backup = await runWard(
 );
 console.log(
   `backup explicit=${String(backup.exitExplicitly)} code=${(JSON.parse(backup.stderr.trim().split("\n").pop() ?? "{}") as { code?: string }).code}`,
+);
+// The FLUSH path (round 3): a good unseal whose flush hangs, on a root that
+// never read the provider flag. The key is returned, the command succeeds, and
+// the probe's own exit is the proof that it asked to exit.
+installFakeTools(bin, records, { tpm2_flushcontext: "hang" });
+const listed = await runWard(["secret", "list", "--json"], options(2_500));
+console.log(
+  `flush exit=${listed.exitCode} explicit=${String(listed.exitExplicitly)} warned=${String(listed.stderr.includes("tpm_session_leaked"))}`,
 );
 console.log(`done explicit=${String(doctor.exitExplicitly)}`);

@@ -812,6 +812,8 @@ export async function runWard(
   }
   const warnings: string[] = [];
   const heard = options.keySelection?.tpm2?.onWarning;
+  // The sink covers the TPM2 provider; Keychain's abandon reaches the result
+  // through the catch's codes (vault_key_unavailable and the unconfirmed write).
   // One abandon sink for every root: a flush that timed out after a good
   // unseal asks for the explicit exit on success and on any later failure.
   let abandoned = false;

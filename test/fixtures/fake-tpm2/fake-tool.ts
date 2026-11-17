@@ -70,6 +70,8 @@ writeFileSync(
 // they name inside the quoted version.
 if (args[0] === "--version") {
   if (versionMode === "version-fail") process.exit(1);
+  // `version-hang` never answers, so only the timeout ends it.
+  if (versionMode === "version-hang") await new Promise(() => {});
   const version =
     versionMode === "version-long"
       ? "1".repeat(40)

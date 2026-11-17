@@ -2868,6 +2868,40 @@ describe("a timed-out tool and a spawn that threw", () => {
     { timeout: 30_000 },
   );
 
+  test(
+    "a tpm2-tools version probe that times out still calls onAbandon",
+    async () => {
+      const { base, bin, records } = fresh();
+      installFakeTools(bin, records, {
+        tpm2_sessionconfig: "session-zero+version-hang",
+      });
+      const directory = join(base, "ward-tpm");
+      const presence = detect({ path: bin, device: DEVICE });
+      await sealKey(presence, new Uint8Array(32).fill(0x5a), directory);
+      let abandoned = 0;
+      try {
+        const error = await unsealKey(presence, directory, {
+          timeoutMs: 2_500,
+          onAbandon: () => {
+            abandoned += 1;
+          },
+        }).then(
+          () => undefined,
+          (caught: unknown) => caught,
+        );
+        // The refusal is unchanged: the version only labels it.
+        expect(error).toMatchObject({
+          reason: "tool_incompatible",
+          detail: "tpm2-tools unknown",
+        });
+      } finally {
+        killGrandchild(join(records, "grandchild.pid"));
+      }
+      expect(abandoned).toBe(1);
+    },
+    { timeout: 30_000 },
+  );
+
   test("a non-Tpm2Error unseal failure keeps flushFailure", async () => {
     const { base, bin, records } = fresh();
     installFakeTools(bin, records, { tpm2_flushcontext: "fail" });

@@ -1147,6 +1147,7 @@ async function toolsVersion(
   presence: Tpm2Presence,
   directory: string,
   timeoutMs: number | undefined,
+  onAbandon?: () => void,
 ): Promise<string> {
   try {
     const run = await runTool(presence, "tpm2_sessionconfig", ["--version"], {
@@ -1157,7 +1158,16 @@ async function toolsVersion(
       Buffer.from(run.stdout).toString("utf8"),
     );
     return match?.[1] ?? "unknown";
-  } catch {
+  } catch (error) {
+    // The display string stays "unknown", but a killed tool may have left a
+    // process behind, so the caller still hears that the call was abandoned.
+    if (error instanceof Tpm2Error && error.reason === "tool_timeout") {
+      try {
+        onAbandon?.();
+      } catch {
+        // A listener's failure must not change the refusal.
+      }
+    }
     return "unknown";
   }
 }
@@ -1227,7 +1237,7 @@ export async function unsealKey(
         if (verdict === "unparsed")
           throw new Tpm2Error(
             "tool_incompatible",
-            `tpm2-tools ${await toolsVersion(presence, loaded.directory, options.timeoutMs)}`,
+            `tpm2-tools ${await toolsVersion(presence, loaded.directory, options.timeoutMs, options.onAbandon)}`,
           );
         // Verified, never repaired, at the moment before the tool reads it.
         requirePrivateFile(session);
