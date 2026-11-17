@@ -55,6 +55,7 @@
 //   A4  the sink sets the flag even with no abandon (always true)             -> "a good unseal without an abandon does not ask for one"
 //   A5  a sentence of the code's human warning drifts from the concept        -> "the stderr contract concept pins the warning forms"
 //   (nit 3, JSON mode from parsed flags, has no test: no command reaches a differing argv without a project, so it is a code-only change.)
+// OBSERVED for round 3 (bun 1.3.14, 2026-11-17; predictions unchanged). None survived. Differences: A1 removes the OR from the one `told` helper, so it also reddened "the same abandon survives a later non-TPM failure"; A4 also reddened "a refusal that is not a timeout does not ask for one". A2, A3, A5 went red on exactly their predicted tests.
 // MUTANT REGISTER, round 2 of the #341 review (B1-B4 and the nits), written and committed BEFORE any run of these.
 //   Q1  TpmKeyError.abandoned ignores a flushFailure of tool_timeout        -> "a propagated flush timeout still asks for an explicit exit"
 //   Q2  runWard's catch ignores the TpmKeyError abandoned mark              -> "a propagated tool timeout still asks for an explicit exit", "a propagating ward command whose tpm2 tool times out exits"
@@ -68,8 +69,8 @@
 //   Q10 the router does not zero a probed key when a later probe throws     -> "a key-returning probe followed by a throwing probe zeroes the key"
 //   S1  a sentence of the stderr-contract concept is deleted               -> "the stderr contract concept pins the warning forms"
 //   Q11 the selection spread lets a seam replace directoryFor               -> "a seam cannot redirect the blob directory"
-// OBSERVED for round 2 (annotated after the runs; predictions unchanged). None survived. Differences from the predictions:
-//   S1  went red on exactly its predicted test (run 2026-11-17, bun 1.4.2).
+// OBSERVED for round 2 (the Q runs recorded no version at the time (2026-11-15, taken as the 1.3.14 the K and H rounds record on that date); annotated after the runs; predictions unchanged). None survived. Differences from the predictions:
+//   S1  went red on exactly its predicted test (run 2026-11-17, bun 1.3.14; an earlier note here said 1.4.2, which was the quest binary's runtime, not this repo's).
 //   Q3  went red only on test/tpm2-tools.test.ts "a flush timeout after a good unseal calls onAbandon...": the provider test
 //       supplies its own unseal that calls onAbandon, so it cannot see the real unseal's call (it pins the provider's reaction).
 //   Q2  also reddened "a propagated flush timeout still asks for an explicit exit"; the probe test is titled
