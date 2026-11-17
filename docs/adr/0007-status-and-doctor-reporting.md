@@ -67,11 +67,10 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   a second project's stale approval carrying sentinels and asserts it is
   counted and never named, with the current project's record named as the
   positive control.
-- **Doctor runs seven checks, in a fixed order, and always reports all of them
-  on every platform (DEC-262 a25):** `permissions`, `key_provider`, `schema`,
-  `binding`, `stale_approvals`, `instructions`, `secret_service`. Slice 3d-2b
-  inserts `tpm2` before `secret_service`, making eight. Each
-  carries a stable code. Every check is evaluated independently, so one
+- **Doctor runs eight checks, in a fixed order, and always reports all of them
+  on every platform (DEC-262 a25, a26):** `permissions`, `key_provider`,
+  `schema`, `binding`, `stale_approvals`, `instructions`, `tpm2`,
+  `secret_service`. Each carries a stable code. Every check is evaluated independently, so one
   failure never suppresses the others' answers.
 - **Additive fields (DEC-262 a24, a25).** Status always carries
   `keyProvider.backend` (`macos-keychain`, `tpm2` or `null`) and, on Linux only,
@@ -84,9 +83,13 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   `key_unloadable`, `tool_untrusted`, `tool_incompatible` and
   `vault_key_ambiguous`; a hint is human output, never a field. Doctor adds
   `secret_service` after the six, on every platform: `skipped`, with
-  `not_implemented` on Linux and `not_applicable` elsewhere. (a25) also fixes
-  the `tpm2` check, `pass` or `skipped` only, to sit before it in 3d-2b, making
-  eight. No existing field changes.
+  `not_implemented` on Linux and `not_applicable` elsewhere. The `tpm2` check
+  (a25, a26) is `pass` with `ok`, or `skipped` with `tpm2_absent` (no TPM is
+  usable; `reason` is prose naming which, `path` for an untrusted tool) or
+  `not_applicable` (off Linux, or no TPM probe wired); it never fails doctor and never repeats a key
+  fault, which `key_provider` reports once. `leaked_slot` is not a code: a
+  saved-session count cannot attribute a leak to Ward. No existing field
+  changes.
 - **A check's result is `pass`, `fail` or `skipped`.** `fail` means the
   check's subject is present and wrong, *or* present and cannot be evaluated:
   a blocked check must not read as a healthy one, and a failure that could not

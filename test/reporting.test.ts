@@ -39,6 +39,7 @@ import {
 import {
   keyRefusalState,
   selectKeyProvider,
+  tpm2Diagnoser,
 } from "../src/adapters/key-backend.ts";
 import { TpmKeyError } from "../src/adapters/tpm2-provider.ts";
 import {
@@ -48,7 +49,12 @@ import {
   type Tpm2Reason,
   tpm2ErrorCodes,
 } from "../src/adapters/tpm2-tools.ts";
-import type { KeyProvider } from "../src/application/key-provider.ts";
+import {
+  type KeyProvider,
+  type KeyRefusalStateName,
+  keyRefusalStateNames,
+  type TpmDiagnoser,
+} from "../src/application/key-provider.ts";
 import { createKeychainKeyProvider } from "../src/adapters/keychain.ts";
 import { createProjectFiles } from "../src/adapters/project-files.ts";
 import { createSqliteVaultStore } from "../src/adapters/sqlite-vault-store.ts";
@@ -57,12 +63,14 @@ import { wardBlockBody } from "../src/application/bridges.ts";
 import {
   observeKey,
   runDoctor,
+  tpmProbeReason,
+  unknownRefusalReason,
   runStatus,
 } from "../src/application/reporting.ts";
 import type { VaultStore } from "../src/application/vault-store.ts";
 import { runWard, type RunOptions } from "../src/cli/main.ts";
 import { exitCodes } from "../src/contract/envelope.ts";
-import { WardError } from "../src/contract/errors.ts";
+import { errorCatalog, WardError } from "../src/contract/errors.ts";
 import { profileSnapshotVersion } from "../src/domain/profile.ts";
 import {
   parseVaultState,
@@ -220,6 +228,10 @@ function writeManifestAt(directory: string, document: unknown): void {
     `${JSON.stringify(document, null, 2)}\n`,
   );
 }
+
+// A host with no TPM and no tools, so doctor's probe is deterministic on any
+// machine (the real /dev/tpmrm0 is never touched by a test).
+const noTpmHost = { path: "", device: join(tmpdir(), "ward-no-such-tpmrm0") };
 
 function harness() {
   const directory = join(mkdtempSync(join(root, `case-${++cases}-`)), ".ward");
@@ -490,15 +502,20 @@ describe("ward doctor", () => {
       "binding",
       "stale_approvals",
       "instructions",
+      "tpm2",
       "secret_service",
     ]);
-    // Every check passes but secret_service, which is skipped on every platform
-    // (DEC-262 a25) and never a failure.
+    // Every check passes but tpm2 and secret_service, which are skipped on
+    // macOS (DEC-262 a25) and never a failure.
     expect(
       data.checks
-        .filter((entry) => entry.check !== "secret_service")
+        .filter((e) => e.check !== "secret_service" && e.check !== "tpm2")
         .every((entry) => entry.status === "pass"),
     ).toBe(true);
+    expect(checkFor(data, "tpm2")).toMatchObject({
+      status: "skipped",
+      code: "not_applicable",
+    });
     expect(checkFor(data, "secret_service")).toMatchObject({
       status: "skipped",
       code: "not_applicable",
@@ -526,7 +543,7 @@ describe("ward doctor", () => {
       });
       // Every check still reports, and the checks the location blocks name
       // the block rather than reading as healthy.
-      expect(data.checks).toHaveLength(7);
+      expect(data.checks).toHaveLength(8);
       for (const check of data.checks) expect(check.code).toBeTruthy();
       expect(checkFor(data, "key_provider").code).toBe("vault_insecure");
       expect(checkFor(data, "instructions").status).toBe("pass");
@@ -769,7 +786,7 @@ describe("ward doctor", () => {
     expect(doctor.result.exitCode).toBe(exitCodes.validation);
     // The positive control for "the report reached stdout": every check is
     // present, so the read answered rather than throwing out of the command.
-    expect(doctor.data.checks).toHaveLength(7);
+    expect(doctor.data.checks).toHaveLength(8);
     // The schema is intact: the version mismatch is a record-level fact, not
     // a broken document (DEC-246 a2 clause 4's other half).
     expect(checkFor(doctor.data, "schema")).toMatchObject({
@@ -1816,6 +1833,7 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
       ["binding", "fail", "key_unavailable"],
       ["stale_approvals", "fail", "key_unavailable"],
       ["instructions", "skipped", "absent"],
+      ["tpm2", "skipped", "not_applicable"],
       ["secret_service", "skipped", "not_applicable"],
     ]);
   });
@@ -1996,7 +2014,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
     await h.init(checkout);
     const options = h.options(checkout, {
       keyProvider,
-      keySelection: { platform },
+      keySelection: { platform, tpm2Host: noTpmHost },
     });
     const status = await runWard(["status", "--json"], options);
     const statusText = await runWard(["status"], options);
@@ -2350,8 +2368,386 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
       "binding",
       "stale_approvals",
       "instructions",
+      "tpm2",
       "secret_service",
     ])
       expect(r.doctorData.checks.map((c) => c.check)).toContain(name);
+  });
+});
+
+// MUTANT REGISTER, slice 3d-2b(ii-a), written BEFORE any run. Bun 1.3.14 on each observation.
+//   K1  a usable host is reported skipped, not pass/ok                       -> "a usable host is pass with the code ok"
+//   K2  the tpm2 check is dropped off Linux                                  -> "doctor reports eight checks in the fixed order on Linux and on macOS", "on macOS tpm2 is skipped as not_applicable...", "a healthy checkout passes every check and exits 0"
+//   K3  tpm2 is placed after secret_service                                  -> "doctor reports eight checks in the fixed order..."
+//   K4  tool_untrusted is dropped from the host states                       -> "no usable TPM is skipped as tpm2_absent with prose naming which..."
+//   K5  key_incomplete is added to the host states (a key fault repeated)    -> "a key fault is reported once, in key_provider, and tpm2 does not repeat it"
+//   K6  a tool_failed state makes the tpm2 check a fail                      -> "tpm2 takes only pass or skipped, whatever state the probe names, and never fails doctor"
+//   K7  a throwing probe is not caught                                       -> "a probe that throws fails closed to tpm2_absent..."
+//   K8  tpm2Diagnoser drops the abandon sink                                 -> "the real diagnosis is called with the vault's blob directory and the command's abandon sink..."
+//   K9  tpm2Diagnoser hands the ward directory instead of the vault's        -> the same test (its directory assertion)
+//   K10 the probe is never given the vault id                                -> "the probe is asked for the vault, and for the host alone when there is no vault"
+//   K11 the path of an untrusted tool is dropped from the skipped check      -> "no usable TPM is skipped as tpm2_absent with prose naming which..."
+// OBSERVED (3d-2b ii-a, bun 1.3.14, 2026-11-17; predictions above unchanged). K3-K11 went red on their predicted tests. Differences: K1 also reddened "a key fault is reported once..." (it reads the pass/ok shape); K2, written as `return undefined`, crashed every doctor test, which is louder than predicted but includes all the predicted ones; K10 also reddened "the real diagnosis is called with the vault's blob directory...", which needs the vault id too. Carry 5 (#351): the unguarded-sink mutant I3 was re-run COMBINED with doctor now wired (tpm2-tools.test.ts + reporting.test.ts, 30 s timeout): it did not stall this time, one red (the throwing-sink test), 220 pass.
+// MUTANT REGISTER, #352 round-1 fixes, written BEFORE any run. Bun 1.3.14 on each observation.
+//   L1  the tpm2 reason is plain unknownRefusalReason, ignoring the catalog        -> "no usable TPM is skipped as tpm2_absent with prose naming which..." (exact catalog message per state)
+//   L2  the tpm2 fallback is the KEY's unknownRefusalReason, not tpmProbeReason   -> "a state with no catalog wording falls to the TPM probe's own fixed prose...", "a probe that throws fails closed..."
+//   L3  tpm2Diagnoser hands diagnoseTpm2 a bare {} host, not the seam              -> "the diagnoser honours the host seam on both paths..."
+//   L4  the no-vault path ignores the detect seam                                  -> "the diagnoser honours the host seam on both paths..."
+//   L5  the diagnosis directory is tpm/<wrong vault id> (right prefix)             -> "the real diagnosis is called with the vault's blob directory..." (exact join)
+// OBSERVED (#352 round-1 fixes, bun 1.3.14, 2026-11-17; predictions above unchanged). L1-L5 went red on exactly their predicted tests (L1 also reddened the no-wording test, since it ignores the catalog for every state). L1 is the reviewer's mutant that survived before.
+// MUTANT REGISTER, DEC-262 (a27) proofs, written BEFORE any run. Bun 1.3.14 on each observation. The proof uses tpm2_unseal, a REQUIRED tool, not tpm2_getcap: an untrusted getcap leaves the state `ready` (ii-b's attention case), so it could not make key_provider fail.
+//   M1  tpm2 says ok for tool_untrusted (it is dropped from the host states)   -> "a host fault that also breaks the key fails once in key_provider, and tpm2 skips naming it..."
+//   M2  tpm2 adds a savedSessions key on the no-vault path                     -> "with no vault the tpm2 check has no savedSessions key..."
+//   M3  tpm2 repeats the host fault as a FAILURE (status fail)                 -> "a host fault that also breaks the key fails once..." (the tpm2 fail filter and the skipped shape)
+// OBSERVED ((a27) proofs, bun 1.3.14, 2026-11-17; predictions above unchanged). M1-M3 went red on their predicted tests. Extras: M1 also reddened the no-usable-TPM test (it loses its tool_untrusted case); M3 also reddened that test and "tpm2 takes only pass or skipped..." (both read tpm2's status).
+// DEC-262 (a25, a26), slice 3d-2b(ii-a). Proofs carried: doctor reports EIGHT
+// checks in the fixed order on Linux and macOS; `tpm2` takes only pass or
+// skipped, never a failure, whatever state the probe names; it is skipped with
+// tpm2_absent (and prose naming which) when no TPM is usable, and
+// not_applicable off Linux; a key fault is reported once, in key_provider, and
+// not repeated in tpm2. The usable-TPM attention states (saved sessions, an
+// untrusted getcap) are 3d-2b(ii-b).
+describe("DEC-262 (a26): doctor's tpm2 check", () => {
+  const healthy = () =>
+    createKeychainKeyProvider({
+      service: SERVICE,
+      entry: new MemoryKeychain().entry,
+      timeoutMs: 2_000,
+    });
+  async function doctorWith(
+    diagnose: TpmDiagnoser | undefined,
+    options: { platform?: string; provider?: KeyProvider } = {},
+  ) {
+    const h = harness();
+    const checkout = worktree(`tpm2-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const result = await runWard(
+      ["doctor", "--json"],
+      h.options(checkout, {
+        keyProvider: options.provider ?? h.keyProvider,
+        keySelection: {
+          platform: options.platform ?? "linux",
+          tpm2Host: noTpmHost,
+          ...(diagnose === undefined ? {} : { diagnose }),
+        },
+      }),
+    );
+    const text = await runWard(
+      ["doctor"],
+      h.options(checkout, {
+        keyProvider: options.provider ?? h.keyProvider,
+        keySelection: {
+          platform: options.platform ?? "linux",
+          tpm2Host: noTpmHost,
+          ...(diagnose === undefined ? {} : { diagnose }),
+        },
+      }),
+    );
+    return {
+      result,
+      data: json(result.stdout).data as DoctorData & {
+        checks: { reason?: string; path?: string }[];
+      },
+      text: text.stdout,
+    };
+  }
+  const tpm2Of = (data: DoctorData) =>
+    data.checks.find((c) => c.check === "tpm2");
+  const ready: TpmDiagnoser = async () => ({ state: { state: "ready" } });
+  const order = [
+    "permissions",
+    "key_provider",
+    "schema",
+    "binding",
+    "stale_approvals",
+    "instructions",
+    "tpm2",
+    "secret_service",
+  ];
+
+  test("doctor reports eight checks in the fixed order on Linux and on macOS", async () => {
+    const linux = await doctorWith(ready);
+    const mac = await doctorWith(undefined, { platform: "darwin" });
+    for (const r of [linux, mac])
+      expect(r.data.checks.map((c) => c.check)).toEqual(order);
+  });
+
+  test("on macOS tpm2 is skipped as not_applicable and the probe is never asked", async () => {
+    let asked = 0;
+    const r = await doctorWith(
+      async () => {
+        asked += 1;
+        return { state: { state: "ready" } };
+      },
+      { platform: "darwin" },
+    );
+    expect(tpm2Of(r.data)).toEqual({
+      check: "tpm2",
+      status: "skipped",
+      code: "not_applicable",
+    });
+    expect(asked).toBe(0);
+  });
+
+  test("a usable host is pass with the code ok", async () => {
+    const r = await doctorWith(ready);
+    expect(tpm2Of(r.data)).toEqual({
+      check: "tpm2",
+      status: "pass",
+      code: "ok",
+    });
+    expect(r.result.exitCode).toBe(exitCodes.success);
+  });
+
+  test("tpm2 takes only pass or skipped, whatever state the probe names, and never fails doctor", async () => {
+    // The whole union, from the one list the type is made from.
+    const states = keyRefusalStateNames;
+    for (const state of states) {
+      const r = await doctorWith(async () => ({ state: { state } }));
+      const check = tpm2Of(r.data);
+      expect([
+        state,
+        check?.status === "pass" || check?.status === "skipped",
+      ]).toEqual([state, true]);
+      expect([state, r.result.exitCode]).toEqual([state, exitCodes.success]);
+    }
+  });
+
+  test("no usable TPM is skipped as tpm2_absent with prose naming which, and the path for an untrusted tool", async () => {
+    const cases: [KeyRefusalStateName, string, string | undefined][] = [
+      ["unsupported", tpm2ErrorCodes.tpm_absent, undefined],
+      ["access_refused", tpm2ErrorCodes.tpm_not_accessible, undefined],
+      ["tools_absent", tpm2ErrorCodes.tools_absent, undefined],
+      ["tpm_unusable", tpm2ErrorCodes.tpm_unusable, undefined],
+      [
+        "tool_untrusted",
+        tpm2ErrorCodes.tool_untrusted,
+        "/synthetic/tpm2_unseal",
+      ],
+      ["tool_incompatible", tpm2ErrorCodes.tool_incompatible, undefined],
+    ];
+    for (const [state, code, path] of cases) {
+      const r = await doctorWith(async () => ({
+        state: {
+          state,
+          code: code as never,
+          ...(path === undefined ? {} : { path }),
+        },
+      }));
+      const check = tpm2Of(r.data) as Record<string, unknown>;
+      expect([state, check.status, check.code]).toEqual([
+        state,
+        "skipped",
+        "tpm2_absent",
+      ]);
+      // The catalog's exact wording for the state's code, not any prose.
+      expect([state, check.reason]).toEqual([
+        state,
+        errorCatalog[code as keyof typeof errorCatalog].message,
+      ]);
+      expect([state, check.path]).toEqual([state, path]);
+      // Human output carries the reason, and the path when there is one.
+      expect(r.text).toContain(String(check.reason));
+      if (path !== undefined) expect(r.text).toContain(path);
+    }
+  });
+
+  test("a key fault is reported once, in key_provider, and tpm2 does not repeat it", async () => {
+    const provider: KeyProvider = {
+      load: async () => {
+        throw new TpmKeyError(
+          tpm2ErrorCodes.key_incomplete,
+          new Tpm2Error("key_incomplete"),
+        );
+      },
+      create: async () => undefined,
+      backend: () => "tpm2",
+    };
+    const r = await doctorWith(
+      async () => ({ state: { state: "key_incomplete" } }),
+      { provider },
+    );
+    expect(r.data.checks.find((c) => c.check === "key_provider")?.status).toBe(
+      "fail",
+    );
+    expect(tpm2Of(r.data)).toEqual({
+      check: "tpm2",
+      status: "pass",
+      code: "ok",
+    });
+    expect(r.result.exitCode).toBe(exitCodes.validation);
+  });
+
+  test("a probe that throws fails closed to tpm2_absent with fixed prose, never a doctor failure", async () => {
+    const r = await doctorWith(async () => {
+      throw new Error("synthetic probe fault");
+    });
+    expect(tpm2Of(r.data) as unknown).toEqual({
+      check: "tpm2",
+      status: "skipped",
+      code: "tpm2_absent",
+      reason: tpmProbeReason,
+    });
+    expect(r.result.exitCode).toBe(exitCodes.success);
+  });
+
+  test("the real diagnosis is called with the vault's blob directory and the command's abandon sink, so a timed-out tool makes doctor exit explicitly", async () => {
+    const h = harness();
+    const checkout = worktree(`tpm2-sink-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const seen: { directory: string }[] = [];
+    const options = (abandon: boolean) =>
+      h.options(checkout, {
+        keySelection: {
+          platform: "linux",
+          diagnoseTpm2: async (_host, directory, opts) => {
+            seen.push({ directory });
+            if (abandon) opts?.onAbandon?.();
+            return { state: { state: "ready" } };
+          },
+        },
+      });
+    const abandoned = await runWard(["doctor", "--json"], options(true));
+    expect(abandoned.exitExplicitly).toBe(true);
+    const calm = await runWard(["doctor", "--json"], options(false));
+    expect(calm.exitExplicitly).toBeUndefined();
+    expect(seen.length).toBe(2);
+    const vaultId = h.store.header()?.vaultId as string;
+    expect(typeof vaultId).toBe("string");
+    for (const { directory } of seen)
+      expect(directory).toBe(join(h.directory, "tpm", vaultId));
+  });
+
+  test("a state with no catalog wording falls to the TPM probe's own fixed prose, not the key's", async () => {
+    const r = await doctorWith(async () => ({
+      state: { state: "tools_absent" },
+    }));
+    expect((tpm2Of(r.data) as Record<string, unknown>).reason).toBe(
+      tpmProbeReason,
+    );
+    expect(tpmProbeReason).not.toBe(unknownRefusalReason);
+    expect(tpmProbeReason).not.toContain("vault key");
+  });
+
+  test("the diagnoser honours the host seam on both paths and the detect seam without a vault", async () => {
+    const h = harness();
+    const checkout = worktree(`tpm2-diag-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const vaultId = h.store.header()?.vaultId as string;
+    const hosts: unknown[] = [];
+    const seam = {
+      platform: "linux",
+      tpm2Host: noTpmHost,
+      diagnoseTpm2: async (host: unknown) => {
+        hosts.push(host);
+        return { state: { state: "ready" as const } };
+      },
+    };
+    const withVault = await tpm2Diagnoser(
+      join(tmpdir(), "ward-x"),
+      seam,
+    )(vaultId);
+    expect(withVault.state.state).toBe("ready");
+    expect(hosts).toEqual([noTpmHost]);
+    // No vault: the host alone. On the fake host nothing is usable.
+    const bare = await tpm2Diagnoser(join(tmpdir(), "ward-x"), seam)(undefined);
+    expect(bare.state.state).not.toBe("ready");
+    // And the detect seam is honoured over the host.
+    const viaDetect = await tpm2Diagnoser(join(tmpdir(), "ward-x"), {
+      platform: "linux",
+      tpm2: {
+        detect: () => {
+          throw new Tpm2Error("tpm_not_accessible");
+        },
+      },
+    })(undefined);
+    expect(viaDetect.state.state).toBe("access_refused");
+  });
+
+  // DEC-262 (a27) proofs.
+  test("a host fault that also breaks the key fails once in key_provider, and tpm2 skips naming it, with doctor at exit 6", async () => {
+    const path = "/synthetic/tpm2_unseal";
+    const provider: KeyProvider = {
+      load: async () => {
+        throw new TpmKeyError(
+          tpm2ErrorCodes.tool_untrusted,
+          new Tpm2Error("tool_untrusted", undefined, { path }),
+        );
+      },
+      create: async () => undefined,
+      backend: () => "tpm2",
+    };
+    const r = await doctorWith(
+      async () => ({
+        state: {
+          state: "tool_untrusted",
+          code: tpm2ErrorCodes.tool_untrusted,
+          path,
+        },
+      }),
+      { provider },
+    );
+    const key = r.data.checks.find((c) => c.check === "key_provider");
+    expect(key).toMatchObject({
+      status: "fail",
+      code: "tool_untrusted",
+      path,
+    });
+    expect(tpm2Of(r.data) as unknown).toEqual({
+      check: "tpm2",
+      status: "skipped",
+      code: "tpm2_absent",
+      reason: errorCatalog.tpm_tool_untrusted.message,
+      path,
+    });
+    // Doctor fails exactly once for it: only key_provider is a failure among
+    // the two, and the tpm2 check is never `ok` on an untrusted tool.
+    expect(
+      r.data.checks.filter((c) => c.status === "fail" && c.check === "tpm2"),
+    ).toEqual([]);
+    expect(r.result.exitCode).toBe(exitCodes.validation);
+  });
+
+  test("with no vault the tpm2 check has no savedSessions key, and with a vault it has none yet either", async () => {
+    const probe: TpmDiagnoser = async () => ({ state: { state: "ready" } });
+    const h = harness();
+    const bare = worktree(`tpm2-nosessions-${++cases}`);
+    const noVault = await runWard(
+      ["doctor", "--json"],
+      h.options(bare, {
+        keySelection: { platform: "linux", diagnose: probe },
+      }),
+    );
+    const without = (json(noVault.stdout).data as DoctorData).checks.find(
+      (c) => c.check === "tpm2",
+    );
+    expect(without).toEqual({ check: "tpm2", status: "pass", code: "ok" });
+    expect("savedSessions" in (without ?? {})).toBe(false);
+    const withVault = tpm2Of((await doctorWith(probe)).data);
+    expect("savedSessions" in (withVault ?? {})).toBe(false);
+  });
+
+  test("the probe is asked for the vault, and for the host alone when there is no vault", async () => {
+    const asked: (string | undefined)[] = [];
+    const probe: TpmDiagnoser = async (vaultId) => {
+      asked.push(vaultId);
+      return { state: { state: "ready" } };
+    };
+    await doctorWith(probe);
+    const h = harness();
+    const bare = worktree(`tpm2-novault-${++cases}`);
+    await runWard(
+      ["doctor", "--json"],
+      h.options(bare, {
+        keySelection: { platform: "linux", diagnose: probe },
+      }),
+    );
+    // doctorWith runs the JSON and the human report: two asks for the vault.
+    expect(asked.length).toBe(3);
+    expect(asked.slice(0, 2).every((id) => typeof id === "string")).toBe(true);
+    expect(asked[2]).toBeUndefined();
   });
 });

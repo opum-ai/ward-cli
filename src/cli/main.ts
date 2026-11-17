@@ -15,6 +15,7 @@ import {
   type KeySelection,
   keyRefusalState,
   selectKeyProvider,
+  tpm2Diagnoser,
 } from "../adapters/key-backend.ts";
 import { TpmKeyError } from "../adapters/tpm2-provider.ts";
 import { observeMachine } from "../adapters/machine.ts";
@@ -400,6 +401,7 @@ function reporting(options: RunOptions): {
   const directory = options.wardDirectory ?? join(homedir(), ".ward");
   const keyProvider =
     options.keyProvider ?? selectKeyProvider(directory, options.keySelection);
+  const platform = options.keySelection?.platform ?? process.platform;
   return {
     keyProvider,
     options: {
@@ -409,7 +411,10 @@ function reporting(options: RunOptions): {
       keyProvider,
       checkouts: { probe: probeCheckout },
       classifyKeyRefusal: keyRefusalState,
-      platform: options.keySelection?.platform ?? process.platform,
+      platform,
+      ...(platform === "linux"
+        ? { diagnoseTpm: tpm2Diagnoser(directory, options.keySelection) }
+        : {}),
     },
   };
 }

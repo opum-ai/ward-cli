@@ -43,24 +43,27 @@ export interface KeyProvider {
 // Every state a backend can name for a refusal. The adapter's own state type is
 // this one, so a new state is a compile error where it is made and where a
 // report maps it to a code.
-export type KeyRefusalStateName =
-  | "ready"
-  | "unsupported"
-  | "access_refused"
-  | "tools_absent"
-  | "tpm_unusable"
-  | "tool_untrusted"
-  | "tool_incompatible"
-  | "session_not_encrypted"
-  | "blob_not_user_private"
-  | "key_not_sealed"
-  | "key_incomplete"
-  | "key_unloadable"
-  | "key_exists"
-  | "directory_unusable"
-  | "tool_timeout"
-  | "tool_output_too_large"
-  | "tool_failed";
+export const keyRefusalStateNames = [
+  "ready",
+  "unsupported",
+  "access_refused",
+  "tools_absent",
+  "tpm_unusable",
+  "tool_untrusted",
+  "tool_incompatible",
+  "session_not_encrypted",
+  "blob_not_user_private",
+  "key_not_sealed",
+  "key_incomplete",
+  "key_unloadable",
+  "key_exists",
+  "directory_unusable",
+  "tool_timeout",
+  "tool_output_too_large",
+  "tool_failed",
+] as const;
+
+export type KeyRefusalStateName = (typeof keyRefusalStateNames)[number];
 
 export interface KeyRefusalState {
   readonly state: KeyRefusalStateName;
@@ -79,3 +82,17 @@ export interface KeyRefusalState {
 export type KeyRefusalClassifier = (
   error: unknown,
 ) => KeyRefusalState | undefined;
+
+// What a doctor run learns about the host's TPM (DEC-262 a26). The state is a
+// backend's own reading, as for a refusal; a usable host is `ready`, or a state
+// that is about the KEY (reported once, in key_provider), not the host.
+export interface TpmDiagnosis {
+  readonly state: KeyRefusalState;
+}
+
+// Diagnoses the TPM for a vault, or for the host alone when there is no vault.
+// It may run tools, so it can be abandoned: the composition root wires the
+// abandon sink behind it, so the command exits explicitly.
+export type TpmDiagnoser = (
+  vaultId: string | undefined,
+) => Promise<TpmDiagnosis>;

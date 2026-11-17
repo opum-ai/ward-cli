@@ -53,6 +53,7 @@ import type {
   KeyRefusalClassifier,
   KeyRefusalState,
   KeyRefusalStateName,
+  TpmDiagnoser,
 } from "./key-provider.ts";
 import type { ProjectFiles } from "./project-files.ts";
 import type { VaultStore } from "./vault-store.ts";
@@ -70,6 +71,8 @@ export interface ReportingOptions {
   // The platform the report is about (the selection's own, else the host's).
   // Linux alone reports the Secret Service gap (DEC-262 a24 Q3).
   readonly platform?: string;
+  // Doctor's TPM probe (DEC-262 a26), supplied on Linux by the composition root.
+  readonly diagnoseTpm?: TpmDiagnoser;
 }
 
 function onLinux(options: ReportingOptions): boolean {
@@ -723,6 +726,7 @@ export type DoctorCheckName =
   | "binding"
   | "stale_approvals"
   | "instructions"
+  | "tpm2"
   | "secret_service";
 
 export type InstructionState =
@@ -738,10 +742,10 @@ export interface DoctorCheck {
   readonly status: "pass" | "fail" | "skipped";
   readonly code: string;
   readonly documents?: Readonly<Record<AgentTarget, InstructionState>>;
-  // key_provider only (DEC-262 a24 Q2, a25): why the key could not be had, when
-  // the backend said. `reason` is always prose: the state's fixed wording
-  // (key_unloadable's doctor string is carried unchanged) or the catalog's
-  // message for its code; `path`
+  // key_provider and tpm2 (DEC-262 a24 Q2, a25, a26): why the key could not be
+  // had, or why no TPM is usable, when the backend said. `reason` is always prose: the state's fixed wording
+  // (key_unloadable's doctor string is carried unchanged), the catalog's
+  // message for its code, or the fixed unknownRefusalReason; `path`
   // is a tool that failed the trust walk; `stores` names the stores that both
   // hold a key; `version` is tool_incompatible's tpm2-tools version, data a
   // script compares. Prose beyond `reason` (the hint) is human output only and
@@ -842,19 +846,28 @@ const keyStateCode: Record<KeyRefusalStateName, string> = {
   tool_failed: "unavailable",
 };
 
-// The catalog's fixed wording for a refusal's contract code, so `reason` is
-// always prose, never a bare state token (DEC-262 a25 pick 3).
-// What `reason` says when the catalog has no wording for a refusal's code (or
-// the refusal carries none): fixed prose, never the state token.
+// What a key_provider `reason` says when the catalog has no wording for a
+// refusal's code (or the refusal carries none): fixed prose, never the state
+// token.
 export const unknownRefusalReason =
   "The credential store did not give the vault key, and Ward has no more specific wording for why.";
+
+// What a tpm2 `reason` says when the catalog has no wording for the host state,
+// or the probe itself failed: fixed prose about the TPM probe, not about a vault
+// key (tpm2 is a host check, and may run with no vault at all).
+export const tpmProbeReason =
+  "Ward could not tell whether a TPM is usable on this host, so the check was skipped.";
+
+// The catalog's fixed wording for a refusal's contract code, so `reason` is
+// always prose, never a bare state token (DEC-262 a25 pick 3).
 
 function catalogEntry(code: ErrorCode | undefined): {
   message?: string;
   hint?: string;
 } {
   // `?? {}`: a code the catalog does not know fails closed to no wording, and
-  // the caller then reports the state name, rather than throwing out of doctor.
+  // the caller then says unknownRefusalReason, rather than throwing out of
+  // doctor.
   return code === undefined
     ? {}
     : ((errorCatalog[code] as object | undefined) ?? {});
@@ -874,6 +887,56 @@ function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
     ...(code === "tool_incompatible" && refusal.version !== undefined
       ? { version: refusal.version }
       : {}),
+  };
+}
+
+// The host states under which no TPM is usable at all (DEC-262 a26 Q3): the
+// check is skipped and names which. Every other state is about the KEY and is
+// reported once, in key_provider, never repeated here.
+const tpmHostStates: ReadonlySet<KeyRefusalStateName> = new Set([
+  "unsupported",
+  "access_refused",
+  "tools_absent",
+  "tpm_unusable",
+  "tool_untrusted",
+  "tool_incompatible",
+]);
+
+// DEC-262 (a25, a26): `tpm2` is `pass` with code `ok`, or `skipped` with
+// `tpm2_absent` (no TPM is usable here) or `not_applicable` (not Linux, or this
+// report has no TPM probe wired). It is attention at most, and never a failure.
+async function tpm2Check(
+  options: ReportingOptions,
+  vault: VaultObservation,
+): Promise<DoctorCheck> {
+  const check = "tpm2" as const;
+  if (!onLinux(options) || options.diagnoseTpm === undefined)
+    return { check, status: "skipped", code: "not_applicable" };
+  let state: KeyRefusalState;
+  try {
+    state = (
+      await options.diagnoseTpm(
+        vault.status === "present" ? vault.vaultId : undefined,
+      )
+    ).state;
+  } catch {
+    // A probe that failed is not a TPM fault and not a doctor failure: it fails
+    // closed to "no TPM usable" with fixed prose.
+    return {
+      check,
+      status: "skipped",
+      code: "tpm2_absent",
+      reason: tpmProbeReason,
+    };
+  }
+  if (!tpmHostStates.has(state.state))
+    return { check, status: "pass", code: "ok" };
+  return {
+    check,
+    status: "skipped",
+    code: "tpm2_absent",
+    reason: state.summary ?? catalogEntry(state.code).message ?? tpmProbeReason,
+    ...(state.path === undefined ? {} : { path: state.path }),
   };
 }
 
@@ -1216,7 +1279,9 @@ export async function runDoctor(
       options.checkouts,
     ),
     instructionsCheck(options.files),
-    // DEC-262 (a25): fixed order, every platform. 3d-2b adds `tpm2` before it.
+    // DEC-262 (a25, a26): fixed order, every platform: the six, tpm2, then
+    // secret_service.
+    await tpm2Check(options, observation.vault),
     secretServiceCheck(onLinux(options)),
   ];
   const ok = checks.every((check) => check.status !== "fail");
