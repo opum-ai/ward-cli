@@ -59,6 +59,7 @@
 //   Q8  a load-path refusal also carries the init note                      -> "the init note does not print on a load refusal"
 //   Q9  no per-command de-duplication of the warning line                   -> "a repeated warning is one line per command"
 //   Q10 the router does not zero a probed key when a later probe throws     -> "a key-returning probe followed by a throwing probe zeroes the key"
+//   S1  a sentence of the stderr-contract concept is deleted               -> "the stderr contract concept pins the warning forms"
 //   Q11 the selection spread lets a seam replace directoryFor               -> "a seam cannot redirect the blob directory"
 // OBSERVED for round 2 (annotated after the runs; predictions unchanged). None survived. Differences from the predictions:
 //   Q3  went red only on test/tpm2-tools.test.ts "a flush timeout after a good unseal calls onAbandon...": the provider test
@@ -634,6 +635,27 @@ describe("DEC-262 (a23): the init hint and the leak warning", () => {
     );
     expect(adr).toContain('{"warning":"tpm_session_leaked"}');
     expect(adr).toContain("**stderr**");
+  });
+
+  test("the stderr contract concept pins the warning forms", () => {
+    const concept = readFileSync(
+      join(
+        import.meta.dir,
+        "..",
+        "docs",
+        "reference",
+        "ward-s-stderr-output-contract.md",
+      ),
+      "utf8",
+    );
+    expect(concept).toContain('{"warning":"tpm_session_leaked"}');
+    expect(concept).toContain(
+      "warning: tpm_session_leaked: a TPM session slot may be leaked; it is cleared by a reset or reboot.",
+    );
+    expect(concept).toContain(
+      "the error envelope is always the last stderr line",
+    );
+    expect(concept).toContain("never a path or a handle");
   });
 });
 

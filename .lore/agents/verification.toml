@@ -18,4 +18,5 @@ sources = [
   "security-tests",
   "runbooks/cutting-a-ward-release#purpose",
   "adr/0028-tpm2-key-custody-on-linux-tool-trust-the-leaked-session-slot-and-the-stored-format-template#measured",
+  "reference/ward-s-stderr-output-contract",
 ]

@@ -205,6 +205,7 @@ case (a session file crossing processes, with an unseal under it), so it is not 
   stderr for it; in human mode it is a sentence naming the code and that a reset or reboot clears
   the slot. Neither carries a path or a handle. A second warning type is a new question, not a
   reason to change the envelope.
+  The contract is stated in [Ward's stderr output contract](../reference/ward-s-stderr-output-contract.md).
 - `key_unloadable` can be raised for causes other than a TPM clear. The hedge in its wording and the
   absence of any destructive advice are what keep that safe, and they are tested.
 - What 3d must build against this record is listed in (vii) and, in full, on WCLI-21.
