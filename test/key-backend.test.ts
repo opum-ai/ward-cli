@@ -62,6 +62,7 @@
 //   S1  a sentence of the stderr-contract concept is deleted               -> "the stderr contract concept pins the warning forms"
 //   Q11 the selection spread lets a seam replace directoryFor               -> "a seam cannot redirect the blob directory"
 // OBSERVED for round 2 (annotated after the runs; predictions unchanged). None survived. Differences from the predictions:
+//   S1  went red on exactly its predicted test (run 2026-11-17, bun 1.4.2).
 //   Q3  went red only on test/tpm2-tools.test.ts "a flush timeout after a good unseal calls onAbandon...": the provider test
 //       supplies its own unseal that calls onAbandon, so it cannot see the real unseal's call (it pins the provider's reaction).
 //   Q2  also reddened "a propagated flush timeout still asks for an explicit exit"; the probe test is titled
