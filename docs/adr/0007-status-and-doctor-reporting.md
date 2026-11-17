@@ -67,18 +67,22 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   a second project's stale approval carrying sentinels and asserts it is
   counted and never named, with the current project's record named as the
   positive control.
-- **Doctor runs six checks, in a fixed order, and always reports all six:**
+- **Doctor runs six checks, in a fixed order, and always reports all of them (the six, then the additions below):**
   `permissions`, `key_provider`, `schema`, `binding`, `stale_approvals`,
   `instructions`. Each
   carries a stable code. Every check is evaluated independently, so one
   failure never suppresses the others' answers.
-- **Additive fields (DEC-262 a24).** Status always carries
-  `keyProvider.backend` (`macos-keychain`, `tpm2` or `null`), and on Linux
-  `keyProvider.notImplemented: ["secret-service"]`; doctor's `key_provider`
-  check may add `reason`, `path`, `stores` and a state's fixed wording, with the
-  codes `key_incomplete`, `key_unloadable`, `tool_untrusted`, `tool_incompatible`
-  and `vault_key_ambiguous`. On Linux doctor adds a `secret_service` check,
-  `skipped` with `not_implemented`. No existing field changes.
+- **Additive fields (DEC-262 a24, a25).** Status always carries
+  `keyProvider.backend` (`macos-keychain`, `tpm2` or `null`) and, on Linux only,
+  `keyProvider.notImplemented: ["secret-service"]`. Doctor's `key_provider`
+  check may add `reason` (a state's fixed wording), `path`, `stores` and, for
+  `tool_incompatible` only, `version`, under the codes `key_incomplete`,
+  `key_unloadable`, `tool_untrusted`, `tool_incompatible` and
+  `vault_key_ambiguous`; a hint is human output, never a field. Doctor adds
+  `secret_service` after the six, on every platform: `skipped`, with
+  `not_implemented` on Linux and `not_applicable` elsewhere. (a25) also fixes
+  the `tpm2` check, `pass` or `skipped` only, to sit before it in 3d-2b, making
+  eight. No existing field changes.
 - **A check's result is `pass`, `fail` or `skipped`.** `fail` means the
   check's subject is present and wrong, *or* present and cannot be evaluated:
   a blocked check must not read as a healthy one, and a failure that could not

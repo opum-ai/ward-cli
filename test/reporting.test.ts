@@ -1889,6 +1889,7 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   F5  secret_service sits before instructions, not last                      -> "secret_service is the last check on every platform...", "a healthy checkout passes every check and exits 0"
 //   F6  secret_service says not_implemented on macOS                           -> "secret_service is the last check on every platform...", "on macOS the backend is the keychain...", "a healthy checkout passes every check and exits 0"
 //   F7  the hint is dropped from the human doctor output                       -> "key_provider's JSON carries no summary or hint key, and the hint is human output only"
+// OBSERVED (a25 round, bun 1.3.14, 2026-11-17; predictions above unchanged). F2, F5, F7 went red on exactly their predicted tests; F3 survived, as predicted. F1 also reddened the hint test (it reads the reason); F4 also reddened three existing doctor tests that list the checks; F6 also reddened "a healthy checkout passes every check and exits 0".
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a
