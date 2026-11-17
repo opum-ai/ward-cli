@@ -2394,6 +2394,7 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
 //   L3  tpm2Diagnoser hands diagnoseTpm2 a bare {} host, not the seam              -> "the diagnoser honours the host seam on both paths..."
 //   L4  the no-vault path ignores the detect seam                                  -> "the diagnoser honours the host seam on both paths..."
 //   L5  the diagnosis directory is tpm/<wrong vault id> (right prefix)             -> "the real diagnosis is called with the vault's blob directory..." (exact join)
+// OBSERVED (#352 round-1 fixes, bun 1.3.14, 2026-11-17; predictions above unchanged). L1-L5 went red on exactly their predicted tests (L1 also reddened the no-wording test, since it ignores the catalog for every state). L1 is the reviewer's mutant that survived before.
 // DEC-262 (a25, a26), slice 3d-2b(ii-a). Proofs carried: doctor reports EIGHT
 // checks in the fixed order on Linux and macOS; `tpm2` takes only pass or
 // skipped, never a failure, whatever state the probe names; it is skipped with
