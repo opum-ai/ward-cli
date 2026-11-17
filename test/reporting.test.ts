@@ -2940,3 +2940,4 @@ describe("DEC-262 (a26): doctor's tpm2 check", () => {
 //   Q8  a count of zero is reported as saved_sessions                             -> "a count of zero is just ok, with no count key"
 //   Q9  every unavailable reason shares one wording                               -> "each unavailable reason has its own fixed wording and only an untrusted tool carries a path"
 //   Q10 tpm2Diagnoser's vault path drops savedSessions from the diagnosis         -> "the diagnoser hands the vault's saved-session answer to the check and none without a vault"
+// OBSERVED (3d-2b ii-b, bun 1.3.14, 2026-11-17; predictions above unchanged). Q1-Q10 each went red on their predicted tests. Extras beyond the prediction: Q4 and Q9 also reddened "each unavailable reason has its own fixed wording..." (Q4: the untrusted path; Q9: the shared wording) and Q9 also reddened the untrusted test (its reason must say untrusted); Q6 also reddened the reasons test (status pass).
