@@ -75,6 +75,7 @@
 - 2026-11-17T08:24:59-06:00 f28d4affea23a346c932134731b2190a2b3a703a docs(WCLI-168): ADR 0028 names the TPM2 blob directory as part of the stored format (#346)
 - 2026-11-17T08:33:16-06:00 456202021ce4b8e670fd806921a2e7d8cc6de55c feat(WCLI-21): ADR 0007 names the (a24) additive fields, budgets raised to hold it, observations annotated
 - 2026-11-17T08:37:41-06:00 7b9efab5986a75167f0a4bea387482a44b396564 docs(WCLI-21): ADR 0007 states (a25), implementation budget 26400, observations annotated
+- 2026-11-17T08:59:31-06:00 b5e056efb6408778214731d4c234845e603a43ef feat(WCLI-21): backend in use, key states and the Secret Service gap in status and doctor (DEC-262 a24/a25, slice 3d-2a ii) (#350)
 
 ## docs/runbooks
 

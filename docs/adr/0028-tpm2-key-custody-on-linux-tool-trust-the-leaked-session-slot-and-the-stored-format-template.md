@@ -87,9 +87,11 @@ behaviour is:
   key away.
 - After a **failed** unseal, the unseal's own error is rethrown with a readonly `flushFailure`
   holding the flush's reason, and `detail` stays the unseal's. No warning is emitted. This holds only
-  when the unseal's error is a `Tpm2Error`: a non-`Tpm2Error` failure loses `flushFailure`, because
-  `spawnTool` is still unwrapped (N4, #301 finding 10, carried to 3d).
-- **`diagnoseTpm2`** (adapter-level; `ward doctor` does not call it until slice 3d) reports the
+  when the unseal's error is a `Tpm2Error`; a non-`Tpm2Error` failure keeps `flushFailure` too (N4,
+  closed: the test "a non-Tpm2Error unseal failure keeps flushFailure" pins it).
+- **`diagnoseTpm2`** (adapter-level; `ward doctor` calls it for the host and key state, and its
+  `tpm2` check follows DEC-262 a26: `ok`, or `tpm2_absent` with prose, never a failure; the count
+  itself is rendered in a later slice) reports the
   **visible saved-session handle count** as an attention state that does not fail doctor and names
   what clears it: a reset or a reboot. The count comes from `tpm2_getcap handles-saved-session`,
   which is not a required tool: it is resolved and trust-walked on its own. A count that cannot be

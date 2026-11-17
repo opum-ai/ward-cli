@@ -2,6 +2,8 @@ import { join } from "node:path";
 import type {
   KeyBackendId,
   KeyProvider,
+  TpmDiagnoser,
+  TpmDiagnosis,
   KeyRefusalState,
 } from "../application/key-provider.ts";
 import { type KeyStoreName, WardError } from "../contract/errors.ts";
@@ -15,6 +17,7 @@ import {
 } from "./tpm2-provider.ts";
 import {
   detectTpm2,
+  diagnoseTpm2,
   holdsSealedKey,
   preparePrivateDirectory,
   Tpm2Error,
@@ -187,6 +190,43 @@ export interface KeySelection {
     Partial<Tpm2ProviderOptions>,
     "directoryFor" | "prepareDirectory"
   >;
+  // Test seam for doctor's `tpm2` check (DEC-262 a26): what the TPM diagnosis
+  // answers. Production leaves it unset and the real diagnosis runs.
+  readonly diagnose?: TpmDiagnoser;
+  // Test seam for the diagnosis call itself, so a test can prove the abandon
+  // sink reaches it. Production leaves it unset (the real diagnoseTpm2 runs).
+  readonly diagnoseTpm2?: typeof diagnoseTpm2;
+}
+
+// Doctor's TPM diagnosis on Linux (DEC-262 a26). With a vault it is the
+// adapter's full diagnosis of that vault's blob directory; with none it is the
+// host alone (presence, access, tools), and no tool runs against a directory
+// that does not exist. The abandon sink is the command's own, so a timed-out
+// tool still makes the command exit explicitly.
+export function tpm2Diagnoser(
+  wardDirectory: string,
+  selection: KeySelection = {},
+): TpmDiagnoser {
+  if (selection.diagnose !== undefined) return selection.diagnose;
+  const directoryFor = tpm2DirectoryFor(wardDirectory);
+  return async (vaultId): Promise<TpmDiagnosis> => {
+    if (vaultId !== undefined)
+      return await (selection.diagnoseTpm2 ?? diagnoseTpm2)(
+        {},
+        directoryFor(vaultId),
+        {
+          timeoutMs: selection.tpm2?.timeoutMs,
+          onAbandon: selection.tpm2?.onAbandon,
+        },
+      );
+    try {
+      detectTpm2();
+    } catch (error) {
+      if (error instanceof Tpm2Error) return { state: tpm2StateFor(error) };
+      throw error;
+    }
+    return { state: { state: "ready" } };
+  };
 }
 
 // How a possibly leaked TPM session slot is told (DEC-262 a23): under --json
