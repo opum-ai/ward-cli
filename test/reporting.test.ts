@@ -1947,6 +1947,7 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   G5  main.ts stops passing classifyKeyRefusal (D9)                          -> "each of the five key states renders in JSON and in human output" (key_incomplete, key_unloadable, tool_untrusted and tool_incompatible lose their codes)
 //   G6  schemaCheck stops rendering the key status through reportedKeyStatus   -> "status and doctor answer on an ambiguous vault instead of throwing" (its whole-array assertion)
 //   G7  the ambiguous check reports exit 0 (key check passes)                  -> "status and doctor answer on an ambiguous vault..." and "a broken key exits 6..."
+// OBSERVED (carry-in round, bun 1.3.14, 2026-11-17; predictions above unchanged). G1-G4, G7 went red on their predicted tests (G7 also reddened the five-state test, since the ambiguous provider is one of the five). G5 reddened six tests, not only the predicted one: every test that reads a classified state goes with it, which is the D9 pin. G6 was run once per `key_${reportedKeyStatus(key)}` site (three exist in schemaCheck, bindingCheck and staleApprovalsCheck; keyCheck switches on it directly) and each site reddened exactly the ambiguous whole-array test.
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a
