@@ -52,6 +52,7 @@
 //   C1  toolsVersion does not call onAbandon on a timed-out --version          -> test/tpm2-tools.test.ts "a tpm2-tools version probe that times out still calls onAbandon"
 //   C2  the probe's flush phase loses the sink's OR (told never sets explicit)  -> "a ward command whose tpm2 tool times out exits" (the "flush exit=0 explicit=true" line)
 //   C3  the flush-after-good-unseal onAbandon call is removed from unsealKey    -> "a ward command whose tpm2 tool times out exits", test/tpm2-tools.test.ts "a flush timeout after a good unseal calls onAbandon..."
+// OBSERVED for round 4 (bun 1.3.14, 2026-11-17 read from `date -u`; predictions unchanged). None survived. C1 and C3 went red on exactly their predicted tests. C2 also reddened the two round-3 sink tests ("a good unseal whose flush timed out..." and "the same abandon survives..."), since they share the same OR.
 // MUTANT REGISTER, round 3 (the #341 round-2 verdict), written BEFORE any run of these. Bun is recorded on each observation.
 //   A1  the runWard sink does not OR the abandon into a success result        -> "a good unseal whose flush timed out asks for an explicit exit on a root that never read the provider flag"
 //   A2  the runWard sink is not applied on the failure path                   -> "the same abandon survives a later non-TPM failure"
