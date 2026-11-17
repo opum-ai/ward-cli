@@ -244,7 +244,7 @@ function observeVault(store: VaultStore): VaultObservation {
   }
 }
 
-async function observeKey(
+export async function observeKey(
   keyProvider: KeyProvider,
   vaultId: string,
   classify?: KeyRefusalClassifier,
@@ -1050,5 +1050,3 @@ export async function runDoctor(
     exitCode: ok ? exitCodes.success : exitCodes.validation,
   };
 }
-
-export const observeKeyForTest = observeKey;
