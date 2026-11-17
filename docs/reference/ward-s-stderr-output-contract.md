@@ -6,7 +6,9 @@ tags:
   - contract
   - tpm2
 summary: "What Ward writes on stderr: the one-shot tpm_session_leaked warning in its --json and human forms, and the rule that the error envelope is always the last stderr line."
-timestamp: 2026-11-17T04:37:02.673Z
+generated:
+  by: lore/0.11.0
+  at: 2026-11-17T04:37:02.673Z
 ---
 
 # Ward's stderr output contract

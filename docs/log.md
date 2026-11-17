@@ -35,6 +35,7 @@
 - 2026-10-26T16:21:03-05:00 50b553b576c80a3495880fed817f3d211666d6da docs(WCLI-82): record the 0.1.0 gates under DEC-246 D3 (#198)
 - 2026-10-28T09:19:42-05:00 e7cf35ce5fa6d028358f183fb59bfc63f3b2cb2c feat(WCLI-92): ship opum-ward from a lean plugin/ directory (#204)
 - 2026-11-03T10:48:55-06:00 f612a61ecf307c966edbc339dd4a38b668624661 fix(WCLI-140): the legacy hint names ward init only where init can run; docs and field naming (#267)
+- 2026-11-16T22:37:42-06:00 61fb355bef4ad4c3f3ed6bf00b4253ef327ae365 docs(WCLI-21): Ward's stderr output contract concept, pinned by a test and linked from ADR 0028
 
 ## docs/adr
 
