@@ -1948,6 +1948,13 @@ describe("what observeKey carries (WCLI-21 slice 3d-2a)", () => {
 //   G6  schemaCheck stops rendering the key status through reportedKeyStatus   -> "status and doctor answer on an ambiguous vault instead of throwing" (its whole-array assertion)
 //   G7  the ambiguous check reports exit 0 (key check passes)                  -> "status and doctor answer on an ambiguous vault..." and "a broken key exits 6..."
 // OBSERVED (carry-in round, bun 1.3.14, 2026-11-17; predictions above unchanged). G1-G4, G7 went red on their predicted tests (G7 also reddened the five-state test, since the ambiguous provider is one of the five). G5 reddened six tests, not only the predicted one: every test that reads a classified state goes with it, which is the D9 pin. G6 was run once per `key_${reportedKeyStatus(key)}` site (three exist in schemaCheck, bindingCheck and staleApprovalsCheck; keyCheck switches on it directly) and each site reddened exactly the ambiguous whole-array test.
+// MUTANT REGISTER, #350 round-1 fixes, written BEFORE any run. Bun 1.3.14 on each observation. F3 (above) was predicted to survive and did; H4 is its kill.
+//   H1  reason falls back to the bare state token (no catalog message)         -> "each of the five key states is exactly its check object...", "a TPM refusal outside the five stays unavailable and names its state"
+//   H2  the recovery hint has no catalog fallback                              -> "each of the five key states is exactly its check object..." (key_incomplete, ambiguous), "a TPM refusal outside the five stays unavailable..."
+//   H3  key_unloadable's summary constant is reworded                          -> "each of the five key states is exactly its check object..." (a literal, so the constant moving is caught)
+//   H4  version is emitted for any state that carries one (F3)                 -> "version is carried only for tool_incompatible, whatever the classifier hands back"
+//   H5  a platform that is neither macOS nor Linux falls to initialisation()   -> test/key-backend.test.ts "a platform that is neither macOS nor Linux reports none, with no vault"
+//   H6  the key_provider check gains a `summary` key                           -> "each of the five key states is exactly its check object..."
 // DEC-262 (a24), slice 3d-2a(ii). Proofs carried here: each of the five
 // key_provider codes renders in JSON and in human output; a broken key exits 6
 // and is shown on key_provider; the backend field is always present, null on a
@@ -2009,47 +2016,96 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
       | (DoctorData["checks"][number] & Record<string, unknown>)
       | undefined;
 
-  const five: [string, KeyProvider, string, Record<string, unknown>][] = [
-    ["key_incomplete", tpm("key_incomplete"), "key_incomplete", {}],
+  // Each state's full key_provider check and its human hint, by LITERAL string,
+  // so the public contract is pinned by the text and not by the constant that
+  // produces it (DEC-262 a25). `toEqual` pins the key set: exactly
+  // {check, status, code, reason, path?, stores?, version?}.
+  const five: [
+    string,
+    KeyProvider,
+    Record<string, unknown>,
+    string | undefined,
+  ][] = [
+    [
+      "key_incomplete",
+      tpm("key_incomplete"),
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "key_incomplete",
+        reason:
+          "A sealed vault key exists but its pair is incomplete, so Ward cannot load it. Ward did not change it.",
+      },
+      "Do not run `ward setup`: this is a recovery condition, and Ward will not create a new key over a sealed one.",
+    ],
     [
       "key_unloadable",
       tpm("tool_failed", "tpm2_load"),
-      "key_unloadable",
-      { reason: keyUnloadableSummary },
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "key_unloadable",
+        reason:
+          "The sealed vault key could not be loaded. A TPM clear (tpm2_clear) is a likely cause, among others.",
+      },
+      "Do not run `ward setup`: the cause may be recoverable, and setup would destroy the only copy of the sealed key.",
     ],
     [
       "tool_untrusted",
       tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
-      "tool_untrusted",
-      { path: "/synthetic/tpm2_unseal" },
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "tool_untrusted",
+        reason:
+          "A tpm2 tool is not in a location Ward trusts to receive the vault key, so Ward did not run it.",
+        path: "/synthetic/tpm2_unseal",
+      },
+      undefined,
     ],
     [
       "tool_incompatible",
       tpm("tool_incompatible", "tpm2-tools 5.6"),
-      "tool_incompatible",
-      { version: "5.6" },
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "tool_incompatible",
+        reason:
+          "A tpm2 tool printed something Ward does not recognise when it was asked whether the session encrypts the unsealed key, so Ward refused to unseal. This is a tool compatibility problem, not a report that encryption is off.",
+        version: "5.6",
+      },
+      undefined,
     ],
     [
       "vault_key_ambiguous",
       ambiguous,
-      "vault_key_ambiguous",
-      { stores: ["macOS Keychain", "TPM2"] },
+      {
+        check: "key_provider",
+        status: "fail",
+        code: "vault_key_ambiguous",
+        reason:
+          "More than one credential store holds a key for this vault, so Ward will not pick one.",
+        stores: ["macOS Keychain", "TPM2"],
+      },
+      "This is a recovery condition: Ward did not change either key and will not choose between them.",
     ],
   ];
 
-  test("each of the five key states renders in JSON and in human output", async () => {
-    for (const [name, provider, code, fields] of five) {
+  test("each of the five key states is exactly its check object in JSON, and its hint is in human output", async () => {
+    for (const [name, provider, expected, hint] of five) {
       const r = await reports(provider);
-      const check = keyCheck(r.doctorData);
-      expect([name, check?.code, check?.status]).toEqual([name, code, "fail"]);
-      expect([name, check]).toMatchObject([name, fields]);
-      // Human output carries the code and every field the JSON carries.
-      expect(r.doctorText).toContain(code);
-      for (const value of Object.values(fields).flat())
-        expect([name, r.doctorText.includes(String(value))]).toEqual([
-          name,
-          true,
-        ]);
+      expect([name, keyCheck(r.doctorData) as unknown]).toEqual([
+        name,
+        expected,
+      ]);
+      // Human output carries the code, the reason, and every field the JSON does.
+      expect(r.doctorText).toContain(String(expected.code));
+      expect(r.doctorText).toContain(String(expected.reason));
+      if (expected.path !== undefined)
+        expect(r.doctorText).toContain(String(expected.path));
+      if (expected.version !== undefined)
+        expect(r.doctorText).toContain(String(expected.version));
+      if (hint !== undefined) expect(r.doctorText).toContain(hint);
     }
   });
 
@@ -2119,6 +2175,32 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
     expect(JSON.stringify(r.doctorData)).toContain("/synthetic/tpm2_unseal");
   });
 
+  test("version is carried only for tool_incompatible, whatever the classifier hands back", async () => {
+    const h = harness();
+    const checkout = worktree(`f3-${++cases}`);
+    await h.setUp(checkout);
+    await h.init(checkout);
+    const identity = locateCheckout(checkout);
+    const doctor = await runDoctor({
+      checkout: identity,
+      files: createProjectFiles(identity.root),
+      store: h.store,
+      keyProvider: tpm("tool_untrusted", undefined, "/synthetic/tpm2_unseal"),
+      checkouts: { probe: probeCheckout },
+      platform: "linux",
+      classifyKeyRefusal: () => ({
+        state: "tool_untrusted",
+        code: tpm2ErrorCodes.tool_untrusted,
+        path: "/synthetic/tpm2_unseal",
+        version: "x",
+      }),
+    });
+    expect(
+      "version" in
+        (doctor.data.checks.find((c) => c.check === "key_provider") ?? {}),
+    ).toBe(false);
+  });
+
   test("a path and a version from the host are escaped before they are printed", async () => {
     const hostile = "\u001b[31m/synthetic/tpm2_unseal\u0007";
     const untrusted = await reports(tpm("tool_untrusted", undefined, hostile));
@@ -2146,10 +2228,15 @@ describe("DEC-262 (a24): the key backend and the key states in status and doctor
 
   test("a TPM refusal outside the five stays unavailable and names its state", async () => {
     const r = await reports(tpm("tpm_not_accessible"));
-    expect(keyCheck(r.doctorData)).toMatchObject({
+    // Prose under the code `unavailable`, never a bare state token.
+    expect(keyCheck(r.doctorData) as unknown).toEqual({
+      check: "key_provider",
+      status: "fail",
       code: "unavailable",
-      reason: "access_refused",
+      reason:
+        "The TPM2 device is present but this user cannot use it, so Ward did not touch it.",
     });
+    expect(r.doctorText).toContain("Join the group that owns /dev/tpmrm0");
   });
 
   test("the backend field is always present: the held store, and null with no TPM", async () => {

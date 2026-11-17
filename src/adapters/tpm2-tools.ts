@@ -1321,8 +1321,9 @@ export async function unsealKey(
 }
 
 // --- doctor states (DEC-262 a15, a16, a17) -----------------------------------
-// A pure adapter-level diagnosis. Nothing here is wired into `ward doctor`
-// (slice 3d does that, mapping a diagnosis into a check); the states are read
+// A pure adapter-level diagnosis. `diagnoseTpm2` is not wired into `ward doctor`
+// yet (slice 3d-2b does that); `tpm2StateFor` already feeds doctor's
+// `key_provider` check through the key refusal. The states are read
 // from Tpm2Error.reason and Tpm2Error.detail, never from the WardError, whose
 // catalog text carries no path or version.
 

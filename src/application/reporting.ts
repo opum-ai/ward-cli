@@ -1,7 +1,8 @@
 // `ward status` and `ward doctor` (spec §8): the two read-only reports over
 // the state every other command acts on. Status answers what this checkout
 // and its backend look like right now; doctor runs the same observation as
-// six named checks and exits 6 when one of them is wrong. They share this
+// its named checks (DEC-262 a25 fixes their order) and exits 6 when one of
+// them is wrong. They share this
 // module because they must never disagree: a status run and a doctor run
 // read the same facts through the same ports, in the same order.
 //
@@ -33,7 +34,7 @@
 // `ward check` (WCLI-9), not this command. Doctor exits 0 when no check
 // failed and 6 when any did, with every check reported either way.
 import { type ExitCode, exitCodes } from "../contract/envelope.ts";
-import { errorCatalog, WardError } from "../contract/errors.ts";
+import { type ErrorCode, errorCatalog, WardError } from "../contract/errors.ts";
 import type { AgentTarget } from "../contract/manifest.ts";
 import { escapeForDisplay } from "../domain/display.ts";
 import { managedBlockStatus } from "../domain/managed-block.ts";
@@ -162,12 +163,12 @@ type VaultObservation =
 type KeyObservation =
   | { status: "present"; key: Uint8Array }
   | { status: "missing" }
-  // `refusal` is the backend's own reading of why (DEC-262 a15 to a20); it is
-  // carried for the renderers of slice 3d-2 and not yet shown.
+  // `refusal` is the backend's own reading of why (DEC-262 a15 to a20); doctor
+  // reports its state as the check's code or reason (DEC-262 a24, a25).
   | { status: "unavailable"; refusal?: KeyRefusalState }
   // Two stores hold a key for this vault (a16 rule 2). The names are carried
-  // from WardError.stores, never a path. Until the ruling on how a report shows
-  // it, every renderer reports this as `unavailable` (see reportedKeyStatus).
+  // from WardError.stores, never a path. Doctor reports it as its own code;
+  // status keeps its existing `unavailable` value (see reportedKeyStatus).
   | { status: "ambiguous"; stores: readonly string[] }
   | { status: "invalid" }
   | { status: "unsupported" };
@@ -840,13 +841,23 @@ const keyStateCode: Record<KeyRefusalStateName, string> = {
   tool_failed: "unavailable",
 };
 
+// The catalog's fixed wording for a refusal's contract code, so `reason` is
+// always prose, never a bare state token (DEC-262 a25 pick 3).
+function catalogEntry(code: ErrorCode | undefined): {
+  message?: string;
+  hint?: string;
+} {
+  return code === undefined ? {} : errorCatalog[code];
+}
+
 function refusedKeyCheck(refusal: KeyRefusalState): DoctorCheck {
   const code = keyStateCode[refusal.state];
   return {
     check: "key_provider",
     status: "fail",
     code,
-    reason: refusal.summary ?? refusal.state,
+    reason:
+      refusal.summary ?? catalogEntry(refusal.code).message ?? refusal.state,
     ...(refusal.path === undefined ? {} : { path: refusal.path }),
     ...(code === "tool_incompatible" && refusal.version !== undefined
       ? { version: refusal.version }
@@ -1102,7 +1113,12 @@ function instructionsCheck(files: ProjectFiles): DoctorCheck {
 // carries the catalog's recovery wording; a TPM state carries its own hint.
 function keyRecoveryHint(key: KeyObservation | undefined): string | undefined {
   if (key?.status === "ambiguous") return errorCatalog.vault_key_ambiguous.hint;
-  return key?.status === "unavailable" ? key.refusal?.hint : undefined;
+  if (key?.status !== "unavailable" || key.refusal === undefined)
+    return undefined;
+  // key_unloadable carries its own hint; every other state falls back to the
+  // catalog's recovery wording for its code (key_incomplete's "do not run
+  // setup" is written there).
+  return key.refusal.hint ?? catalogEntry(key.refusal.code).hint;
 }
 
 function keyDetailLines(check: DoctorCheck, hint?: string): string[] {

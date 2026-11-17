@@ -67,15 +67,19 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   a second project's stale approval carrying sentinels and asserts it is
   counted and never named, with the current project's record named as the
   positive control.
-- **Doctor runs six checks, in a fixed order, and always reports all of them (the six, then the additions below):**
-  `permissions`, `key_provider`, `schema`, `binding`, `stale_approvals`,
-  `instructions`. Each
+- **Doctor runs seven checks, in a fixed order, and always reports all of them
+  on every platform (DEC-262 a25):** `permissions`, `key_provider`, `schema`,
+  `binding`, `stale_approvals`, `instructions`, `secret_service`. Slice 3d-2b
+  inserts `tpm2` before `secret_service`, making eight. Each
   carries a stable code. Every check is evaluated independently, so one
   failure never suppresses the others' answers.
 - **Additive fields (DEC-262 a24, a25).** Status always carries
   `keyProvider.backend` (`macos-keychain`, `tpm2` or `null`) and, on Linux only,
-  `keyProvider.notImplemented: ["secret-service"]`. Doctor's `key_provider`
-  check may add `reason` (a state's fixed wording), `path`, `stores` and, for
+  `keyProvider.notImplemented: ["secret-service"]`; the human status adds
+  `key backend: <name>` (`macOS Keychain`, `TPM2` or `none`) and, on Linux,
+  `Secret Service: not implemented`. Doctor's `key_provider`
+  check may add `reason` (always prose: a state's fixed wording, or the
+  catalog's message for its code under `unavailable`), `path`, `stores` and, for
   `tool_incompatible` only, `version`, under the codes `key_incomplete`,
   `key_unloadable`, `tool_untrusted`, `tool_incompatible` and
   `vault_key_ambiguous`; a hint is human output, never a field. Doctor adds
@@ -115,7 +119,8 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   `ward agents --check` (WCLI-14). The check reuses the writer's own marker
   grammar, so the two cannot drift apart.
 - **Read-only by construction.** The module implements both reports with
-  `header`, `load`, `read` and project file reads only; it contains no call to
+  `header`, `load`, `read`, `backend` (which may run the TPM presence check on
+  Linux, a read) and project file reads only; it contains no call to
   `mutate`, `create` or a file write. Both commands declare `unlocksVault:
   true` in the manifest because they do read the vault, and neither is marked
   `admin`: an agent may run them. Outside a Git worktree both exit 3 with
@@ -155,8 +160,9 @@ present is wrong or cannot be evaluated; absence is reported, never failed.**
   commands bound it** (WCLI-20): the key check reports `unavailable` and the
   process is told to exit explicitly rather than wait on a pending native
   call.
-- **What is not claimed:** that doctor proves anything outside its six
+- **What is not claimed:** that doctor proves anything outside its
   checks; that a skipped check says a checkout is ready; and that a report can
   distinguish *why* a credential store refused (locked, access denied,
-  timed out) — the adapter maps those to one verdict by design, so the report
-  says `unavailable` and cannot say more.
+  timed out) — the Keychain adapter maps those to one verdict by design, so
+  the report says `unavailable` there. The TPM2 backend is the exception
+  (DEC-262 a24): its refusals keep their state, so the key check can say why.

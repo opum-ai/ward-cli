@@ -168,6 +168,25 @@ function backend(
   };
 }
 
+describe("the selected provider names no backend where none is usable (DEC-262 a24)", () => {
+  test("a platform that is neither macOS nor Linux reports none, with no vault", () => {
+    for (const platform of ["freebsd", "win32"])
+      expect([
+        platform,
+        selectKeyProvider(fresh(), { platform }).backend?.(),
+      ]).toEqual([platform, null]);
+  });
+
+  test("macOS names the keychain", () => {
+    expect(
+      selectKeyProvider(fresh(), {
+        platform: "darwin",
+        keychain: stubProvider(async () => synthetic()),
+      }).backend?.(),
+    ).toBe("macos-keychain");
+  });
+});
+
 describe("the router says which store it settled on (DEC-262 a24)", () => {
   const held = async () => ({ held: true as const });
   const notHeld = async () => ({ held: false as const });

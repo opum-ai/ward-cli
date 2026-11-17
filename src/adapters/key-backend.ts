@@ -215,10 +215,13 @@ export function selectKeyProvider(
   if (platform !== "linux") {
     // macOS holds keys in the Keychain. Any other platform reaches the same
     // provider, which refuses it as vault_key_store_unsupported.
-    return createRoutingKeyProvider({
+    const router = createRoutingKeyProvider({
       backends: [keychain],
       initialisation: () => keychain,
     });
+    // Only macOS has a usable store here: elsewhere the provider refuses with
+    // vault_key_store_unsupported, so no backend is in use (DEC-262 a24 Q1).
+    return platform === "darwin" ? router : { ...router, backend: () => null };
   }
   const directoryFor = tpm2DirectoryFor(wardDirectory);
   const detect = selection.tpm2?.detect ?? (() => detectTpm2());
