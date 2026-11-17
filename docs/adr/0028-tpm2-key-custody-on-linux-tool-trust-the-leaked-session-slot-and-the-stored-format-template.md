@@ -126,7 +126,9 @@ rest of the second), and the blob names as `sealedPublicName` (`vault-key.pub`) 
 is never in argv, a file or the environment. The sealed object carries **no PCR binding**, because a
 policy would stop it unsealing after the host restarts with nobody present. The blobs are 0600 in
 Ward's 0700 directory, published with `link(2)` (which refuses to replace) public first and private
-last. **A sealed blob loads only under the primary it was created under, so any change to either
+last. **The directory is `<wardDir>/tpm/<vaultId>/` (DEC-262 a22), part of the stored format:** one
+not user-owned or not 0700 refuses `blob_not_user_private` and is never chmodded. Moving it is a
+vault-format change (DEC-255 a6) that goes to opum-doc first. **A sealed blob loads only under the primary it was created under, so any change to either
 argv line (`-C o`, `-g sha256`, `-G ecc256:aes128cfb`, the primary's `-a` set, the sealed object's `-a`
 set, or anything added or removed) or to a blob name is a vault-format change under DEC-255 (a6).** It
 needs a re-seal or migration design and comes back to opum-doc before code. The vault file is
