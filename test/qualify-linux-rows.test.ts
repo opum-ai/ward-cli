@@ -529,6 +529,36 @@ describe("the tool log parser", () => {
     ).toThrow(/malformed/);
   });
 
+  test("an ENV line is a name and a sha256 digest: a malformed one, or a name given twice in a call, is refused", () => {
+    const digest = "a".repeat(64);
+    const call = (...lines: string[]) =>
+      `CALL tpm2_load\nTCTI t\n${lines.join("\n")}\nEND\n`;
+    for (const bad of [
+      `ENV PATH`,
+      `ENV PATH ${digest}0`,
+      `ENV PATH ${"A".repeat(64)}`,
+      `ENV PATH ${"a".repeat(63)}`,
+      `ENV 1PATH ${digest}`,
+      `ENV PA TH ${digest}`,
+      `ENV  ${digest}`,
+    ])
+      expect(() => parseToolLog(call(bad))).toThrow(/malformed/);
+    expect(() =>
+      parseToolLog(call(`ENV PATH ${digest}`, `ENV PATH ${digest}`)),
+    ).toThrow(/malformed/);
+    // An ENV line outside a call's arguments is not part of the format.
+    expect(() => parseToolLog(`CALL a\nEND\nENV PATH ${digest}\n`)).toThrow(
+      /malformed/,
+    );
+    expect(
+      parseToolLog(call(`ENV PATH ${digest}`, `ENV LANG ${"b".repeat(64)}`))[0]
+        ?.env,
+    ).toEqual([
+      { name: "PATH", digest },
+      { name: "LANG", digest: "b".repeat(64) },
+    ]);
+  });
+
   test("well-formed logs are read back whole: calls, arguments, the TCTI, the printout and its exit code", () => {
     const text = [
       "CALL tpm2_createprimary",
