@@ -393,7 +393,7 @@ describe("the environment row", () => {
       .toString()
       .split("\n")
       .filter((line) => line !== "")
-      .map((line) => line.split("=")[0])
+      .map((line) => line.split("=")[0] ?? "")
       .sort();
     expect(received).toEqual(["LANG", "LC_ALL", "PATH", "TPM2TOOLS_TCTI"]);
     // And the log says the same, with no name the shell added.
@@ -722,3 +722,4 @@ describe("the report statement row", () => {
 //   S25 the interposer stops stripping SHLVL (the -u SHLVL in each of its three uses)        -> on a Mac (bash as sh, which adds SHLVL): "a tool behind an interposer sees exactly the adapter's four variables, whichever shell runs the script", "a real interposed call under the adapter's environment passes the row end to end", and "a call is logged with ..." does not go red; on dash it would survive, so Linux-only survival is expected
 //   S26 argvRow ignores what it found in the arguments                                       -> "the argv row: an argument holding the key in any form fails, a clean log passes, and nothing logged is not a pass" only
 //   S27 the interposer stops stripping _ (the -u _ in each of its three uses)                -> the same two tests as S25 on a Mac
+// OBSERVED (slice 4a-2b-1 addendum round, bun 1.3.14 on a Mac, 2026-11-18; predictions above unchanged). S1-S15 and S17-S27 were all re-run on this tree and went red; S16 SURVIVED, as before. Divergences from the predictions, none a survivor: S5 (no ENV lines) also reddened "a tool behind an interposer sees exactly the adapter's four variables" (the log's names no longer matched what the tool received), a third test beside the two predicted; S8 (accept any name) also reddened "the adapter's own four variables, each with its exact value, pass, and no name outside them does" (it now asserts the shell's names fail), a third test beside the two predicted. S25 (stop stripping SHLVL) reddened only "a tool behind an interposer sees exactly the adapter's four variables": bash adds SHLVL to the tool's environment but the interposer's own listing, which runs under the same unset, did not show it, so the row's end-to-end test stays green and my prediction line for S25 (which named two tests, in a muddled sentence) over-counted. S27 (stop stripping _) reddened that test and "a real interposed call under the adapter's environment passes the row end to end", as predicted. S25 and S27 are Mac-measured (bash as sh): dash adds none of these names, so on the jetson they would not distinguish. The shell-added values are not predicted, they are removed, so nothing is allowed by name.
