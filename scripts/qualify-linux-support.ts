@@ -130,6 +130,9 @@ export function assertRunDirectory(
       `the home directory cannot be resolved (${(error as NodeJS.ErrnoException).code ?? "unknown"})`,
     );
   }
+  // Defence in depth: a home that is itself under a Ward store is never a run.
+  if (realHome.split(sep).includes(".ward"))
+    throw new Error("the home directory has a .ward component");
   if (directory !== join(realHome, runDirectoryName))
     throw new Error(
       `the run directory is ${runDirectoryName} directly under the real home, and nothing else`,
@@ -244,7 +247,14 @@ export function parseState(text: string): RunState {
 // run directory holds state.json beside a store/ directory, and the scan is
 // rooted at store/ (WCLI-21 carries that layout as owed to 4a-2).
 export function secretNeedles(nonce: string): Uint8Array[] {
-  return [deriveKey(nonce), new TextEncoder().encode(nonce)];
+  if (!nonceShape.test(nonce))
+    throw new Error("the nonce is 64 lowercase hex characters");
+  return [
+    deriveKey(nonce),
+    new TextEncoder().encode(nonce),
+    // The nonce's own 32 bytes are as key-equivalent as its text.
+    Buffer.from(nonce, "hex"),
+  ];
 }
 
 // The uid this process runs as. Without one the owner check cannot run, and a
@@ -319,9 +329,13 @@ function forms(needle: Uint8Array): Buffer[] {
     Buffer.from(hex.toUpperCase()),
   ];
   // The likeliest leaks into a log: a byte array printed as decimals
-  // (JSON.stringify of a Buffer, console.log of a Uint8Array) and hex printed
-  // with a separator (od, xxd -p -c1, a colon-joined fingerprint). Output that
-  // is wrapped across lines or carries offsets is not searched.
+  // (JSON.stringify of a Buffer, Bun.inspect or util.inspect of a Uint8Array)
+  // and hex printed with a separator (od -An -tx1, xxd -p -c1, a Buffer's
+  // inspect, a colon-joined fingerprint). A run of whitespace in the file,
+  // newlines and util.inspect's padding included, is searched as one space (see
+  // containing), which is what lets a wrapped listing match. Listings that carry
+  // offsets (xxd's default, od without -An) or characters between the bytes are
+  // not searched.
   for (const separator of [",", ", ", " ", ":", "-"]) {
     out.push(Buffer.from([...bytes].join(separator)));
     const pairs = hex.match(/../g) ?? [];
@@ -358,7 +372,16 @@ export function containing(
   const files = regularFiles(directory);
   const matches = files.filter((name) => {
     const content = readFileSync(join(directory, name));
-    return searched.some((form) => content.includes(form));
+    // The same bytes with every whitespace run read as one space: a listing
+    // wrapped over lines, or padded to align its columns, then matches the
+    // single-space forms.
+    const collapsed = Buffer.from(
+      content.toString("latin1").replace(/\s+/g, " "),
+      "latin1",
+    );
+    return searched.some(
+      (form) => content.includes(form) || collapsed.includes(form),
+    );
   });
   return { matches, filesRead: files.length };
 }
@@ -377,8 +400,27 @@ function regularFiles(directory: string): string[] {
       withFileTypes: true,
     })) {
       const name = join(relativePath, entry.name);
-      if (entry.isDirectory()) walk(name);
-      else if (entry.isFile()) found.push(name);
+      // A directory entry that names none of the kinds (DT_UNKNOWN on a
+      // filesystem that does not fill it in) is lstat'd instead.
+      const kind =
+        entry.isFile() ||
+        entry.isDirectory() ||
+        entry.isSymbolicLink() ||
+        entry.isFIFO() ||
+        entry.isSocket() ||
+        entry.isBlockDevice() ||
+        entry.isCharacterDevice()
+          ? entry
+          : lstatSync(join(directory, name));
+      if (kind.isDirectory()) walk(name);
+      else if (kind.isFile()) found.push(name);
+      else if (!kind.isSymbolicLink())
+        // A FIFO, a socket or a device: not read (a FIFO would block) and not
+        // skipped in silence, so a tree the scan could not fully read is not a
+        // clean tree.
+        throw new Error(
+          `the scan cannot read ${name}: it is not a file, a directory or a link`,
+        );
     }
   };
   walk("");
@@ -409,48 +451,63 @@ export function lastJsonLine(stdout: string): Record<string, unknown> {
 // UNMEASURED (a29 Q1), and the printout check says only what the printout shows.
 export type Phase = "facts" | "deliver" | "seal" | "unseal" | "clean";
 
+// The rows every phase that touches the host's TPM or the home directory owes
+// (DEC-262 a29 applies "never touched" and "compared before and after" to the
+// whole run): the facts phase takes the baseline, each later tool-running phase
+// compares against it, and the TPM is only ever reached through the ruled TCTI.
+const runWide = [
+  "tcti-is-device-tpmrm0",
+  "handle-lists-unchanged",
+  "real-ward-metadata-unchanged",
+] as const;
 const stored = [
   "run-directory-is-ruled-literal-path",
   "run-directory-private",
-  "handle-lists-unchanged",
-  "real-ward-untouched",
+  ...runWide,
 ] as const;
 const keyHandling = [
-  "tcti-is-device-tpmrm0",
   "synthetic-key-only",
   "no-persistent-handles",
   "effective-groups-recorded",
   "session-printout-decrypt-encrypt",
   "session-printout-is-the-unseal-session",
+  "session-salted-to-primary",
   "unseal-matches-sealed",
   "secret-scan-clean",
-  "key-not-in-argv-environment-or-temp-file",
+  "key-not-in-store-or-tool-log",
 ] as const;
 
 export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
   facts: [
+    ...runWide,
     "effective-groups-recorded",
     "tpm-device-present",
     "tpm2-tools-present",
     "python3-recorded",
   ],
+  // The delivery phase runs no TPM tool, so it owes neither the TCTI nor the
+  // handle rows, only that the home directory was left alone.
   deliver: [
     "run-directory-is-ruled-literal-path",
     "run-directory-private",
+    "real-ward-metadata-unchanged",
     "binaries-sha256-match-both-ends",
   ],
   seal: [...stored, ...keyHandling],
   unseal: [...stored, ...keyHandling, "boot-id-differs-from-seal"],
   clean: [
+    ...runWide,
     "run-directory-is-ruled-literal-path",
     "run-directory-removed",
-    "real-ward-untouched",
   ],
 };
 
 export interface Check {
   readonly name: string;
   readonly ok: boolean;
+  // What the row measured, for the report; verdict never reads it. It must not
+  // carry the nonce, the key or a passphrase.
+  readonly detail?: unknown;
 }
 
 // PASSED only when every check the phase requires is present and ok, every
