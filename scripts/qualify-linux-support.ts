@@ -244,7 +244,14 @@ export function parseState(text: string): RunState {
 // run directory holds state.json beside a store/ directory, and the scan is
 // rooted at store/ (WCLI-21 carries that layout as owed to 4a-2).
 export function secretNeedles(nonce: string): Uint8Array[] {
-  return [deriveKey(nonce), new TextEncoder().encode(nonce)];
+  if (!nonceShape.test(nonce))
+    throw new Error("the nonce is 64 lowercase hex characters");
+  return [
+    deriveKey(nonce),
+    new TextEncoder().encode(nonce),
+    // The nonce's own 32 bytes are as key-equivalent as its text.
+    Buffer.from(nonce, "hex"),
+  ];
 }
 
 // The uid this process runs as. Without one the owner check cannot run, and a
@@ -319,9 +326,13 @@ function forms(needle: Uint8Array): Buffer[] {
     Buffer.from(hex.toUpperCase()),
   ];
   // The likeliest leaks into a log: a byte array printed as decimals
-  // (JSON.stringify of a Buffer, console.log of a Uint8Array) and hex printed
-  // with a separator (od, xxd -p -c1, a colon-joined fingerprint). Output that
-  // is wrapped across lines or carries offsets is not searched.
+  // (JSON.stringify of a Buffer, Bun.inspect or util.inspect of a Uint8Array)
+  // and hex printed with a separator (od -An -tx1, xxd -p -c1, a Buffer's
+  // inspect, a colon-joined fingerprint). A run of whitespace in the file,
+  // newlines and util.inspect's padding included, is searched as one space (see
+  // containing), which is what lets a wrapped listing match. Listings that carry
+  // offsets (xxd's default, od without -An) or characters between the bytes are
+  // not searched.
   for (const separator of [",", ", ", " ", ":", "-"]) {
     out.push(Buffer.from([...bytes].join(separator)));
     const pairs = hex.match(/../g) ?? [];
@@ -358,7 +369,16 @@ export function containing(
   const files = regularFiles(directory);
   const matches = files.filter((name) => {
     const content = readFileSync(join(directory, name));
-    return searched.some((form) => content.includes(form));
+    // The same bytes with every whitespace run read as one space: a listing
+    // wrapped over lines, or padded to align its columns, then matches the
+    // single-space forms.
+    const collapsed = Buffer.from(
+      content.toString("latin1").replace(/\s+/g, " "),
+      "latin1",
+    );
+    return searched.some(
+      (form) => content.includes(form) || collapsed.includes(form),
+    );
   });
   return { matches, filesRead: files.length };
 }
@@ -377,8 +397,27 @@ function regularFiles(directory: string): string[] {
       withFileTypes: true,
     })) {
       const name = join(relativePath, entry.name);
-      if (entry.isDirectory()) walk(name);
-      else if (entry.isFile()) found.push(name);
+      // A directory entry that names none of the kinds (DT_UNKNOWN on a
+      // filesystem that does not fill it in) is lstat'd instead.
+      const kind =
+        entry.isFile() ||
+        entry.isDirectory() ||
+        entry.isSymbolicLink() ||
+        entry.isFIFO() ||
+        entry.isSocket() ||
+        entry.isBlockDevice() ||
+        entry.isCharacterDevice()
+          ? entry
+          : lstatSync(join(directory, name));
+      if (kind.isDirectory()) walk(name);
+      else if (kind.isFile()) found.push(name);
+      else if (!kind.isSymbolicLink())
+        // A FIFO, a socket or a device: not read (a FIFO would block) and not
+        // skipped in silence, so a tree the scan could not fully read is not a
+        // clean tree.
+        throw new Error(
+          `the scan cannot read ${name}: it is not a file, a directory or a link`,
+        );
     }
   };
   walk("");
