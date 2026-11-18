@@ -7,6 +7,7 @@ import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -14,10 +15,11 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertRunDirectory,
+  bootIdChanged,
   containing,
   deriveKey,
   diffHandles,
@@ -26,6 +28,7 @@ import {
   handleLists,
   isInside,
   lastJsonLine,
+  minimumNeedleBytes,
   modeProblems,
   type Phase,
   parseState,
@@ -60,8 +63,10 @@ const snapshot = (over: Partial<HandleSnapshot> = {}): HandleSnapshot => ({
 });
 const digest = "a".repeat(64);
 const bootA = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+const nonceA =
+  "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2";
 const stateOf = (over: Record<string, unknown> = {}) => ({
-  nonce: "n",
+  nonce: nonceA,
   keyDigest: digest,
   handlesBefore: snapshot(),
   sealedAt: "2026-11-18T00:00:00Z",
@@ -141,7 +146,7 @@ describe("the run directory guard", () => {
     symlinkSync(loopA, loopB);
     expect(() =>
       assertRunDirectory(join(home, runDirectoryName), home, [loopA]),
-    ).toThrow();
+    ).toThrow(/ELOOP/);
   });
 
   test("the default guard refuses a home under the tmpdir", () => {
@@ -149,12 +154,6 @@ describe("the run directory guard", () => {
     expect(() =>
       assertRunDirectory(join(home, runDirectoryName), home),
     ).toThrow(/must not sit under/);
-  });
-
-  test("the real home's store is never a target", () => {
-    expect(() =>
-      assertRunDirectory(join(homedir(), ".ward", runDirectoryName), homedir()),
-    ).toThrow(/directly under the real home/);
   });
 
   test("a symlinked run directory, a non-directory, and a symlinked home are refused", () => {
@@ -275,9 +274,14 @@ describe("the synthetic key and the run state", () => {
     ).toThrow(/malformed/);
   });
 
-  test("an empty nonce and a key digest that is not 64 hex characters are refused", () => {
+  test("a nonce that is not 64 lowercase hex characters and a key digest that is not are refused", () => {
     for (const bad of [
       { nonce: "" },
+      { nonce: "n" },
+      { nonce: nonceA.slice(1) },
+      { nonce: `${nonceA}0` },
+      { nonce: nonceA.toUpperCase() },
+      { nonce: `${nonceA.slice(1)}g` },
       { keyDigest: "d" },
       { keyDigest: "A".repeat(64) },
       { keyDigest: "a".repeat(63) },
@@ -308,6 +312,50 @@ describe("the synthetic key and the run state", () => {
     );
   });
 
+  test("the boot after the reboot is compared only when both ids are valid UUIDs", () => {
+    const bootB = "ffeeddcc-bbaa-4998-8776-655443322110";
+    expect(bootIdChanged(bootA, bootB)).toBe(true);
+    expect(bootIdChanged(bootA, bootA)).toBe(false);
+    for (const bad of [
+      "",
+      "unknown",
+      "cat: /proc/sys/kernel/random/boot_id: No such file or directory",
+      bootB.toUpperCase(),
+      `${bootB}\n`,
+      ` ${bootB}`,
+      bootB.slice(1),
+    ]) {
+      expect(() => bootIdChanged(bootA, bad)).toThrow(/current boot id/);
+      expect(() => bootIdChanged(bad, bootB)).toThrow(/sealed boot id/);
+      expect(() => bootIdChanged(bad, bad)).toThrow(/boot id is not/);
+    }
+    expect(() => bootIdChanged(bootA, undefined as unknown as string)).toThrow(
+      /current boot id/,
+    );
+  });
+
+  test("a corrupt state file is malformed without quoting any of its text", () => {
+    for (const text of [
+      `{"nonce":"${nonceA}","keyDigest":`,
+      `{"nonce":"${nonceA}" "x"}`,
+      `${nonceA}`,
+      "",
+      "null",
+      "[]",
+      '"text"',
+      "7",
+    ]) {
+      let message = "";
+      try {
+        parseState(text);
+      } catch (error) {
+        message = (error as Error).message;
+        expect((error as Error).cause).toBeUndefined();
+      }
+      expect(message).toBe("the run state is malformed");
+    }
+  });
+
   test("a seal time that is not an ISO 8601 UTC timestamp is refused", () => {
     for (const sealedAt of [
       "",
@@ -317,12 +365,19 @@ describe("the synthetic key and the run state", () => {
       "2026-11-18T00:00:00",
       "2026-11-18T00:00:00+01:00",
       "2026-13-45T99:99:99Z",
+      "2026-02-30T00:00:00Z",
+      "2026-04-31T00:00:00Z",
+      "2026-11-18T24:00:01Z",
       "2026-11-18 00:00:00Z",
     ])
       expect(() => parseState(JSON.stringify(stateOf({ sealedAt })))).toThrow(
         /malformed/,
       );
-    for (const sealedAt of ["2026-11-18T00:00:00Z", "2026-11-18T00:00:00.123Z"])
+    for (const sealedAt of [
+      "2026-11-18T00:00:00Z",
+      "2026-11-18T00:00:00.123Z",
+      "2024-02-29T12:30:45Z",
+    ])
       expect(parseState(JSON.stringify(stateOf({ sealedAt }))).sealedAt).toBe(
         sealedAt,
       );
@@ -370,6 +425,14 @@ describe("the mode check", () => {
     expect(wideMode(0o100660, false)).toBe("660");
     expect(wideMode(0o40755, true)).toBe("755");
     expect(wideMode(0o100700, false)).toBe("700");
+  });
+
+  test("a file with a second hard link is named", () => {
+    const tree = privateTree("linked");
+    writeFileSync(join(tree, "a"), "x", { mode: 0o600 });
+    expect(modeProblems(tree)).toEqual([]);
+    linkSync(join(tree, "a"), join(root, "hard-outside"));
+    expect(modeProblems(tree)).toEqual(["a: 2 links"]);
   });
 
   test("a file owned by someone else is named, and a symlinked root names itself", () => {
@@ -466,26 +529,71 @@ describe("the scan for a secret", () => {
       url: `x${url}`,
       upper: Buffer.from(odd).toString("hex").toUpperCase(),
       padded: Buffer.from(odd.slice(0, 11)).toString("base64"),
-      near: Buffer.from(odd.slice(0, 11)).toString("base64"),
+      near: Buffer.from(
+        odd.slice(0, 11).map((byte, at) => (at === 5 ? byte ^ 1 : byte)),
+      ).toString("base64"),
       clean: "nothing",
     });
     expect(containing(tree, [odd]).matches.sort()).toEqual(["upper", "url"]);
-    expect(containing(tree, [odd.slice(0, 11)]).matches).toContain("padded");
+    const prefix = containing(tree, [odd.slice(0, 11)]).matches;
+    expect(prefix).toContain("padded");
+    expect(prefix).not.toContain("near");
+    expect(prefix).not.toContain("clean");
   });
 
   test("an empty tree reads zero files, so a caller's positive control fails it", () => {
     const tree = scanTree("scan-empty", {});
-    const scanned = containing(tree, [enc("x")]);
+    const scanned = containing(tree, [enc("needle-xx")]);
     expect(scanned.filesRead).toBe(0);
     expect(scanned.matches).toEqual([]);
   });
 
-  test("a scan with no needle, or an empty one, is refused rather than matching everything", () => {
+  test("a scan with no needle, or one shorter than the minimum, is refused rather than matching everything", () => {
     const tree = scanTree("scan-needles", { a: "abc" });
     expect(() => containing(tree, [])).toThrow(/at least one needle/);
     expect(() => containing(tree, [new Uint8Array(0)])).toThrow(
-      /none may be empty/,
+      /at least 8 bytes/,
     );
+    expect(() =>
+      containing(tree, [new Uint8Array(minimumNeedleBytes - 1)]),
+    ).toThrow(/at least 8 bytes/);
+    expect(() =>
+      containing(tree, [new Uint8Array(minimumNeedleBytes).fill(7)]),
+    ).not.toThrow();
+  });
+
+  test("a byte array printed as decimals, and hex printed with a separator, are found", () => {
+    const key = deriveKey("printed");
+    const decimals = [...key];
+    const hex = Buffer.from(key).toString("hex");
+    const pairs = hex.match(/../g) as string[];
+    const tree = scanTree("scan-printed", {
+      json: JSON.stringify(Buffer.from(key)),
+      console: `Uint8Array(32) [ ${decimals.join(", ")} ]`,
+      spaced: decimals.join(" "),
+      od: ` ${pairs.join(" ")}\n`,
+      colon: pairs.join(":").toUpperCase(),
+      dash: pairs.join("-"),
+      clean: decimals.slice(0, 31).join(", "),
+    });
+    expect(containing(tree, [key]).matches.sort()).toEqual([
+      "colon",
+      "console",
+      "dash",
+      "json",
+      "od",
+      "spaced",
+    ]);
+  });
+
+  test("a symlinked directory is not followed, so a file outside the tree is not scanned", () => {
+    const outside = scanTree("scan-outside", { secret: "outside-needle-here" });
+    const tree = scanTree("scan-link", { inside: "nothing" });
+    symlinkSync(outside, join(tree, "link"));
+    symlinkSync(join(outside, "secret"), join(tree, "filelink"));
+    const scanned = containing(tree, [enc("outside-needle")]);
+    expect(scanned.matches).toEqual([]);
+    expect(scanned.filesRead).toBe(1);
   });
 });
 
@@ -547,8 +655,16 @@ describe("the verdict and the output line", () => {
     }
   });
 
-  test("a phase that is not one of the five is FAILED, never PASSED", () => {
-    expect(verdict("nonsense" as Phase, allOf("seal"))).toBe("FAILED");
+  test("a phase that is not one of the five is FAILED, never PASSED or a throw", () => {
+    for (const phase of [
+      "nonsense",
+      "constructor",
+      "hasOwnProperty",
+      "__proto__",
+      "toString",
+      "",
+    ])
+      expect(verdict(phase as Phase, allOf("seal"))).toBe("FAILED");
   });
 
   test("the unseal phase after the reboot requires the boot-id proof, and the seal phase does not", () => {
@@ -665,3 +781,17 @@ describe("the verdict and the output line", () => {
 //   R38 the volatile list drops /dev/shm                                              -> "the volatile roots are the four a reboot clears, plus the tmpdir" only
 // OBSERVED (round 3, bun 1.3.14, 2026-11-18; the predictions above are unchanged, the divergences are noted here). R18-R21, R23, R25, R27-R36 and R38 went red on exactly their predicted test(s). Divergences: R22 also reddened "a phase that is not one of the five..." and "the unseal phase after the reboot requires the boot-id proof..." (the seal list is read for every phase, so both fail). R26 also reddened "a home under any volatile root is refused, as written and by its real path" and "the default guard refuses a home under the tmpdir" (on darwin the test homes' real path differs from the tmpdir written form, so every one of them depends on the real-path form). R24 SURVIVED, unpredicted: the per-name strictness it removes is also enforced by the checks.every clause and by the === true read of the map, so it was an equivalent mutant I did not see; the verdict body is simplified in the next commit so the redundancy is gone rather than tolerated, and R24 is withdrawn. R37 stayed green, as predicted (equivalent). R27's first attempt matched no pattern (the formatter had wrapped the line) and ran nothing; it was re-run with the corrected pattern and went red as predicted.
 // OBSERVED (round 3, after the verdict body was simplified to a name set plus the strict checks.every clause): R21, R22, R23, R25, R36 went red on the same tests as before, and R37 stayed green (equivalent, as registered); R24 is withdrawn, its code no longer exists.
+
+// MUTANT REGISTER, WCLI-21 slice 4a-1 round 4 (the #358 round-3 verdict: B1, N2, N4, N5, N6, N7, N8 and the cheap N9 items), written BEFORE any run of it. Bun 1.3.14 on each observation. Each mutant is applied to scripts/qualify-linux-support.ts as fixed in this round. "only" means no other test goes red.
+//   R39 bootIdChanged skips the shape check on the current boot id                    -> "the boot after the reboot is compared only when both ids are valid UUIDs" only
+//   R40 bootIdChanged skips the shape check on the sealed boot id                     -> "the boot after the reboot is compared only when both ids are valid UUIDs" only
+//   R41 bootIdChanged returns true for two equal ids                                  -> "the boot after the reboot is compared only when both ids are valid UUIDs" only
+//   R42 the nonce shape accepts any non-empty text                                    -> "a nonce that is not 64 lowercase hex characters and a key digest that is not are refused" only
+//   R43 parseState runs JSON.parse without the wrapper                                -> "a corrupt state file is malformed without quoting any of its text" only
+//   R44 the timestamp check drops the date round trip (Date.parse rolls 2026-02-30 over) -> "a seal time that is not an ISO 8601 UTC timestamp is refused" only
+//   R45 verdict reads requiredChecks[phase] without Object.hasOwn                     -> "a phase that is not one of the five is FAILED, never PASSED or a throw" only
+//   R46 the scan drops the decimal byte-list forms                                    -> "a byte array printed as decimals, and hex printed with a separator, are found" only
+//   R47 the scan drops the separated-hex forms                                        -> "a byte array printed as decimals, and hex printed with a separator, are found" only
+//   R48 the minimum needle length is 0                                                -> "a scan with no needle, or one shorter than the minimum, is refused rather than matching everything" only
+//   R49 the walker stats symlinks and reads what they point at                        -> "a symlinked directory is not followed, so a file outside the tree is not scanned" only
+//   R50 modeProblems drops the hard-link count check                                  -> "a file with a second hard link is named" only

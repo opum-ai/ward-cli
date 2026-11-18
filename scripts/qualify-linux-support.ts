@@ -174,27 +174,63 @@ export interface RunState {
   readonly bootId: string;
 }
 
-// The reboot proof rests on these two fields, so each is held to its real shape:
-// a boot id is a lowercase UUID as /proc/sys/kernel/random/boot_id prints it,
-// and a timestamp is ISO 8601 in UTC. An empty or failed read is not an id that
-// "differs from every real one".
+// The reboot proof rests on the boot ids, so each is held to its real shape: a
+// lowercase UUID as /proc/sys/kernel/random/boot_id prints it. An empty or failed
+// read is not an id that "differs from every real one", on the sealed side
+// (parseState) or the current side (bootIdChanged).
 const bootIdShape =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
+// Whether the boot after the reboot is a different one from the boot that
+// sealed. Both ids are shape-checked first and an invalid one refuses: a
+// failed read must never count as "different".
+export function bootIdChanged(sealed: string, current: string): boolean {
+  for (const [side, id] of [
+    ["sealed", sealed],
+    ["current", current],
+  ] as const)
+    if (typeof id !== "string" || !bootIdShape.test(id))
+      throw new Error(`the ${side} boot id is not a lowercase UUID`);
+  return sealed !== current;
+}
+
+// The nonce is 64 lowercase hex characters: 256 bits for the synthetic key, and
+// long enough that the scan's forms of it cannot match unrelated files.
+const nonceShape = /^[0-9a-f]{64}$/;
+
+// A timestamp is ISO 8601 UTC and a real date: Date.parse rolls 2026-02-30 over
+// to March 2 instead of refusing it (measured on Bun 1.3.14), so the date
+// parts must survive a round trip. sealedAt is DESCRIPTIVE ONLY: it is recorded
+// for the report and no check reads it, so it adds nothing to the reboot proof,
+// which rests on the boot ids.
+function isRealTimestamp(text: string): boolean {
+  if (!isoTimestamp.test(text) || Number.isNaN(Date.parse(text))) return false;
+  return new Date(text).toISOString().slice(0, 19) === text.slice(0, 19);
+}
+
 export function parseState(text: string): RunState {
-  const state = JSON.parse(text) as Partial<RunState>;
+  let state: Partial<RunState>;
+  try {
+    state = JSON.parse(text) as Partial<RunState>;
+  } catch {
+    // No cause is carried: the text holds the nonce, and a SyntaxError can
+    // quote part of it.
+    throw new Error("the run state is malformed");
+  }
   if (
+    typeof state !== "object" ||
+    state === null ||
     typeof state.nonce !== "string" ||
-    state.nonce === "" ||
+    !nonceShape.test(state.nonce) ||
     typeof state.keyDigest !== "string" ||
     !/^[0-9a-f]{64}$/.test(state.keyDigest) ||
     typeof state.sealedAt !== "string" ||
-    !isoTimestamp.test(state.sealedAt) ||
-    Number.isNaN(Date.parse(state.sealedAt)) ||
+    !isRealTimestamp(state.sealedAt) ||
     typeof state.bootId !== "string" ||
     !bootIdShape.test(state.bootId) ||
-    state.handlesBefore === undefined ||
+    typeof state.handlesBefore !== "object" ||
+    state.handlesBefore === null ||
     handleLists.some((list) => !isHandleRead(state.handlesBefore?.[list]))
   )
     throw new Error("the run state is malformed");
@@ -204,7 +240,9 @@ export function parseState(text: string): RunState {
 // What the scan looks for under the run's stores: the synthetic key and the
 // nonce it is derived from. The nonce is key-equivalent, so it is searched for
 // as a secret, kept only in the state file (which the mode check covers), and
-// never logged. The state file itself is outside the scanned trees.
+// never logged. The state file therefore lives OUTSIDE the scanned tree: the
+// run directory holds state.json beside a store/ directory, and the scan is
+// rooted at store/ (WCLI-21 carries that layout as owed to 4a-2).
 export function secretNeedles(nonce: string): Uint8Array[] {
   return [deriveKey(nonce), new TextEncoder().encode(nonce)];
 }
@@ -247,6 +285,9 @@ export function modeProblems(
     const wide = wideMode(stats.mode, stats.isDirectory());
     if (wide !== undefined) problems.push(`${name}: ${wide}`);
     if (stats.uid !== uid) problems.push(`${name}: owner ${stats.uid}`);
+    // A second link to a private file can expose it from outside the tree.
+    if (!stats.isDirectory() && stats.nlink > 1)
+      problems.push(`${name}: ${stats.nlink} links`);
     if (stats.isDirectory())
       for (const entry of readdirSync(path)) walk(join(path, entry));
   };
@@ -271,11 +312,22 @@ export interface ScanResult {
 // dropped).
 function forms(needle: Uint8Array): Buffer[] {
   const bytes = Buffer.from(needle);
+  const hex = bytes.toString("hex");
   const out: Buffer[] = [
     bytes,
-    Buffer.from(bytes.toString("hex")),
-    Buffer.from(bytes.toString("hex").toUpperCase()),
+    Buffer.from(hex),
+    Buffer.from(hex.toUpperCase()),
   ];
+  // The likeliest leaks into a log: a byte array printed as decimals
+  // (JSON.stringify of a Buffer, console.log of a Uint8Array) and hex printed
+  // with a separator (od, xxd -p -c1, a colon-joined fingerprint). Output that
+  // is wrapped across lines or carries offsets is not searched.
+  for (const separator of [",", ", ", " ", ":", "-"]) {
+    out.push(Buffer.from([...bytes].join(separator)));
+    const pairs = hex.match(/../g) ?? [];
+    out.push(Buffer.from(pairs.join(separator)));
+    out.push(Buffer.from(pairs.join(separator).toUpperCase()));
+  }
   for (const shift of [0, 1, 2]) {
     let text = Buffer.concat([Buffer.alloc(shift), bytes])
       .toString("base64")
@@ -295,17 +347,42 @@ export function containing(
   directory: string,
   needles: readonly Uint8Array[],
 ): ScanResult {
-  if (needles.length === 0 || needles.some((needle) => needle.length === 0))
-    throw new Error("the scan needs at least one needle and none may be empty");
+  if (
+    needles.length === 0 ||
+    needles.some((needle) => needle.length < minimumNeedleBytes)
+  )
+    throw new Error(
+      `the scan needs at least one needle and each is at least ${minimumNeedleBytes} bytes`,
+    );
   const searched = needles.flatMap(forms);
-  const files = readdirSync(directory, { recursive: true })
-    .map(String)
-    .filter((name) => lstatSync(join(directory, name)).isFile());
+  const files = regularFiles(directory);
   const matches = files.filter((name) => {
     const content = readFileSync(join(directory, name));
     return searched.some((form) => content.includes(form));
   });
   return { matches, filesRead: files.length };
+}
+
+// A shorter needle matches unrelated files in some form of it, which would fail
+// a clean run.
+export const minimumNeedleBytes = 8;
+
+// The regular files under `directory`, by path relative to it. Symlinks are
+// neither followed nor read: a link to a directory outside the tree is not part
+// of it, and a link to a FIFO would block the read.
+function regularFiles(directory: string): string[] {
+  const found: string[] = [];
+  const walk = (relativePath: string): void => {
+    for (const entry of readdirSync(join(directory, relativePath), {
+      withFileTypes: true,
+    })) {
+      const name = join(relativePath, entry.name);
+      if (entry.isDirectory()) walk(name);
+      else if (entry.isFile()) found.push(name);
+    }
+  };
+  walk("");
+  return found;
 }
 
 // The last JSON line of a command's stdout, or {} when there is none.
@@ -384,7 +461,9 @@ export function verdict(
   checks: readonly Check[],
   extraFailures: readonly string[] = [],
 ): "PASSED" | "FAILED" {
-  const required = requiredChecks[phase];
+  const required = Object.hasOwn(requiredChecks, phase)
+    ? requiredChecks[phase]
+    : undefined;
   const named = new Set(checks.map((check) => check.name));
   return required !== undefined &&
     required.length > 0 &&
