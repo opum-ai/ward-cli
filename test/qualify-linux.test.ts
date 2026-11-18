@@ -195,6 +195,31 @@ describe("the run directory guard", () => {
   });
 });
 
+describe("a home with a .ward component", () => {
+  test("is refused even when the literal path would otherwise be right", () => {
+    const outer = makeHome();
+    const ward = join(outer, ".ward");
+    mkdirSync(ward);
+    const home = realpathSync(ward);
+    expect(() =>
+      assertRunDirectory(join(home, runDirectoryName), home, []),
+    ).toThrow(/\.ward component/);
+    const nested = join(ward, "deeper");
+    mkdirSync(nested);
+    const deeper = realpathSync(nested);
+    expect(() =>
+      assertRunDirectory(join(deeper, runDirectoryName), deeper, []),
+    ).toThrow(/\.ward component/);
+    // A name that merely contains the text is not a component of that name.
+    const other = join(outer, "my.ward");
+    mkdirSync(other);
+    const fine = realpathSync(other);
+    expect(() =>
+      assertRunDirectory(join(fine, runDirectoryName), fine, []),
+    ).not.toThrow();
+  });
+});
+
 describe("the containment test is on path segments", () => {
   test("a name that begins with two dots is inside its parent, and a real parent is not", () => {
     expect(isInside("/tmp", "/tmp/..x/y")).toBe(true);
@@ -737,10 +762,17 @@ describe("the verdict and the output line", () => {
 
   test("each phase's list holds the (a29) and T26 rows it owes, and the unseal phase holds all of the seal phase's", () => {
     const owed: Record<Phase, string[]> = {
-      facts: ["effective-groups-recorded", "tpm-device-present"],
+      facts: [
+        "effective-groups-recorded",
+        "tpm-device-present",
+        "tcti-is-device-tpmrm0",
+        "handle-lists-unchanged",
+        "real-ward-untouched",
+      ],
       deliver: [
         "run-directory-is-ruled-literal-path",
         "binaries-sha256-match-both-ends",
+        "real-ward-untouched",
       ],
       seal: [
         "run-directory-is-ruled-literal-path",
@@ -752,11 +784,18 @@ describe("the verdict and the output line", () => {
         "effective-groups-recorded",
         "session-printout-decrypt-encrypt",
         "session-printout-is-the-unseal-session",
+        "session-salted-to-primary",
         "key-not-in-argv-environment-or-temp-file",
         "secret-scan-clean",
       ],
       unseal: ["handle-lists-unchanged", "unseal-matches-sealed"],
-      clean: ["run-directory-is-ruled-literal-path", "run-directory-removed"],
+      clean: [
+        "run-directory-is-ruled-literal-path",
+        "run-directory-removed",
+        "tcti-is-device-tpmrm0",
+        "handle-lists-unchanged",
+        "real-ward-untouched",
+      ],
     };
     for (const phase of phases)
       for (const name of owed[phase])

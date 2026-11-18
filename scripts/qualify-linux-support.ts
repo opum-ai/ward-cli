@@ -130,6 +130,9 @@ export function assertRunDirectory(
       `the home directory cannot be resolved (${(error as NodeJS.ErrnoException).code ?? "unknown"})`,
     );
   }
+  // Defence in depth: a home that is itself under a Ward store is never a run.
+  if (realHome.split(sep).includes(".ward"))
+    throw new Error("the home directory has a .ward component");
   if (directory !== join(realHome, runDirectoryName))
     throw new Error(
       `the run directory is ${runDirectoryName} directly under the real home, and nothing else`,
@@ -448,19 +451,27 @@ export function lastJsonLine(stdout: string): Record<string, unknown> {
 // UNMEASURED (a29 Q1), and the printout check says only what the printout shows.
 export type Phase = "facts" | "deliver" | "seal" | "unseal" | "clean";
 
-const stored = [
-  "run-directory-is-ruled-literal-path",
-  "run-directory-private",
+// The rows every phase that touches the host's TPM or the home directory owes
+// (DEC-262 a29 applies "never touched" and "compared before and after" to the
+// whole run): the facts phase takes the baseline, each later tool-running phase
+// compares against it, and the TPM is only ever reached through the ruled TCTI.
+const runWide = [
+  "tcti-is-device-tpmrm0",
   "handle-lists-unchanged",
   "real-ward-untouched",
 ] as const;
+const stored = [
+  "run-directory-is-ruled-literal-path",
+  "run-directory-private",
+  ...runWide,
+] as const;
 const keyHandling = [
-  "tcti-is-device-tpmrm0",
   "synthetic-key-only",
   "no-persistent-handles",
   "effective-groups-recorded",
   "session-printout-decrypt-encrypt",
   "session-printout-is-the-unseal-session",
+  "session-salted-to-primary",
   "unseal-matches-sealed",
   "secret-scan-clean",
   "key-not-in-argv-environment-or-temp-file",
@@ -468,28 +479,35 @@ const keyHandling = [
 
 export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
   facts: [
+    ...runWide,
     "effective-groups-recorded",
     "tpm-device-present",
     "tpm2-tools-present",
     "python3-recorded",
   ],
+  // The delivery phase runs no TPM tool, so it owes neither the TCTI nor the
+  // handle rows, only that the home directory was left alone.
   deliver: [
     "run-directory-is-ruled-literal-path",
     "run-directory-private",
+    "real-ward-untouched",
     "binaries-sha256-match-both-ends",
   ],
   seal: [...stored, ...keyHandling],
   unseal: [...stored, ...keyHandling, "boot-id-differs-from-seal"],
   clean: [
+    ...runWide,
     "run-directory-is-ruled-literal-path",
     "run-directory-removed",
-    "real-ward-untouched",
   ],
 };
 
 export interface Check {
   readonly name: string;
   readonly ok: boolean;
+  // What the row measured, for the report; verdict never reads it. It must not
+  // carry the nonce, the key or a passphrase.
+  readonly detail?: unknown;
 }
 
 // PASSED only when every check the phase requires is present and ok, every
