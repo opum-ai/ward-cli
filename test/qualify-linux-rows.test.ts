@@ -14,6 +14,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -208,11 +209,20 @@ describe("the real ~/.ward, measured and not read", () => {
     expect(moves(() => writeFileSync(join(ward, "new"), "y"))).toBe(true);
     expect(moves(() => chmodSync(join(ward, "new"), 0o640))).toBe(true);
     expect(moves(() => rmSync(join(ward, "new")))).toBe(true);
-    // The same bytes in a new file at the same path: the inode moves.
+    // The same bytes in a new file at the same path, with the file's and the
+    // directory's mtime put back, so only the inode says it was replaced.
+    const fixed = 1_000_000_000;
+    const pin = (): void => {
+      utimesSync(join(ward, "vault.db"), fixed, fixed);
+      utimesSync(ward, fixed, fixed);
+    };
+    writeFileSync(join(ward, "vault.db"), "vault", { mode: 0o600 });
+    pin();
     expect(
       moves(() => {
         rmSync(join(ward, "vault.db"));
         writeFileSync(join(ward, "vault.db"), "vault", { mode: 0o600 });
+        pin();
       }),
     ).toBe(true);
     // A step that does nothing moves nothing.
@@ -782,3 +792,4 @@ describe("the private-directory row", () => {
 //   M25 scanRows drops the files-read control                                           -> "a scan that read nothing, or a log with no call, proves nothing" only
 //   M26 (qualify-linux-support.ts) the deliver list drops real-ward-untouched           -> "each phase's list holds the (a29) and T26 rows it owes..." only
 //   M27 (qualify-linux-support.ts) assertRunDirectory drops the .ward-component refusal -> "is refused even when the literal path would otherwise be right" only
+// OBSERVED (slice 4a-2a, bun 1.3.14, 2026-11-18; the predictions above are unchanged, the divergences are noted here). M1-M7, M9, M11-M16 and M18-M27 went red on exactly their predicted test(s) on the first run. Divergences: M8 SURVIVED (dropping the inode): replacing a file also moves the directory's mtime, so the step was already detected without the inode; the replacement step now pins the file's and the directory's mtime back to a fixed instant, so only the inode can tell, and M8 then went red on the predicted test only. M10 on its first run only counted as red because the mutant used readFileSync, which that module does not import, so every test threw; it was re-run reading through require("node:fs") and went red on the predicted test only. M17's first pattern matched nothing (the formatter had changed the quoting) and ran nothing; it was re-run and went red on the predicted test only. M4 reddened both predicted tests; M5, M6, M7 reddened both predicted tests; no mutant reddened a test outside its prediction.
