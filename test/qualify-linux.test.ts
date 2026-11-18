@@ -767,12 +767,12 @@ describe("the verdict and the output line", () => {
         "tpm-device-present",
         "tcti-is-device-tpmrm0",
         "handle-lists-unchanged",
-        "real-ward-untouched",
+        "real-ward-metadata-unchanged",
       ],
       deliver: [
         "run-directory-is-ruled-literal-path",
         "binaries-sha256-match-both-ends",
-        "real-ward-untouched",
+        "real-ward-metadata-unchanged",
       ],
       seal: [
         "run-directory-is-ruled-literal-path",
@@ -780,12 +780,12 @@ describe("the verdict and the output line", () => {
         "synthetic-key-only",
         "no-persistent-handles",
         "handle-lists-unchanged",
-        "real-ward-untouched",
+        "real-ward-metadata-unchanged",
         "effective-groups-recorded",
         "session-printout-decrypt-encrypt",
         "session-printout-is-the-unseal-session",
         "session-salted-to-primary",
-        "key-not-in-argv-environment-or-temp-file",
+        "key-not-in-store-or-tool-log",
         "secret-scan-clean",
       ],
       unseal: ["handle-lists-unchanged", "unseal-matches-sealed"],
@@ -794,7 +794,7 @@ describe("the verdict and the output line", () => {
         "run-directory-removed",
         "tcti-is-device-tpmrm0",
         "handle-lists-unchanged",
-        "real-ward-untouched",
+        "real-ward-metadata-unchanged",
       ],
     };
     for (const phase of phases)

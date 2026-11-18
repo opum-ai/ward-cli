@@ -5,7 +5,7 @@
 // directory, the ~/.ward snapshot) touch only what they are handed.
 import { timingSafeEqual } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { userInfo } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, relative } from "node:path";
 import { classifySessionPrintoutForTest } from "../src/adapters/tpm2-tools.ts";
 import {
@@ -19,6 +19,7 @@ import {
   deriveKey,
   diffHandles,
   type ScanResult,
+  volatileRoots,
 } from "./qualify-linux-support.ts";
 
 // The ruled TCTI, and the one device it names (DEC-262 a29).
@@ -38,14 +39,27 @@ export function ruledRunDirectory(home: string): string {
 
 // --- the run directory --------------------------------------------------------
 
+// The roots a run directory must not sit under. The public create and remove
+// below always use these: a caller cannot narrow them. Only the ForTest variants
+// take a list, because a test's home is itself under the temp directory.
+const ruledVolatile = (): readonly string[] => [tmpdir(), ...volatileRoots];
+
+export function createRunDirectory(directory: string, home: string): void {
+  createRunDirectoryUnder(directory, home, ruledVolatile());
+}
+
+export function removeRunDirectory(directory: string, home: string): boolean {
+  return removeRunDirectoryUnder(directory, home, ruledVolatile());
+}
+
 // Creates the run directory exclusively: a non-recursive mkdir at 0700 that
 // refuses EEXIST, so a stale directory from an earlier run is never adopted (and
-// then deleted by the clean phase). The guard runs first and its result is
-// re-measured after the create.
-export function createRunDirectory(
+// then deleted by the clean phase). The guard runs first; after the create only
+// the directory's mode is re-measured, not the guard.
+export function createRunDirectoryUnder(
   directory: string,
   home: string,
-  volatile?: readonly string[],
+  volatile: readonly string[],
 ): void {
   assertRunDirectory(directory, home, volatile);
   try {
@@ -67,10 +81,10 @@ export function createRunDirectory(
 // directory may have been replaced since it was created. Returns false when
 // there is nothing to remove. The delete is `rm -rf --` on the path as a single
 // argument, no shell and no trailing slash.
-export function removeRunDirectory(
+export function removeRunDirectoryUnder(
   directory: string,
   home: string,
-  volatile?: readonly string[],
+  volatile: readonly string[],
 ): boolean {
   assertRunDirectory(directory, home, volatile);
   try {
@@ -101,13 +115,20 @@ export function childEnvironment(
 
 // --- the real ~/.ward, measured and not read ----------------------------------
 
-// A line per entry under `wardDirectory`: kind, mode, size, mtime and inode,
-// from lstat only. No file is opened, so taking the snapshot is not itself a
-// touch of the store's contents. A missing directory is "absent".
+// A line per entry under `wardDirectory`: kind, mode, size, mtime, ctime, inode
+// and link count, from lstat only, with times and inode as exact integers. No
+// file is opened. The entry's name is NOT kept, only its sha256, so a snapshot
+// that is persisted does not list what the real store holds. ctime cannot be set
+// from userland, which is what tells a delete-and-rewrite that reuses the inode
+// and puts the mtime back; an inode alone is not enough on a filesystem that
+// reuses it at once (CI's Linux runner). This detects a change in metadata. It
+// does not detect a read: a read leaves no trace here (atime is not recorded),
+// so it is evidence the store was not modified, not that it was not touched. A
+// missing directory is "absent".
 export function wardStoreSnapshot(wardDirectory: string): string {
   const lines: string[] = [];
   const walk = (path: string): void => {
-    const stats = lstatSync(path);
+    const stats = lstatSync(path, { bigint: true });
     const kind = stats.isDirectory()
       ? "d"
       : stats.isSymbolicLink()
@@ -115,13 +136,15 @@ export function wardStoreSnapshot(wardDirectory: string): string {
         : stats.isFile()
           ? "f"
           : "o";
+    const name = relative(wardDirectory, path) || ".";
     lines.push(
       [
-        relative(wardDirectory, path) || ".",
+        sha256(Buffer.from(name)),
         kind,
-        (stats.mode & 0o7777).toString(8),
+        (Number(stats.mode) & 0o7777).toString(8),
         stats.size,
-        stats.mtimeMs,
+        stats.mtimeNs,
+        stats.ctimeNs,
         stats.ino,
         stats.nlink,
       ].join(" "),
@@ -139,9 +162,11 @@ export function wardStoreSnapshot(wardDirectory: string): string {
   return lines.join("\n");
 }
 
+// The row name is the run's own (DEC-262 a29 "never touched"); what it measures
+// is that the store's metadata is unchanged, as snapshotted above.
 export function realWardRow(before: string, after: string): Check {
   return {
-    name: "real-ward-untouched",
+    name: "real-ward-metadata-unchanged",
     ok: before !== "" && before === after,
     detail: { before: before === "absent" ? "absent" : "present" },
   };
@@ -273,54 +298,37 @@ export interface ToolCall {
   // The stdout of a tool that is allowed to be logged (tpm2_sessionconfig's
   // printout), never tpm2_unseal's or tpm2_create's.
   readonly stdout?: string;
+  // The exit code the log recorded for the printout block. A printout of a tool
+  // that failed is not evidence of anything.
+  readonly rc?: number;
 }
 
-// An interposer for one tool: it records the call (the name, the TCTI the
-// environment carried, each argument) and then runs the real tool by absolute
-// path. Stdin is untouched and no stdout is recorded, except for the one tool
-// whose output is a non-secret printout. An argument holding a newline would
-// forge a log line, so it stops the call.
-export function interposerScript(
-  tool: string,
-  realTool: string,
-  logPath: string,
-  recordStdout: boolean,
-): string {
-  for (const value of [tool, realTool, logPath])
-    if (/[^A-Za-z0-9_./-]/.test(value))
-      throw new Error("an interposer path is letters, digits and _ . / -");
-  const head = [
-    "#!/bin/sh",
-    'for a in "$@"; do case $a in *\'',
-    "'*) exit 97;; esac; done",
-    "{",
-    `  printf 'CALL %s\\n' '${tool}'`,
-    "  printf 'TCTI %s\\n' \"$TPM2TOOLS_TCTI\"",
-    '  for a in "$@"; do printf \'ARG %s\\n\' "$a"; done',
-    "  printf 'END\\n'",
-    `} >> '${logPath}'`,
-  ];
-  const run = recordStdout
-    ? [
-        `out=$('${realTool}' "$@"); rc=$?`,
-        "printf '%s\\n' \"$out\"",
-        `{ printf 'OUT-BEGIN\\n%s\\nOUT-END\\nRC %s\\nDONE\\n' "$out" "$rc"; } >> '${logPath}'`,
-        'exit "$rc"',
-      ]
-    : [`exec '${realTool}' "$@"`];
-  return `${[...head, ...run].join("\n")}\n`;
-}
+// The log back into calls. The format (CALL, TCTI, ARG lines, END, and for one
+// tool an OUT-BEGIN/OUT-END block with RC and DONE) is the one the proposed tool
+// interposer would write; the interposer itself is NOT in this slice, and the
+// format awaits opum-doc's ruling on the measurement method (DEC-262 a29). This
+// parser assumes the interposer arm of that ruling: under an observer hook in
+// the adapter the log would not have this shape. A line that is not part of the
+// format is a refusal: a log that cannot be read whole is not evidence. Each
+// call has exactly one TCTI line, no call follows an OUT block until its RC and
+// DONE, and no tool whose stdout carries the key (tpm2_unseal, tpm2_create) has
+// an OUT block at all.
+const neverLogged = new Set(["tpm2_unseal", "tpm2_create"]);
 
-// The log back into calls. A line that is not part of the format is a refusal:
-// a log that cannot be read whole is not evidence.
 export function parseToolLog(text: string): ToolCall[] {
-  const calls: ToolCall[] = [];
+  type Open = {
+    tool: string;
+    tcti: string;
+    args: string[];
+    stdout?: string;
+    rc?: number;
+  };
+  const calls: Open[] = [];
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  let current:
-    | { tool: string; tcti: string; args: string[]; stdout?: string }
-    | undefined;
-  let state: "idle" | "args" | "out" | "after-out" = "idle";
+  let current: Open | undefined;
+  let tctiSeen = false;
+  let state: "idle" | "args" | "out" | "after-out" | "after-rc" = "idle";
   let out: string[] = [];
   const malformed = (): never => {
     throw new Error("the tool log is malformed");
@@ -328,36 +336,46 @@ export function parseToolLog(text: string): ToolCall[] {
   for (const line of lines) {
     if (state === "out") {
       if (line === "OUT-END") {
-        (current as NonNullable<typeof current>).stdout = out.join("\n");
+        (current as Open).stdout = out.join("\n");
         state = "after-out";
       } else out.push(line);
       continue;
     }
     if (line.startsWith("CALL ")) {
-      if (state === "args") malformed();
+      if (state !== "idle") malformed();
       current = { tool: line.slice(5), tcti: "", args: [] };
-      calls.push(current as ToolCall & { args: string[] });
+      tctiSeen = false;
+      calls.push(current);
       state = "args";
-    } else if (state === "args" && line.startsWith("TCTI "))
-      (current as NonNullable<typeof current>).tcti = line.slice(5);
-    else if (state === "args" && line.startsWith("ARG "))
-      (current as NonNullable<typeof current>).args.push(line.slice(4));
+    } else if (state === "args" && line.startsWith("TCTI ")) {
+      if (tctiSeen) malformed();
+      tctiSeen = true;
+      (current as Open).tcti = line.slice(5);
+    } else if (state === "args" && line.startsWith("ARG "))
+      (current as Open).args.push(line.slice(4));
     else if (state === "args" && line === "END") state = "idle";
     else if (
       state === "idle" &&
       line === "OUT-BEGIN" &&
-      current !== undefined
+      current !== undefined &&
+      current.stdout === undefined &&
+      !neverLogged.has(current.tool)
     ) {
       out = [];
       state = "out";
-    } else if (state === "after-out" && /^RC \d+$/.test(line)) continue;
-    else if (state === "after-out" && line === "DONE") state = "idle";
+    } else if (state === "after-out" && /^RC \d+$/.test(line)) {
+      (current as Open).rc = Number(line.slice(3));
+      state = "after-rc";
+    } else if (state === "after-rc" && line === "DONE") state = "idle";
     else malformed();
   }
   if (state !== "idle") malformed();
   return calls;
 }
 
+// Under the interposer arm this is the TCTI each interposed call was given; under
+// an observer hook it would be what the adapter passed. The two are not the same
+// claim, and which one this row makes waits on opum-doc's pending A/B.
 export function tctiRow(calls: readonly ToolCall[]): Check {
   return {
     name: "tcti-is-device-tpmrm0",
@@ -403,26 +421,30 @@ export function sessionPrintoutRows(calls: readonly ToolCall[]): Check[] {
       boundOk = false;
       continue;
     }
-    const printouts = calls
-      .slice(started.i + 1, at)
-      .filter(
-        (c) =>
-          c.tool === "tpm2_sessionconfig" &&
-          c.args.includes(path) &&
-          !c.args.some(
-            (a) => a.startsWith("--enable") || a.startsWith("--disable"),
-          ) &&
-          c.stdout !== undefined,
-      );
-    const last = printouts.at(-1);
-    if (last === undefined) {
+    const onPath = (c: ToolCall): boolean =>
+      c.tool === "tpm2_sessionconfig" && c.args.includes(path);
+    const changes = (c: ToolCall): boolean =>
+      c.args.some((a) => a.startsWith("--enable") || a.startsWith("--disable"));
+    let lastAt = -1;
+    for (let i = started.i + 1; i < at; i++) {
+      const c = calls[i] as ToolCall;
+      if (onPath(c) && !changes(c) && c.stdout !== undefined && c.rc === 0)
+        lastAt = i;
+    }
+    if (lastAt === -1) {
       printoutOk = false;
       boundOk = false;
       continue;
     }
+    // A change to the session's attributes between the last printout and the
+    // unseal makes the printout stale: it no longer says what the unseal ran under.
+    if (calls.slice(lastAt + 1, at).some((c) => onPath(c) && changes(c)))
+      printoutOk = false;
     printoutOk =
       printoutOk &&
-      classifySessionPrintoutForTest(last.stdout as string) === "on";
+      classifySessionPrintoutForTest(
+        (calls[lastAt] as ToolCall).stdout as string,
+      ) === "on";
   }
   return [
     { name: "session-printout-decrypt-encrypt", ok: printoutOk },
@@ -435,12 +457,6 @@ export function sessionPrintoutRows(calls: readonly ToolCall[]): Check[] {
 // key that salts it) is the context a tpm2_createprimary in this log wrote. An
 // unsalted session, or one salted to anything else, is not that.
 export function saltedRow(calls: readonly ToolCall[]): Check {
-  const primaries = new Set(
-    calls
-      .filter((call) => call.tool === "tpm2_createprimary")
-      .map((call) => argAfter(call.args, "-c"))
-      .filter((path): path is string => path !== undefined),
-  );
   const unseals = calls
     .map((call, at) => ({ call, at }))
     .filter(({ call }) => call.tool === "tpm2_unseal");
@@ -448,29 +464,39 @@ export function saltedRow(calls: readonly ToolCall[]): Check {
   for (const { call, at } of unseals) {
     const flag = argAfter(call.args, "-p") ?? "";
     const path = flag.startsWith("session:") ? flag.slice(8) : undefined;
-    const started = calls
-      .slice(0, at)
-      .filter(
-        (c) =>
-          c.tool === "tpm2_startauthsession" && argAfter(c.args, "-S") === path,
-      )
-      .at(-1);
+    const startedAt =
+      path === undefined
+        ? -1
+        : calls
+            .slice(0, at)
+            .findLastIndex(
+              (c) =>
+                c.tool === "tpm2_startauthsession" &&
+                argAfter(c.args, "-S") === path,
+            );
+    const started = startedAt === -1 ? undefined : calls[startedAt];
     const salt =
       started === undefined ? undefined : argAfter(started.args, "-c");
-    ok =
-      ok &&
-      started?.args.includes("--hmac-session") === true &&
+    // The primary the session was salted to was made BEFORE the session started.
+    const madeBefore =
       salt !== undefined &&
-      primaries.has(salt);
+      calls
+        .slice(0, startedAt)
+        .some(
+          (c) =>
+            c.tool === "tpm2_createprimary" && argAfter(c.args, "-c") === salt,
+        );
+    ok = ok && started?.args.includes("--hmac-session") === true && madeBefore;
   }
   return { name: "session-salted-to-primary", ok };
 }
 
 // The secret scan, as rows: the key and the nonce appear in no file under the
-// store, and none in the tool log (which holds every argument and the
-// environment of every tool call, so a key in argv or the environment would be
-// in it). A scan that read no file, or a log with no call, proves nothing and
-// fails.
+// store, and none in the tool log (every argument of every tool call as the
+// interposer recorded it). The environment is NOT in that log, so no row claims
+// it. A scan that read no file, or a log with no call, proves nothing and fails.
+// `log.filesRead > 0` assumes the interposer arm of opum-doc's pending A/B: under
+// an observer hook there may be no log file to read.
 export function scanRows(
   store: ScanResult,
   log: ScanResult,
@@ -484,7 +510,7 @@ export function scanRows(
       detail: { storeFiles: store.filesRead, logFiles: log.filesRead },
     },
     {
-      name: "key-not-in-argv-environment-or-temp-file",
+      name: "key-not-in-store-or-tool-log",
       ok: read && log.matches.length === 0 && store.matches.length === 0,
       detail: { calls: calls.length },
     },
