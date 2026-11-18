@@ -458,7 +458,7 @@ export type Phase = "facts" | "deliver" | "seal" | "unseal" | "clean";
 const runWide = [
   "tcti-is-device-tpmrm0",
   "handle-lists-unchanged",
-  "real-ward-untouched",
+  "real-ward-metadata-unchanged",
 ] as const;
 const stored = [
   "run-directory-is-ruled-literal-path",
@@ -474,7 +474,7 @@ const keyHandling = [
   "session-salted-to-primary",
   "unseal-matches-sealed",
   "secret-scan-clean",
-  "key-not-in-argv-environment-or-temp-file",
+  "key-not-in-store-or-tool-log",
 ] as const;
 
 export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
@@ -490,7 +490,7 @@ export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
   deliver: [
     "run-directory-is-ruled-literal-path",
     "run-directory-private",
-    "real-ward-untouched",
+    "real-ward-metadata-unchanged",
     "binaries-sha256-match-both-ends",
   ],
   seal: [...stored, ...keyHandling],
