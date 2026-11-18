@@ -360,10 +360,10 @@ export function parseToolLog(text: string): ToolCall[] {
       const open = current as Open;
       if (match === null || open.env?.some((e) => e.name === match[1]))
         malformed();
-      (open.env ??= []).push({
-        name: match?.[1] as string,
-        digest: match?.[2] as string,
-      });
+      open.env = [
+        ...(open.env ?? []),
+        { name: match?.[1] as string, digest: match?.[2] as string },
+      ];
     } else if (state === "args" && line.startsWith("ARG "))
       (current as Open).args.push(line.slice(4));
     else if (state === "args" && line === "END") state = "idle";
