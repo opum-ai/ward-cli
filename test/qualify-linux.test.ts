@@ -1,9 +1,8 @@
 // WCLI-21 slice 4a: the parts of the Linux T26 harness that need no TPM. The
 // run itself (scripts/qualify-linux.ts) is measured on the hardware host, so
 // everything it relies on that CAN be proved here, is: the directory guards
-// that keep it on DEC-262 (a29)'s literal path and off /tmp and the real
-// ~/.ward, the handle comparison, the mode check, the state file and the
-// verdict.
+// that keep it on DEC-262 (a29)'s literal path and off /tmp, the handle
+// comparison, the mode check, the state file, the secret scan and the verdict.
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
@@ -28,6 +27,7 @@ import {
   isInside,
   lastJsonLine,
   modeProblems,
+  type Phase,
   parseState,
   requiredChecks,
   runDirectoryName,
@@ -35,11 +35,21 @@ import {
   sha256,
   unreadHandles,
   verdict,
+  volatileRoots,
+  wideMode,
 } from "../scripts/qualify-linux-support.ts";
 
 const root = mkdtempSync(join(tmpdir(), "ward-qualify-linux-test-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-const home = "/home/synthetic";
+let counter = 0;
+// A real, resolved home under the test root. The volatile roots a guard call
+// checks are passed explicitly (none by default), so the test root's own
+// location under tmpdir() never decides a result.
+const makeHome = (): string => {
+  const dir = join(root, `home-${counter++}`);
+  mkdirSync(dir);
+  return realpathSync(dir);
+};
 const read = (stdout = "", exitCode = 0): HandleRead => ({ exitCode, stdout });
 const snapshot = (over: Partial<HandleSnapshot> = {}): HandleSnapshot => ({
   "handles-transient": read(),
@@ -49,18 +59,29 @@ const snapshot = (over: Partial<HandleSnapshot> = {}): HandleSnapshot => ({
   ...over,
 });
 const digest = "a".repeat(64);
+const bootA = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+const stateOf = (over: Record<string, unknown> = {}) => ({
+  nonce: "n",
+  keyDigest: digest,
+  handlesBefore: snapshot(),
+  sealedAt: "2026-11-18T00:00:00Z",
+  bootId: bootA,
+  ...over,
+});
 
 describe("the run directory guard", () => {
   test("the literal path directly under the home directory is accepted", () => {
+    const home = makeHome();
     expect(() =>
-      assertRunDirectory(`${home}/${runDirectoryName}`, home),
+      assertRunDirectory(join(home, runDirectoryName), home, []),
     ).not.toThrow();
   });
 
   test("each way of naming the wrong place is refused", () => {
+    const home = makeHome();
     const refused: [string, RegExp][] = [
       ["relative/path", /absolute/],
-      [`${home}/../synthetic/${runDirectoryName}`, /resolved form/],
+      [`${home}/../${runDirectoryName}`, /resolved form/],
       [`${home}/${runDirectoryName}/`, /resolved form/],
       [`/srv/${runDirectoryName}`, /directly under the real home/],
       [`${home}/${runDirectoryName}x`, /directly under the real home/],
@@ -72,55 +93,104 @@ describe("the run directory guard", () => {
       [home, /directly under the real home/],
     ];
     for (const [directory, message] of refused)
-      expect(() => assertRunDirectory(directory, home)).toThrow(message);
+      expect(() => assertRunDirectory(directory, home, [])).toThrow(message);
   });
 
-  test("a home that sits on a volatile path refuses, each of them", () => {
-    for (const volatile of [
-      "/tmp/h",
-      "/var/tmp/h",
-      "/dev/shm/h",
-      "/run/h",
-      `${tmpdir()}/h`,
-      "/tmp/..x",
-    ])
+  test("the volatile roots are the four a reboot clears, plus the tmpdir", () => {
+    expect([...volatileRoots].sort()).toEqual([
+      "/dev/shm",
+      "/run",
+      "/tmp",
+      "/var/tmp",
+    ]);
+  });
+
+  test("a home under any volatile root is refused, as written and by its real path", () => {
+    for (const label of ["tmp", "var-tmp", "shm", "run", "dotdot"]) {
+      const volatile = join(root, `vol-${label}`);
+      mkdirSync(volatile);
+      const dir =
+        label === "dotdot" ? join(volatile, "..x") : join(volatile, "h");
+      mkdirSync(dir);
+      const home = realpathSync(dir);
       expect(() =>
-        assertRunDirectory(`${volatile}/${runDirectoryName}`, volatile),
+        assertRunDirectory(join(home, runDirectoryName), home, [volatile]),
       ).toThrow(/must not sit under/);
+    }
   });
 
-  test("the real home's store is never a target, and the real home accepts only its own literal path", () => {
+  test("a volatile root that is itself a symlink still catches a home under its target", () => {
+    const real = join(root, "vol-real");
+    mkdirSync(join(real, "h"), { recursive: true });
+    const link = join(root, "vol-link");
+    symlinkSync(real, link);
+    const home = realpathSync(join(real, "h"));
+    expect(() =>
+      assertRunDirectory(join(home, runDirectoryName), home, [link]),
+    ).toThrow(/must not sit under/);
+    // A volatile root that does not exist on this host is skipped, not an error.
+    expect(() =>
+      assertRunDirectory(join(home, runDirectoryName), home, [
+        join(root, "absent-root"),
+      ]),
+    ).not.toThrow();
+    // A volatile root that cannot be resolved for another reason is refused.
+    const loopA = join(root, "vol-loop-a");
+    const loopB = join(root, "vol-loop-b");
+    symlinkSync(loopB, loopA);
+    symlinkSync(loopA, loopB);
+    expect(() =>
+      assertRunDirectory(join(home, runDirectoryName), home, [loopA]),
+    ).toThrow();
+  });
+
+  test("the default guard refuses a home under the tmpdir", () => {
+    const home = makeHome();
+    expect(() =>
+      assertRunDirectory(join(home, runDirectoryName), home),
+    ).toThrow(/must not sit under/);
+  });
+
+  test("the real home's store is never a target", () => {
     expect(() =>
       assertRunDirectory(join(homedir(), ".ward", runDirectoryName), homedir()),
-    ).toThrow();
-    expect(() =>
-      assertRunDirectory(
-        join(realpathSync(homedir()), runDirectoryName),
-        homedir(),
-      ),
-    ).not.toThrow();
+    ).toThrow(/directly under the real home/);
   });
 
   test("a symlinked run directory, a non-directory, and a symlinked home are refused", () => {
-    const realHome = realpathSync(mkdtempSync(join(root, "home-")));
+    const realHome = makeHome();
     const target = join(root, "elsewhere");
     mkdirSync(target);
     symlinkSync(target, join(realHome, runDirectoryName));
     expect(() =>
-      assertRunDirectory(join(realHome, runDirectoryName), realHome),
+      assertRunDirectory(join(realHome, runDirectoryName), realHome, []),
     ).toThrow(/symlink/);
 
-    const fileHome = realpathSync(mkdtempSync(join(root, "home-")));
+    const fileHome = makeHome();
     writeFileSync(join(fileHome, runDirectoryName), "x");
     expect(() =>
-      assertRunDirectory(join(fileHome, runDirectoryName), fileHome),
+      assertRunDirectory(join(fileHome, runDirectoryName), fileHome, []),
     ).toThrow(/not a directory/);
 
     const linkedHome = join(root, "linked-home");
     symlinkSync(realHome, linkedHome);
     expect(() =>
-      assertRunDirectory(join(linkedHome, runDirectoryName), linkedHome),
+      assertRunDirectory(join(linkedHome, runDirectoryName), linkedHome, []),
     ).toThrow(/directly under the real home/);
+  });
+
+  test("a home that does not resolve (missing, dangling, looping) is refused, not read lexically", () => {
+    const missing = join(root, "no-such-home");
+    const dangling = join(root, "dangling-home");
+    symlinkSync(join(root, "nowhere"), dangling);
+    const loopA = join(root, "loop-a");
+    const loopB = join(root, "loop-b");
+    symlinkSync(loopB, loopA);
+    symlinkSync(loopA, loopB);
+    for (const home of [missing, dangling, loopA])
+      expect(() =>
+        assertRunDirectory(join(home, runDirectoryName), home, []),
+      ).toThrow(/home directory cannot be resolved/);
   });
 });
 
@@ -181,13 +251,7 @@ describe("the synthetic key and the run state", () => {
   });
 
   test("a state file round-trips, and each missing field is refused", () => {
-    const good = {
-      nonce: "n",
-      keyDigest: digest,
-      handlesBefore: snapshot(),
-      sealedAt: "2026-11-18T00:00:00Z",
-      bootId: "b",
-    };
+    const good = stateOf();
     expect(parseState(JSON.stringify(good))).toEqual(good);
     for (const key of Object.keys(good))
       expect(() =>
@@ -212,13 +276,6 @@ describe("the synthetic key and the run state", () => {
   });
 
   test("an empty nonce and a key digest that is not 64 hex characters are refused", () => {
-    const good = {
-      nonce: "n",
-      keyDigest: digest,
-      handlesBefore: snapshot(),
-      sealedAt: "t",
-      bootId: "b",
-    };
     for (const bad of [
       { nonce: "" },
       { keyDigest: "d" },
@@ -226,8 +283,48 @@ describe("the synthetic key and the run state", () => {
       { keyDigest: "a".repeat(63) },
       { keyDigest: `${digest}0` },
     ])
-      expect(() => parseState(JSON.stringify({ ...good, ...bad }))).toThrow(
+      expect(() => parseState(JSON.stringify(stateOf(bad)))).toThrow(
         /malformed/,
+      );
+  });
+
+  test("a boot id that is not a lowercase UUID is refused, whatever else it looks like", () => {
+    for (const bootId of [
+      "",
+      "b",
+      "unknown",
+      bootA.toUpperCase(),
+      bootA.replaceAll("-", ""),
+      `${bootA}\n`,
+      ` ${bootA}`,
+      `${bootA}0`,
+      bootA.replace("a", "g"),
+    ])
+      expect(() => parseState(JSON.stringify(stateOf({ bootId })))).toThrow(
+        /malformed/,
+      );
+    expect(parseState(JSON.stringify(stateOf({ bootId: bootA }))).bootId).toBe(
+      bootA,
+    );
+  });
+
+  test("a seal time that is not an ISO 8601 UTC timestamp is refused", () => {
+    for (const sealedAt of [
+      "",
+      "t",
+      "yesterday",
+      "2026-11-18",
+      "2026-11-18T00:00:00",
+      "2026-11-18T00:00:00+01:00",
+      "2026-13-45T99:99:99Z",
+      "2026-11-18 00:00:00Z",
+    ])
+      expect(() => parseState(JSON.stringify(stateOf({ sealedAt })))).toThrow(
+        /malformed/,
+      );
+    for (const sealedAt of ["2026-11-18T00:00:00Z", "2026-11-18T00:00:00.123Z"])
+      expect(parseState(JSON.stringify(stateOf({ sealedAt }))).sealedAt).toBe(
+        sealedAt,
       );
   });
 
@@ -242,10 +339,16 @@ describe("the synthetic key and the run state", () => {
 });
 
 describe("the mode check", () => {
-  test("a private tree has no problems, and each wider mode, and a symlink, is named", () => {
-    const tree = join(root, "tree");
+  const uid = process.getuid?.() ?? 0;
+  const privateTree = (name: string): string => {
+    const tree = join(root, name);
     mkdirSync(tree, { mode: 0o700 });
     chmodSync(tree, 0o700);
+    return tree;
+  };
+
+  test("a private tree has no problems, and each wider mode, and a symlink, is named", () => {
+    const tree = privateTree("tree");
     writeFileSync(join(tree, "ok"), "x", { mode: 0o600 });
     expect(modeProblems(tree)).toEqual([]);
     const wide = join(tree, "wide");
@@ -256,12 +359,22 @@ describe("the mode check", () => {
     expect(modeProblems(tree).sort()).toEqual(["link: symlink", "wide: 660"]);
   });
 
+  test("setuid, setgid and sticky bits are named, not masked off", () => {
+    // Set on the mode itself: some filesystems drop them on chmod (measured on
+    // darwin /tmp), so the tree cannot carry them.
+    expect(wideMode(0o100600, false)).toBeUndefined();
+    expect(wideMode(0o40700, true)).toBeUndefined();
+    expect(wideMode(0o104600, false)).toBe("4600");
+    expect(wideMode(0o42700, true)).toBe("2700");
+    expect(wideMode(0o41700, true)).toBe("1700");
+    expect(wideMode(0o100660, false)).toBe("660");
+    expect(wideMode(0o40755, true)).toBe("755");
+    expect(wideMode(0o100700, false)).toBe("700");
+  });
+
   test("a file owned by someone else is named, and a symlinked root names itself", () => {
-    const tree = join(root, "owned");
-    mkdirSync(tree, { mode: 0o700 });
-    chmodSync(tree, 0o700);
+    const tree = privateTree("owned");
     writeFileSync(join(tree, "f"), "x", { mode: 0o600 });
-    const uid = process.getuid?.() ?? 0;
     expect(modeProblems(tree, uid)).toEqual([]);
     expect(modeProblems(tree, uid + 1).sort()).toEqual([
       `.: owner ${uid}`,
@@ -271,24 +384,42 @@ describe("the mode check", () => {
     symlinkSync(tree, link);
     expect(modeProblems(link)).toEqual([".: symlink"]);
   });
+
+  test("a host that gives no uid refuses the check instead of skipping the owner test", () => {
+    const tree = privateTree("no-uid");
+    const proc = process as { getuid?: () => number };
+    const saved = proc.getuid;
+    try {
+      proc.getuid = undefined;
+      expect(() => modeProblems(tree)).toThrow(/needs a uid/);
+      expect(modeProblems(tree, uid)).toEqual([]);
+    } finally {
+      proc.getuid = saved;
+    }
+  });
 });
 
 describe("the scan for a secret", () => {
   const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+  // Bytes whose base64 holds "+" and "/" so the url-safe form differs.
+  const odd = Uint8Array.from([
+    0xfb, 0xff, 0xfe, 0xfa, 0xf0, 0x3e, 0x3f, 0xbf, 0xef, 0xfb, 0x41, 0x42,
+  ]);
+  const scanTree = (name: string, files: Record<string, string | Buffer>) => {
+    const tree = join(root, name);
+    mkdirSync(tree);
+    for (const [file, content] of Object.entries(files))
+      writeFileSync(join(tree, file), content);
+    return tree;
+  };
 
   test("a value is found as is, in base64 and in hex, and a clean tree has none", () => {
-    const tree = join(root, "scan");
-    mkdirSync(tree);
-    writeFileSync(join(tree, "plain"), "xx synthetic-value yy");
-    writeFileSync(
-      join(tree, "b64"),
-      Buffer.from("synthetic-value").toString("base64"),
-    );
-    writeFileSync(
-      join(tree, "hex"),
-      Buffer.from("synthetic-value").toString("hex"),
-    );
-    writeFileSync(join(tree, "clean"), "nothing here");
+    const tree = scanTree("scan", {
+      plain: "xx synthetic-value yy",
+      b64: Buffer.from("synthetic-value").toString("base64"),
+      hex: Buffer.from("synthetic-value").toString("hex"),
+      clean: "nothing here",
+    });
     const found = containing(tree, [enc("synthetic-value")]);
     expect(found.matches.sort()).toEqual(["b64", "hex", "plain"]);
     expect(found.filesRead).toBe(4);
@@ -298,61 +429,176 @@ describe("the scan for a secret", () => {
   });
 
   test("raw key bytes are found, and several needles are all searched", () => {
-    const tree = join(root, "scan-raw");
-    mkdirSync(tree);
     const key = deriveKey("scan-nonce");
-    writeFileSync(join(tree, "raw"), Buffer.concat([Buffer.from("pre"), key]));
-    writeFileSync(join(tree, "nonce"), "scan-nonce");
-    writeFileSync(join(tree, "clean"), "nothing");
+    const tree = scanTree("scan-raw", {
+      raw: Buffer.concat([Buffer.from("pre"), key]),
+      nonce: "scan-nonce",
+      clean: "nothing",
+    });
     expect(
       containing(tree, secretNeedles("scan-nonce")).matches.sort(),
     ).toEqual(["nonce", "raw"]);
   });
 
+  test("base64 is found inside a longer stream at each of the three alignments", () => {
+    const key = deriveKey("alignment");
+    const files: Record<string, string> = {};
+    for (const shift of [0, 1, 2])
+      for (const tail of [0, 1, 2])
+        files[`s${shift}t${tail}`] = Buffer.concat([
+          Buffer.alloc(shift, 0x61),
+          key,
+          Buffer.alloc(tail, 0x7a),
+        ]).toString("base64");
+    const tree = scanTree("scan-align", { ...files, clean: "AAAA".repeat(30) });
+    expect(containing(tree, [key]).matches.sort()).toEqual(
+      Object.keys(files).sort(),
+    );
+  });
+
+  test("base64url, uppercase hex and padded base64 are found, and a near miss is not", () => {
+    const url = Buffer.from(odd)
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_");
+    expect(Buffer.from(odd).toString("base64")).toMatch(/[+/]/);
+    const tree = scanTree("scan-forms", {
+      url: `x${url}`,
+      upper: Buffer.from(odd).toString("hex").toUpperCase(),
+      padded: Buffer.from(odd.slice(0, 11)).toString("base64"),
+      near: Buffer.from(odd.slice(0, 11)).toString("base64"),
+      clean: "nothing",
+    });
+    expect(containing(tree, [odd]).matches.sort()).toEqual(["upper", "url"]);
+    expect(containing(tree, [odd.slice(0, 11)]).matches).toContain("padded");
+  });
+
   test("an empty tree reads zero files, so a caller's positive control fails it", () => {
-    const tree = join(root, "scan-empty");
-    mkdirSync(tree);
+    const tree = scanTree("scan-empty", {});
     const scanned = containing(tree, [enc("x")]);
     expect(scanned.filesRead).toBe(0);
     expect(scanned.matches).toEqual([]);
   });
+
+  test("a scan with no needle, or an empty one, is refused rather than matching everything", () => {
+    const tree = scanTree("scan-needles", { a: "abc" });
+    expect(() => containing(tree, [])).toThrow(/at least one needle/);
+    expect(() => containing(tree, [new Uint8Array(0)])).toThrow(
+      /none may be empty/,
+    );
+  });
 });
 
 describe("the verdict and the output line", () => {
-  const all = requiredChecks.map((name) => ({ name, ok: true }));
+  const phases = Object.keys(requiredChecks) as Phase[];
+  const allOf = (phase: Phase) =>
+    requiredChecks[phase].map((name) => ({ name, ok: true }));
 
-  test("PASSED needs every required check, all ok, and no other failure", () => {
-    expect(verdict(all, requiredChecks)).toBe("PASSED");
-    expect(verdict([], requiredChecks)).toBe("FAILED");
-    expect(verdict([{ name: "x", ok: true }], ["x"])).toBe("PASSED");
-    expect(verdict(all, requiredChecks, ["error"])).toBe("FAILED");
-    expect(
-      verdict([...all, { name: "extra", ok: false }], requiredChecks),
-    ).toBe("FAILED");
-  });
-
-  test("a required check that is missing, or failed, or failed once of two, is FAILED", () => {
-    for (const name of requiredChecks) {
+  test("PASSED needs every check its phase requires, all ok, and no other failure", () => {
+    for (const phase of phases) {
+      expect(verdict(phase, allOf(phase))).toBe("PASSED");
+      expect(verdict(phase, [])).toBe("FAILED");
+      expect(verdict(phase, allOf(phase), ["error"])).toBe("FAILED");
       expect(
-        verdict(
-          all.filter((c) => c.name !== name),
-          requiredChecks,
-        ),
+        verdict(phase, [...allOf(phase), { name: "extra", ok: false }]),
       ).toBe("FAILED");
-      expect(
-        verdict(
-          all.map((c) => (c.name === name ? { ...c, ok: false } : c)),
-          requiredChecks,
-        ),
-      ).toBe("FAILED");
-      expect(verdict([...all, { name, ok: false }], requiredChecks)).toBe(
-        "FAILED",
-      );
     }
   });
 
-  test("a verdict that requires nothing proves nothing", () => {
-    expect(verdict(all, [])).toBe("FAILED");
+  test("a required check that is missing, or failed, or failed once of two, is FAILED", () => {
+    for (const phase of phases)
+      for (const name of requiredChecks[phase]) {
+        const checks = allOf(phase);
+        expect(
+          verdict(
+            phase,
+            checks.filter((c) => c.name !== name),
+          ),
+        ).toBe("FAILED");
+        expect(
+          verdict(
+            phase,
+            checks.map((c) => (c.name === name ? { ...c, ok: false } : c)),
+          ),
+        ).toBe("FAILED");
+        expect(verdict(phase, [...checks, { name, ok: false }])).toBe("FAILED");
+      }
+  });
+
+  test("ok must be true itself: a string or a number is not a pass, required or not", () => {
+    const checks = allOf("seal");
+    for (const ok of [
+      "false",
+      "true",
+      1,
+      "",
+      null,
+      {},
+    ] as unknown as boolean[]) {
+      expect(verdict("seal", [...checks, { name: "extra", ok }])).toBe(
+        "FAILED",
+      );
+      expect(
+        verdict(
+          "seal",
+          checks.map((c, i) => (i === 0 ? { ...c, ok } : c)),
+        ),
+      ).toBe("FAILED");
+    }
+  });
+
+  test("a phase that is not one of the five is FAILED, never PASSED", () => {
+    expect(verdict("nonsense" as Phase, allOf("seal"))).toBe("FAILED");
+  });
+
+  test("the unseal phase after the reboot requires the boot-id proof, and the seal phase does not", () => {
+    expect(requiredChecks.unseal).toContain("boot-id-differs-from-seal");
+    expect(requiredChecks.seal).not.toContain("boot-id-differs-from-seal");
+    const withoutBoot = allOf("unseal").filter(
+      (c) => c.name !== "boot-id-differs-from-seal",
+    );
+    expect(verdict("unseal", withoutBoot)).toBe("FAILED");
+    expect(verdict("seal", allOf("seal"))).toBe("PASSED");
+  });
+
+  test("each phase's list holds the (a29) and T26 rows it owes, and the unseal phase holds all of the seal phase's", () => {
+    const owed: Record<Phase, string[]> = {
+      facts: ["effective-groups-recorded", "tpm-device-present"],
+      deliver: [
+        "run-directory-is-ruled-literal-path",
+        "binaries-sha256-match-both-ends",
+      ],
+      seal: [
+        "run-directory-is-ruled-literal-path",
+        "tcti-is-device-tpmrm0",
+        "synthetic-key-only",
+        "no-persistent-handles",
+        "handle-lists-unchanged",
+        "real-ward-untouched",
+        "effective-groups-recorded",
+        "session-printout-decrypt-encrypt",
+        "session-printout-is-the-unseal-session",
+        "key-not-in-argv-environment-or-temp-file",
+        "secret-scan-clean",
+      ],
+      unseal: ["handle-lists-unchanged", "unseal-matches-sealed"],
+      clean: ["run-directory-is-ruled-literal-path", "run-directory-removed"],
+    };
+    for (const phase of phases)
+      for (const name of owed[phase])
+        expect(requiredChecks[phase]).toContain(name);
+    for (const name of requiredChecks.seal)
+      expect(requiredChecks.unseal).toContain(name);
+    for (const phase of phases)
+      expect(new Set(requiredChecks[phase]).size).toBe(
+        requiredChecks[phase].length,
+      );
+  });
+
+  test("no check name claims the wire was measured (a29 Q1)", () => {
+    for (const phase of phases)
+      for (const name of requiredChecks[phase])
+        expect(name).not.toMatch(/wire|on-the-wire|bus-encrypt|measured/i);
   });
 
   test("the last JSON line is read, and anything else is an empty object", () => {
@@ -394,3 +640,26 @@ describe("the verdict and the output line", () => {
 //   R16 the volatile list drops /run                                                   -> "a home that sits on a volatile path refuses, each of them" only
 //   R17 diffHandles stops comparing the loaded-session list (the old U3)               -> "identical lists show no movement, and each list that moved is named"
 // OBSERVED (round 2, bun 1.3.14, 2026-11-18; the predictions above are unchanged, the divergences are noted here). R1, R3-R6, R8-R12 and R14-R17 went red on exactly their predicted test(s). Divergences: R2 also reddened "a symlinked run directory, a non-directory, and a symlinked home are refused" (a name-only check accepts the symlinked-home case) and "the real home's store is never a target..." (the prediction that it stays green was wrong: a name-only check accepts ~/.ward/ward-t26-wcli21). R7 also reddened "PASSED needs every required check, all ok, and no other failure" (its missing-name case). R13 also reddened "a value is found as is, in base64 and in hex..." (the as-is form is the raw-bytes form). No mutant survived; the driver is a scratch script, not committed.
+
+// MUTANT REGISTER, WCLI-21 slice 4a-1 round 3 (the #358 round-2 verdict: B1, N1, N2, N6, N7, N8, N9), written BEFORE any run of it. Bun 1.3.14 on each observation. Each mutant is applied to scripts/qualify-linux-support.ts as fixed in this round. Predictions name the red test(s); "only" means no other test goes red.
+//   R18 parseState drops the boot-id UUID shape test                                  -> "a boot id that is not a lowercase UUID is refused..." only
+//   R19 parseState drops the sealedAt ISO shape test (keeps the Date.parse test)      -> "a seal time that is not an ISO 8601 UTC timestamp is refused" only
+//   R20 parseState drops the sealedAt Date.parse NaN test (keeps the shape test)      -> "a seal time that is not an ISO 8601 UTC timestamp is refused" only (the 2026-13-45T99:99:99Z case)
+//   R21 requiredChecks.unseal drops "boot-id-differs-from-seal"                       -> "the unseal phase after the reboot requires the boot-id proof, and the seal phase does not" only
+//   R22 verdict reads requiredChecks.seal for every phase                             -> "PASSED needs every check its phase requires...", "a required check that is missing, or failed, or failed once of two, is FAILED"
+//   R23 verdict drops the required !== undefined guard                                -> "a phase that is not one of the five is FAILED, never PASSED" only (it throws)
+//   R24 verdict reads check.ok truthily in the per-name map                           -> "ok must be true itself: a string or a number is not a pass, required or not" only
+//   R25 verdict reads check.ok truthily in the checks.every clause                    -> "ok must be true itself: a string or a number is not a pass, required or not" only
+//   R26 assertRunDirectory compares each volatile root as written only (no realpath)  -> "a volatile root that is itself a symlink still catches a home under its target" only
+//   R27 realpathOrAbsent falls back to the lexical path on any error                  -> "a volatile root that is itself a symlink..." only (the loop root)
+//   R28 assertRunDirectory falls back to resolve(home) when the home does not resolve -> "a home that does not resolve (missing, dangling, looping) is refused, not read lexically" only
+//   R29 wideMode masks with 0o777 instead of 0o7777                                   -> "setuid, setgid and sticky bits are named, not masked off" only
+//   R30 currentUid returns 0 instead of refusing when the host gives no uid           -> "a host that gives no uid refuses the check..." only
+//   R31 the scan searches base64 at alignment 0 only                                  -> "base64 is found inside a longer stream at each of the three alignments" only
+//   R32 the scan drops the uppercase hex form                                         -> "base64url, uppercase hex and padded base64 are found, and a near miss is not" only
+//   R33 the scan drops the base64url form                                             -> "base64url, uppercase hex and padded base64 are found, and a near miss is not" only
+//   R34 the scan keeps the "=" padding on base64 forms                                -> "base64 is found inside a longer stream at each of the three alignments" only
+//   R35 containing drops the empty-needle refusal                                     -> "a scan with no needle, or an empty one, is refused rather than matching everything" only
+//   R36 a check name claiming the wire was measured joins the seal and unseal lists   -> "no check name claims the wire was measured (a29 Q1)" only
+//   R37 verdict drops the required.length > 0 clause                                  -> NONE: an equivalent mutant now, because every phase's list is a non-empty constant; registered so the survival is predicted, not discovered
+//   R38 the volatile list drops /dev/shm                                              -> "the volatile roots are the four a reboot clears, plus the tmpdir" only
