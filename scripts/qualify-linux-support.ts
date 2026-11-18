@@ -385,16 +385,11 @@ export function verdict(
   extraFailures: readonly string[] = [],
 ): "PASSED" | "FAILED" {
   const required = requiredChecks[phase];
-  const present = new Map<string, boolean>();
-  for (const check of checks)
-    present.set(
-      check.name,
-      (present.get(check.name) ?? true) && check.ok === true,
-    );
+  const named = new Set(checks.map((check) => check.name));
   return required !== undefined &&
     required.length > 0 &&
-    required.every((name) => present.get(name) === true) &&
-    checks.every((c) => c.ok === true) &&
+    required.every((name) => named.has(name)) &&
+    checks.every((check) => check.ok === true) &&
     extraFailures.length === 0
     ? "PASSED"
     : "FAILED";
