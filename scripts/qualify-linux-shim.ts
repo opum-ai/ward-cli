@@ -35,12 +35,11 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 // (PWD, OLDPWD, SHLVL, and _ , which bash sets for every command), with values
 // that are not the harness's to predict and that differ between shells, so the
 // script unsets them and runs both its own listing and the real tool through
-// /usr/bin/env -u for each of them. Those four names are a deliberate, explicit
-// exception: the tool sees the environment the adapter built (the adapter's four
-// variables, pinned by key set in test/tpm2-tools.test.ts) minus whatever a
-// shell would have added under those four names, and no other name is stripped or
-// allowed. A value the adapter never builds under one of the four would be
-// stripped unseen; that residual is for opum-doc to accept. It records the call (the name, the TCTI the environment
+// /usr/bin/env -u for each of them. DEC-262 (a31): _, SHLVL, PWD and OLDPWD are
+// accepted as a stated limit of (a30). The compensating control is the exact
+// toolEnvironment key-set pin (LANG, LC_ALL, PATH, TPM2TOOLS_TCTI) in
+// test/tpm2-tools.test.ts, red on any other name. The T26 report and ADR 0028
+// name the four and the pin. It records the call (the name, the TCTI the environment
 // carried, the NAME of every environment variable with the sha256 of its value,
 // each argument), then runs the real tool by the absolute path detection
 // resolved. Stdin is untouched and is never logged. Stdout is never logged
