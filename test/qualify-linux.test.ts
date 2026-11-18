@@ -15,8 +15,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import {
   assertRunDirectory,
   bootIdChanged,
@@ -383,13 +385,19 @@ describe("the synthetic key and the run state", () => {
       );
   });
 
-  test("the scan looks for the key and for the nonce it is derived from", () => {
-    const needles = secretNeedles("a-nonce");
-    expect(needles.length).toBe(2);
+  test("a nonce that is not 64 lowercase hex characters gives no needles", () => {
+    for (const bad of ["", "a-nonce", nonceA.slice(1), nonceA.toUpperCase()])
+      expect(() => secretNeedles(bad)).toThrow(/64 lowercase hex/);
+  });
+
+  test("the scan looks for the key, the nonce and the nonce's decoded bytes", () => {
+    const needles = secretNeedles(nonceA);
+    expect(needles.length).toBe(3);
     expect(
-      Buffer.from(needles[0] as Uint8Array).equals(deriveKey("a-nonce")),
+      Buffer.from(needles[0] as Uint8Array).equals(deriveKey(nonceA)),
     ).toBe(true);
-    expect(Buffer.from(needles[1] as Uint8Array).toString()).toBe("a-nonce");
+    expect(Buffer.from(needles[1] as Uint8Array).toString()).toBe(nonceA);
+    expect(Buffer.from(needles[2] as Uint8Array).toString("hex")).toBe(nonceA);
   });
 });
 
@@ -492,15 +500,18 @@ describe("the scan for a secret", () => {
   });
 
   test("raw key bytes are found, and several needles are all searched", () => {
-    const key = deriveKey("scan-nonce");
+    const key = deriveKey(nonceA);
     const tree = scanTree("scan-raw", {
       raw: Buffer.concat([Buffer.from("pre"), key]),
-      nonce: "scan-nonce",
+      nonce: nonceA,
+      decoded: Buffer.concat([Buffer.from("pre"), Buffer.from(nonceA, "hex")]),
       clean: "nothing",
     });
-    expect(
-      containing(tree, secretNeedles("scan-nonce")).matches.sort(),
-    ).toEqual(["nonce", "raw"]);
+    expect(containing(tree, secretNeedles(nonceA)).matches.sort()).toEqual([
+      "decoded",
+      "nonce",
+      "raw",
+    ]);
   });
 
   test("base64 is found inside a longer stream at each of the three alignments", () => {
@@ -562,28 +573,75 @@ describe("the scan for a secret", () => {
     ).not.toThrow();
   });
 
+  // The fixtures below are the output of the real printers, not typed by hand:
+  // Bun.inspect and util.inspect differ (util.inspect pads each entry to a
+  // common width and wraps the array over lines, measured on Bun 1.3.14), and od
+  // is run as a child.
   test("a byte array printed as decimals, and hex printed with a separator, are found", () => {
-    const key = deriveKey("printed");
+    // deriveKey hands back a Buffer, which inspects as hex: the Uint8Array copy
+    // is what prints as a decimal list.
+    const key = Uint8Array.from(deriveKey("printed"));
     const decimals = [...key];
-    const hex = Buffer.from(key).toString("hex");
-    const pairs = hex.match(/../g) as string[];
+    const pairs = Buffer.from(key).toString("hex").match(/../g) as string[];
+    // Entries of one, two and three digits, so util.inspect actually pads.
+    expect(new Set(decimals.map((d) => String(d).length)).size).toBeGreaterThan(
+      1,
+    );
+    const od = Bun.spawnSync(["od", "-An", "-tx1", "-v"], {
+      stdin: Buffer.from(key),
+    });
+    expect(od.exitCode).toBe(0);
     const tree = scanTree("scan-printed", {
       json: JSON.stringify(Buffer.from(key)),
-      console: `Uint8Array(32) [ ${decimals.join(", ")} ]`,
+      bunInspect: Bun.inspect(key),
+      utilInspect: inspect(key),
+      bufferInspect: inspect(Buffer.from(key)),
+      od: od.stdout.toString(),
+      xxdPerByte: `${pairs.join("\n")}\n`,
       spaced: decimals.join(" "),
-      od: ` ${pairs.join(" ")}\n`,
       colon: pairs.join(":").toUpperCase(),
       dash: pairs.join("-"),
       clean: decimals.slice(0, 31).join(", "),
     });
+    expect(inspect(key)).toContain("\n");
+    expect(od.stdout.toString()).toContain("\n");
     expect(containing(tree, [key]).matches.sort()).toEqual([
+      "bufferInspect",
+      "bunInspect",
       "colon",
-      "console",
       "dash",
       "json",
       "od",
       "spaced",
+      "utilInspect",
+      "xxdPerByte",
     ]);
+  });
+
+  test("a FIFO under the tree is refused, not skipped or read", () => {
+    const tree = scanTree("scan-fifo", { a: "abc" });
+    const made = Bun.spawnSync(["mkfifo", join(tree, "pipe")]);
+    expect(made.exitCode).toBe(0);
+    expect(() => containing(tree, [enc("needle-xx")])).toThrow(
+      /cannot read pipe/,
+    );
+  });
+
+  test("a socket under the tree is refused, not skipped", async () => {
+    // A unix socket path is short-limited, so this one lives under /tmp.
+    const dir = mkdtempSync("/tmp/wq-");
+    const server = createServer();
+    try {
+      await new Promise<void>((resolve) =>
+        server.listen(join(dir, "s"), resolve),
+      );
+      expect(() => containing(dir, [enc("needle-xx")])).toThrow(
+        /cannot read s: it is not a file/,
+      );
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("a symlinked directory is not followed, so a file outside the tree is not scanned", () => {
@@ -796,3 +854,11 @@ describe("the verdict and the output line", () => {
 //   R49 the walker stats symlinks and reads what they point at                        -> "a symlinked directory is not followed, so a file outside the tree is not scanned" only
 //   R50 modeProblems drops the hard-link count check                                  -> "a file with a second hard link is named" only
 // OBSERVED (round 4, bun 1.3.14, 2026-11-18; predictions above unchanged). R39-R50 each went red on exactly their one predicted test and no other; no mutant survived and no prediction diverged. Measured on the way, on Bun 1.3.14: Date.parse("2026-02-30T00:00:00Z") returns the March 2 instant instead of NaN, so the timestamp check needs its round trip (R44); readdirSync recursive lists the entries under a symlinked directory ("link", "link/f"), so the scan walks the tree itself and does not follow links (R49). During the work a near-miss fixture that flipped the last byte of an 11-byte needle still matched: its flipped bit sits in the dropped partial base64 character, so the fixture now flips a middle byte.
+
+// MUTANT REGISTER, WCLI-21 slice 4a-2a module fixes (round-4 findings 1-4 of #358), written BEFORE any run of it. Bun 1.3.14 on each observation. Each mutant is applied to scripts/qualify-linux-support.ts. "only" means no other test goes red.
+// Finding 1 is met by reading a whitespace run as one space (an od -An -tx1 listing and util.inspect's padded, wrapped array both match), not by adding newline separators; its mutant is R51.
+//   R51 containing searches the raw bytes only, not the whitespace-collapsed copy      -> "a byte array printed as decimals, and hex printed with a separator, are found" only (the utilInspect, od and xxdPerByte fixtures)
+//   R52 secretNeedles drops the nonce's decoded bytes                                  -> "the scan looks for the key, the nonce and the nonce's decoded bytes", "raw key bytes are found, and several needles are all searched"
+//   R53 secretNeedles stops refusing a nonce that is not 64 lowercase hex              -> "a nonce that is not 64 lowercase hex characters gives no needles" only
+//   R54 the walker skips a FIFO, a socket or a device in silence instead of throwing   -> "a FIFO under the tree is refused, not skipped or read", "a socket under the tree is refused, not skipped"
+// NOT TESTABLE, said here rather than left implicit: the lstat fallback for a directory entry that names no kind (DT_UNKNOWN) cannot be produced on this host or in CI, so it has no test and no mutant; the fixtures are the output of the real printers (Bun.inspect, util.inspect, od run as a child), and "xxdPerByte" is built by hand in xxd -p -c1's documented one-pair-per-line shape because xxd is not installed everywhere.
