@@ -275,44 +275,12 @@ export interface ToolCall {
   readonly stdout?: string;
 }
 
-// An interposer for one tool: it records the call (the name, the TCTI the
-// environment carried, each argument) and then runs the real tool by absolute
-// path. Stdin is untouched and no stdout is recorded, except for the one tool
-// whose output is a non-secret printout. An argument holding a newline would
-// forge a log line, so it stops the call.
-export function interposerScript(
-  tool: string,
-  realTool: string,
-  logPath: string,
-  recordStdout: boolean,
-): string {
-  for (const value of [tool, realTool, logPath])
-    if (/[^A-Za-z0-9_./-]/.test(value))
-      throw new Error("an interposer path is letters, digits and _ . / -");
-  const head = [
-    "#!/bin/sh",
-    'for a in "$@"; do case $a in *\'',
-    "'*) exit 97;; esac; done",
-    "{",
-    `  printf 'CALL %s\\n' '${tool}'`,
-    "  printf 'TCTI %s\\n' \"$TPM2TOOLS_TCTI\"",
-    '  for a in "$@"; do printf \'ARG %s\\n\' "$a"; done',
-    "  printf 'END\\n'",
-    `} >> '${logPath}'`,
-  ];
-  const run = recordStdout
-    ? [
-        `out=$('${realTool}' "$@"); rc=$?`,
-        "printf '%s\\n' \"$out\"",
-        `{ printf 'OUT-BEGIN\\n%s\\nOUT-END\\nRC %s\\nDONE\\n' "$out" "$rc"; } >> '${logPath}'`,
-        'exit "$rc"',
-      ]
-    : [`exec '${realTool}' "$@"`];
-  return `${[...head, ...run].join("\n")}\n`;
-}
-
-// The log back into calls. A line that is not part of the format is a refusal:
-// a log that cannot be read whole is not evidence.
+// The log back into calls. The format (CALL, TCTI, ARG lines, END, and for one
+// tool an OUT-BEGIN/OUT-END block with RC and DONE) is the one the proposed tool
+// interposer would write; the interposer itself is NOT in this slice, and the
+// format awaits opum-doc's ruling on the measurement method (DEC-262 a29). A
+// line that is not part of the format is a refusal: a log that cannot be read
+// whole is not evidence.
 export function parseToolLog(text: string): ToolCall[] {
   const calls: ToolCall[] = [];
   const lines = text.split("\n");

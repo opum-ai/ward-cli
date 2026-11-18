@@ -1,7 +1,8 @@
 // WCLI-21 slice 4a-2a: how each row of the Linux T26 harness is decided, and the
 // helpers that touch only the directories they are handed. Nothing here reaches
-// a TPM: the tool interposer is run against a fake tool, and the session rows
-// are decided from logs written in the shape the interposer writes.
+// a TPM: the session, TCTI and scan rows are decided from logs written in the
+// format the proposed tool interposer would write. The interposer is not in this
+// slice and the format awaits opum-doc's ruling.
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
@@ -25,7 +26,6 @@ import {
   createRunDirectory,
   groupsRow,
   handleListsRow,
-  interposerScript,
   keyRows,
   noPersistentHandlesRow,
   parseToolLog,
@@ -443,99 +443,6 @@ describe("the key rows", () => {
   });
 });
 
-describe("the tool interposer, run against a fake tool", () => {
-  const shell = (
-    script: string,
-    args: string[],
-    input = "",
-    env: Record<string, string> = {},
-  ) =>
-    Bun.spawnSync(["/bin/sh", script, ...args], {
-      stdin: Buffer.from(input),
-      env: { PATH: "/usr/bin:/bin", ...env },
-    });
-  const fixture = (name: string, body: string) => {
-    const dir = makeDir(name);
-    const fake = join(dir, "fake-tool");
-    writeFileSync(fake, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
-    chmodSync(fake, 0o700);
-    return {
-      dir,
-      fake,
-      log: join(dir, "tools.log"),
-      wrapper: join(dir, "wrapper"),
-    };
-  };
-  const install = (
-    f: { fake: string; log: string; wrapper: string },
-    tool: string,
-    record: boolean,
-  ) =>
-    writeFileSync(f.wrapper, interposerScript(tool, f.fake, f.log, record), {
-      mode: 0o700,
-    });
-
-  test("it records the call, passes stdin through, and records no stdout, and the tool's exit code survives", () => {
-    const f = fixture(
-      "interpose",
-      'cat > "$(dirname "$0")/got-stdin"; echo to-stdout; exit 3',
-    );
-    install(f, "tpm2_create", false);
-    const run = shell(f.wrapper, ["-u", "a b", "-Q"], "the-secret-key-bytes", {
-      TPM2TOOLS_TCTI: ruledTcti,
-    });
-    expect(run.exitCode).toBe(3);
-    expect(run.stdout.toString()).toBe("to-stdout\n");
-    expect(readFileSync(join(f.dir, "got-stdin"), "utf8")).toBe(
-      "the-secret-key-bytes",
-    );
-    const log = readFileSync(f.log, "utf8");
-    expect(log).not.toContain("the-secret-key-bytes");
-    expect(log).not.toContain("to-stdout");
-    expect(parseToolLog(log)).toEqual([
-      { tool: "tpm2_create", tcti: ruledTcti, args: ["-u", "a b", "-Q"] },
-    ]);
-  });
-
-  test("a tool whose stdout is a printout has it recorded, and its exit code still survives", () => {
-    const f = fixture(
-      "interpose-out",
-      'printf "Session-Handle: 0x1\\nSession-Attributes: continuesession|decrypt|encrypt\\n"; exit 0',
-    );
-    install(f, "tpm2_sessionconfig", true);
-    const run = shell(f.wrapper, ["s.ctx"], "", { TPM2TOOLS_TCTI: ruledTcti });
-    expect(run.exitCode).toBe(0);
-    expect(run.stdout.toString()).toContain("decrypt|encrypt");
-    const calls = parseToolLog(readFileSync(f.log, "utf8"));
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.stdout).toContain(
-      "Session-Attributes: continuesession|decrypt|encrypt",
-    );
-    const failing = fixture("interpose-fail", "echo oops; exit 5");
-    install(failing, "tpm2_sessionconfig", true);
-    expect(shell(failing.wrapper, ["s"], "", {}).exitCode).toBe(5);
-  });
-
-  test("an argument that holds a newline stops the call before anything runs or is logged", () => {
-    const f = fixture("interpose-newline", 'touch "$(dirname "$0")/ran"');
-    install(f, "tpm2_load", false);
-    const run = shell(f.wrapper, ["a\nCALL forged"]);
-    expect(run.exitCode).toBe(97);
-    expect(existsSync(join(f.dir, "ran"))).toBe(false);
-    expect(existsSync(f.log)).toBe(false);
-  });
-
-  test("the script is refused for a path or a tool name outside letters, digits and _ . / -", () => {
-    for (const bad of ["a b", "a'b", "a;b", "$x", "a\nb"]) {
-      expect(() =>
-        interposerScript(bad, "/bin/true", "/x/log", false),
-      ).toThrow();
-      expect(() => interposerScript("t", bad, "/x/log", false)).toThrow();
-      expect(() => interposerScript("t", "/bin/true", bad, false)).toThrow();
-    }
-  });
-});
-
 describe("the tool log parser", () => {
   test("each way of being malformed is refused", () => {
     for (const text of [
@@ -793,3 +700,5 @@ describe("the private-directory row", () => {
 //   M26 (qualify-linux-support.ts) the deliver list drops real-ward-untouched           -> "each phase's list holds the (a29) and T26 rows it owes..." only
 //   M27 (qualify-linux-support.ts) assertRunDirectory drops the .ward-component refusal -> "is refused even when the literal path would otherwise be right" only
 // OBSERVED (slice 4a-2a, bun 1.3.14, 2026-11-18; the predictions above are unchanged, the divergences are noted here). M1-M7, M9, M11-M16 and M18-M27 went red on exactly their predicted test(s) on the first run. Divergences: M8 SURVIVED (dropping the inode): replacing a file also moves the directory's mtime, so the step was already detected without the inode; the replacement step now pins the file's and the directory's mtime back to a fixed instant, so only the inode can tell, and M8 then went red on the predicted test only. M10 on its first run only counted as red because the mutant used readFileSync, which that module does not import, so every test threw; it was re-run reading through require("node:fs") and went red on the predicted test only. M17's first pattern matched nothing (the formatter had changed the quoting) and ran nothing; it was re-run and went red on the predicted test only. M4 reddened both predicted tests; M5, M6, M7 reddened both predicted tests; no mutant reddened a test outside its prediction.
+// OBSERVED (slice 4a-2a, scope): M17 and M18 above name the tool interposer's script generator and its tests, which were built and measured on the parked 4a-2 branch (all 27 mutants, M17 and M18 included, went red on their predicted tests there) and are NOT carried into this slice: the leader withheld the interposer pending opum-doc's ruling on the measurement method (DEC-262 a29). On this branch M17 and M18 have no code to mutate and are withdrawn; the parser and the session, TCTI and scan rows that read the interposer's format stay, with the format noted as awaiting the ruling.
+// OBSERVED (slice 4a-2a, final tree, bun 1.3.14, 2026-11-18): M1-M16 and M19-M27 were re-run on this branch's tree after the interposer was removed and each went red on its predicted test(s) as recorded above; none survived.
