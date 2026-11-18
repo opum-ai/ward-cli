@@ -331,7 +331,7 @@ describe("the environment row", () => {
   });
 
   test("a name outside the four never reaches the row, and a call must carry exactly the four, once each, with their digests", () => {
-    const hex = `abcdef${deriveKey(nonce).toString("hex").slice(6)}`;
+    const hex = `abcdef${Buffer.from(deriveKey(nonce)).toString("hex").slice(6)}`;
     const row = envRow(
       [callWith({ ...good, [hex]: "1" })],
       "/run/interposers",
@@ -377,7 +377,7 @@ describe("the environment row", () => {
   });
 
   test("a variable whose value holds a newline puts nothing of its continuation in the log or the row, whatever the continuation looks like", () => {
-    const key = deriveKey(nonce);
+    const key = Buffer.from(deriveKey(nonce));
     const continuations = [
       `abcdef${key.toString("hex").slice(6)}`,
       `abcdef${key.toString("hex").slice(6)}=tail`,
