@@ -873,11 +873,33 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     expect(env.TPM2TOOLS_TCTI).toBe(`device:${DEVICE}`);
     expect(env.LANG).toBe("C");
     expect(env.LC_ALL).toBe("C");
+    // The key set (WCLI-21 #367 review N1). The fake's shell adds PWD, SHLVL and _
+    // of its own, so the exact set is pinned against the adapter's source below
+    // and the child's names are pinned modulo those three.
+    expect(
+      Object.keys(env)
+        .filter((name) => !["_", "SHLVL", "PWD", "OLDPWD"].includes(name))
+        .sort(),
+    ).toEqual(["LANG", "LC_ALL", "PATH", "TPM2TOOLS_TCTI"]);
     expect(env).not.toHaveProperty(key);
     expect(env).not.toHaveProperty("HOME");
     expect(
       Object.keys(env).filter((name) => /^(LD_|DYLD_)/.test(name)),
     ).toEqual([]);
+  });
+
+  test("the adapter builds exactly four environment variables, by the names in its source", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "../src/adapters/tpm2-tools.ts"),
+      "utf8",
+    );
+    const body = /function toolEnvironment\([\s\S]*?\n}\n/.exec(source)?.[0];
+    expect(body).toBeDefined();
+    const returned = /return \{([\s\S]*?)\n  \};/.exec(body ?? "")?.[1] ?? "";
+    const names = [...returned.matchAll(/^ {4}([A-Za-z0-9_]+):/gm)].map(
+      (m) => m[1],
+    );
+    expect(names.sort()).toEqual(["LANG", "LC_ALL", "PATH", "TPM2TOOLS_TCTI"]);
   });
 
   test("stdin carries bytes to the tool and argv carries none of them", async () => {

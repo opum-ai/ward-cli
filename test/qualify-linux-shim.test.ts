@@ -7,6 +7,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  readdirSync,
+  truncateSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -193,8 +195,11 @@ describe("the interposer script", () => {
         expect((call?.stdout ?? "").replace(/\n+$/, "")).toBe(
           bytes.toString().replace(/\n+$/, ""),
         );
-        // The capture file is removed.
-        expect(existsSync(`${log}.out.1`)).toBe(false);
+        // The capture file is removed: nothing but the interposer, the fake
+        // tool's files and the log is left beside it.
+        expect(
+          readdirSync(dir).filter((f) => f.startsWith("tools.log.out")),
+        ).toEqual([]);
       }
   });
 });
@@ -325,6 +330,138 @@ describe("the environment row", () => {
     expect(JSON.stringify(row.detail)).toContain("sha256");
   });
 
+  test("a name outside the four never reaches the row, and a call must carry exactly the four, once each, with their digests", () => {
+    const hex = `abcdef${deriveKey(nonce).toString("hex").slice(6)}`;
+    const row = envRow(
+      [callWith({ ...good, [hex]: "1" })],
+      "/run/interposers",
+      forms,
+    );
+    expect(row.ok).toBe(false);
+    expect(JSON.stringify(row)).not.toContain(hex);
+    expect((row.detail as { unexpected: number }).unexpected).toBe(1);
+    // A missing name, a repeated name, and a wrong digest each fail on their own.
+    const call = callWith(good);
+    const env = call.env as { name: string; digest: string }[];
+    expect(
+      envRow([{ ...call, env: env.slice(1) }], "/run/interposers", forms).ok,
+    ).toBe(false);
+    expect(
+      envRow(
+        [{ ...call, env: [...env, ...env.slice(0, 1)] }],
+        "/run/interposers",
+        forms,
+      ).ok,
+    ).toBe(false);
+    expect(
+      envRow(
+        [
+          {
+            ...call,
+            env: env.map((e) =>
+              e.name === "LANG"
+                ? { ...e, digest: sha256(Buffer.from("x")) }
+                : e,
+            ),
+          },
+        ],
+        "/run/interposers",
+        forms,
+      ).ok,
+    ).toBe(false);
+    // A good call beside a bad one fails: every call is judged.
+    expect(
+      envRow([call, { ...call, env: env.slice(1) }], "/run/interposers", forms)
+        .ok,
+    ).toBe(false);
+  });
+
+  test("a variable whose value holds a newline puts nothing of its continuation in the log or the row, whatever the continuation looks like", () => {
+    const key = deriveKey(nonce);
+    const continuations = [
+      `abcdef${key.toString("hex").slice(6)}`,
+      `abcdef${key.toString("hex").slice(6)}=tail`,
+      key.toString("base64"),
+      "just text with no equals",
+    ];
+    for (const continuation of continuations) {
+      const dir = fresh("env");
+      const log = join(dir, "tools.log");
+      writeFileSync(log, "", { mode: 0o600 });
+      const script = join(dir, "tpm2_load");
+      writeFileSync(
+        script,
+        interposerScript("tpm2_load", "/usr/bin/env", log, false),
+        { mode: 0o700 },
+      );
+      const result = run(script, [], {
+        ...expectedEnvironment(dir),
+        ZZ_SPLIT: `x\n${continuation}`,
+      });
+      expect(result.code).toBe(0);
+      const text = readFileSync(log, "utf8");
+      expect(text).not.toContain(continuation);
+      expect(text).toContain("ENV-SPLIT");
+      // The parser refuses the log, so no row is ever built from it ...
+      expect(() => parseToolLog(text)).toThrow(/malformed/);
+      // ... and a row built from a hand-made call would not carry it either.
+      const forged: ToolCall = {
+        tool: "tpm2_load",
+        tcti: ruledTcti,
+        args: [],
+        env: [
+          {
+            name: continuation.split("=")[0] as string,
+            digest: "0".repeat(64),
+          },
+        ],
+      };
+      const row = envRow([forged], dir, forms);
+      expect(row.ok).toBe(false);
+      expect(JSON.stringify(row)).not.toContain(
+        continuation.split("=")[0] as string,
+      );
+    }
+  });
+
+  test("a clean environment writes no split marker, and a TCTI holding a newline stops the call", () => {
+    const dir = fresh("env");
+    const log = join(dir, "tools.log");
+    writeFileSync(log, "", { mode: 0o600 });
+    const script = join(dir, "tpm2_load");
+    writeFileSync(
+      script,
+      interposerScript("tpm2_load", "/usr/bin/env", log, false),
+      { mode: 0o700 },
+    );
+    expect(run(script, [], expectedEnvironment(dir)).code).toBe(0);
+    expect(readFileSync(log, "utf8")).not.toContain("ENV-SPLIT");
+    const stopped = run(script, [], {
+      ...expectedEnvironment(dir),
+      TPM2TOOLS_TCTI: "device:/dev/tpmrm0\nCALL tpm2_unseal",
+    });
+    expect(stopped.code).toBe(97);
+  });
+
+  test("a call that cannot be logged does not run: the interposer exits 98 and the tool never starts", () => {
+    for (const recordStdout of [false, true]) {
+      const dir = fresh("env");
+      const marker = join(dir, "ran");
+      const tool = join(dir, "fake-tool");
+      writeFileSync(tool, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o700 });
+      const log = join(dir, "no-such-dir", "tools.log");
+      const script = join(dir, "tpm2_load");
+      writeFileSync(
+        script,
+        interposerScript("tpm2_load", tool, log, recordStdout),
+        { mode: 0o700 },
+      );
+      const result = run(script, [], expectedEnvironment(dir));
+      expect(result.code).toBe(98);
+      expect(existsSync(marker)).toBe(false);
+    }
+  });
+
   test("an expected value that holds a raw, hex or base64 form of the key fails the row, whatever the digests say", () => {
     const key = Buffer.from(deriveKey(nonce));
     const seeded = [
@@ -429,14 +566,17 @@ describe("the environment row", () => {
     expect(envRow([callWith(good)], "/other", forms).ok).toBe(false);
   });
 
-  test("the row's detail carries names and counts, never a value", () => {
+  test("the row's detail carries the four names and counts, never a value or an unexpected name", () => {
     const row = envRow(
       [callWith({ ...good, SECRET_NAME_ONLY: "value-that-must-not-appear" })],
       "/run/interposers",
       forms,
     );
     expect(JSON.stringify(row)).not.toContain("value-that-must-not-appear");
-    expect(JSON.stringify(row.detail)).toContain("SECRET_NAME_ONLY");
+    // An unexpected name is counted, never written (a split value can put part of
+    // a key where a name goes).
+    expect(JSON.stringify(row.detail)).not.toContain("SECRET_NAME_ONLY");
+    expect((row.detail as { unexpected: number }).unexpected).toBe(1);
   });
 
   test("a real interposed call under the adapter's environment passes the row end to end", () => {
@@ -573,8 +713,25 @@ describe("the window rows", () => {
     expect(
       windowRow(w.before, w.after, { ...w.scan, filesRead: 0 }, [dir]).ok,
     ).toBe(false);
+    // Counts that add up but name another path: accounted by path, not by number.
     expect(
-      windowRow(w.before, w.after, { ...w.scan, filesRead: 2 }, [dir]).ok,
+      windowRow(
+        w.before,
+        w.after,
+        { ...w.scan, accounted: [join(dir, "other")] },
+        [dir],
+      ).ok,
+    ).toBe(false);
+    expect(
+      windowRow(
+        w.before,
+        w.after,
+        { ...w.scan, accounted: [...w.scan.accounted, join(dir, "extra")] },
+        [dir],
+      ).ok,
+    ).toBe(false);
+    expect(
+      windowRow(w.before, w.after, { ...w.scan, accounted: [] }, [dir]).ok,
     ).toBe(false);
   });
 
@@ -608,6 +765,7 @@ describe("the window rows", () => {
             foreign: 0,
             vanished: 0,
             unreadable: [],
+            accounted: [],
           },
           [dir],
         );
@@ -643,11 +801,46 @@ describe("the window rows", () => {
     expect(scan.vanished).toBe(1);
     expect(scan.filesRead).toBe(1);
     expect(windowRow(before, after, scan, [dir]).ok).toBe(true);
-    const oversize = {
-      ...scan,
-      unreadable: [join(dir, "big")],
-    };
-    expect(windowRow(before, after, oversize, [dir]).ok).toBe(false);
+    // A real file one byte over the cap (sparse, so it costs nothing): the scan
+    // refuses it, and the row fails.
+    const big = fresh("window");
+    const bw = window([big], () => {
+      writeFileSync(join(big, "big"), "");
+      truncateSync(join(big, "big"), maxWindowFileBytes + 1);
+      writeFileSync(join(big, "ok"), "y");
+    });
+    expect(bw.scan.unreadable).toEqual([join(big, "big")]);
+    expect(bw.scan.filesRead).toBe(1);
+    expect(windowRow(bw.before, bw.after, bw.scan, [big]).ok).toBe(false);
+    // Exactly the cap is scanned.
+    const edge = fresh("window");
+    const ew = window([edge], () => {
+      writeFileSync(join(edge, "edge"), "");
+      truncateSync(join(edge, "edge"), maxWindowFileBytes);
+    });
+    expect(ew.scan.unreadable).toEqual([]);
+    expect(windowRow(ew.before, ew.after, ew.scan, [edge]).ok).toBe(true);
+  });
+
+  test("a link or a FIFO swapped in after the listing is neither followed nor blocked on, and fails the row", () => {
+    const outside = fresh("outside");
+    writeFileSync(join(outside, "secret"), keyHex);
+    const dir = fresh("window");
+    const w = window([dir], () => writeFileSync(join(dir, "f"), "x"));
+    // The listed file becomes a symlink to a secret before the scan reads it.
+    rmSync(join(dir, "f"));
+    symlinkSync(join(outside, "secret"), join(dir, "f"));
+    const linked = scanWindow(w.changed, forAll, uid);
+    expect(linked.matches).toEqual([]);
+    expect(linked.unreadable).toEqual([join(dir, "f")]);
+    expect(windowRow(w.before, w.after, linked, [dir]).ok).toBe(false);
+    // ... or a FIFO, which would block a plain read forever.
+    rmSync(join(dir, "f"));
+    const fifo = Bun.spawnSync(["mkfifo", join(dir, "f")]);
+    expect(fifo.exitCode).toBe(0);
+    const piped = scanWindow(w.changed, forAll, uid);
+    expect(piped.unreadable).toEqual([join(dir, "f")]);
+    expect(piped.filesRead).toBe(0);
   });
 
   test("a symlink in a listed root is neither followed nor listed, so a link to a secret outside is not read", () => {
@@ -668,7 +861,7 @@ describe("the window rows", () => {
     const row = windowRow(w.before, w.after, w.scan, [dir]);
     expect(row.ok).toBe(false);
     expect(JSON.stringify(row)).not.toContain(keyHex);
-    expect(row.name).toBe("key-not-in-temp-files-of-the-window");
+    expect(row.name).toBe("key-not-in-files-present-at-the-after-listing");
   });
 });
 
@@ -723,3 +916,14 @@ describe("the report statement row", () => {
 //   S26 argvRow ignores what it found in the arguments                                       -> "the argv row: an argument holding the key in any form fails, a clean log passes, and nothing logged is not a pass" only
 //   S27 the interposer stops stripping _ (the -u _ in each of its three uses)                -> the same two tests as S25 on a Mac
 // OBSERVED (slice 4a-2b-1 addendum round, bun 1.3.14 on a Mac, 2026-11-18; predictions above unchanged). S1-S15 and S17-S27 were all re-run on this tree and went red; S16 SURVIVED, as before. Divergences from the predictions, none a survivor: S5 (no ENV lines) also reddened "a tool behind an interposer sees exactly the adapter's four variables" (the log's names no longer matched what the tool received), a third test beside the two predicted; S8 (accept any name) also reddened "the adapter's own four variables, each with its exact value, pass, and no name outside them does" (it now asserts the shell's names fail), a third test beside the two predicted. S25 (stop stripping SHLVL) reddened only "a tool behind an interposer sees exactly the adapter's four variables": bash adds SHLVL to the tool's environment but the interposer's own listing, which runs under the same unset, did not show it, so the row's end-to-end test stays green and my prediction line for S25 (which named two tests, in a muddled sentence) over-counted. S27 (stop stripping _) reddened that test and "a real interposed call under the adapter's environment passes the row end to end", as predicted. S25 and S27 are Mac-measured (bash as sh): dash adds none of these names, so on the jetson they would not distinguish. The shell-added values are not predicted, they are removed, so nothing is allowed by name.
+
+// MUTANT REGISTER, WCLI-21 slice 4a-2b-1, ROUND 2 (the #367 review CHANGES at 42b3835: B1, N1, N2, N4-N8, N10), written and committed BEFORE the run of S28-S36. Bun 1.3.14. Each mutant is applied to the named file and goes red on the named test(s) only, among test/qualify-linux-shim.test.ts, test/qualify-linux-rows.test.ts, test/qualify-linux.test.ts and test/tpm2-tools.test.ts.
+//   S28 interposerScript drops the split check (always writes the ENV lines)              -> "a variable whose value holds a newline puts nothing of its continuation in the log or the row, whatever the continuation looks like" only
+//   S29 envRow writes every logged name into detail.names, unexpected ones too             -> "a name outside the four never reaches the row, ..." , "a variable whose value holds a newline ..." and "the row's detail carries the four names and counts, never a value or an unexpected name"
+//   S30 envRow drops the exactly-four-once-each block (length and uniqueness)              -> "a name outside the four never reaches the row, and a call must carry exactly the four, once each, with their digests" only (the repeated-name case)
+//   S31 interposerScript drops the `|| exit 98` after the log group                        -> "a call that cannot be logged does not run: the interposer exits 98 and the tool never starts" only
+//   S32 scanWindow opens without O_NOFOLLOW                                                -> "a link or a FIFO swapped in after the listing is neither followed nor blocked on, and fails the row" only
+//   S33 windowRow compares the accounted count, not the accounted paths                    -> "a window that read no file, a missing required root, and a file nobody accounted for all fail" only
+//   S34 scanWindow drops the size cap (the fstat check and the capped read)                -> "a file larger than the cap is not scanned and fails the row, and a vanished file is accounted for" only
+//   S35 interposerScript drops the TCTI newline stop                                       -> "a clean environment writes no split marker, and a TCTI holding a newline stops the call" only
+//   S36 src/adapters/tpm2-tools.ts toolEnvironment gains a fifth variable (FOO)            -> "the adapter builds exactly four environment variables, by the names in its source" and "the child sees the search path and the device and nothing else" in test/tpm2-tools.test.ts; reverted after

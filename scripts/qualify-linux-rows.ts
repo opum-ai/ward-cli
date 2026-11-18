@@ -312,7 +312,9 @@ export interface ToolCall {
 // interposer in qualify-linux-shim.ts writes, the arm opum-doc ruled (DEC-262
 // a30). An ENV line is `ENV <name> <sha256 of the value>`: a name that is not an
 // identifier, a digest that is not 64 lowercase hex, or a name given twice in
-// one call is a refusal. A line that is not part of the format is a refusal: a log that cannot be read whole is not evidence. Each
+// one call is a refusal. A line that is not part of the format is a refusal (the
+// shim's one ENV-SPLIT marker, written when a value split over lines, is such a
+// line): a log that cannot be read whole is not evidence. Each
 // call has exactly one TCTI line, no call follows an OUT block until its RC and
 // DONE, and no tool whose stdout carries the key (tpm2_unseal, tpm2_create) has
 // an OUT block at all.
@@ -386,9 +388,8 @@ export function parseToolLog(text: string): ToolCall[] {
   return calls;
 }
 
-// Under the interposer arm this is the TCTI each interposed call was given; under
-// an observer hook it would be what the adapter passed. The two are not the same
-// claim, and which one this row makes waits on opum-doc's pending A/B.
+// This is the TCTI each interposed call was given, as the interposer recorded it
+// (the arm opum-doc ruled, DEC-262 a30), not what the adapter passed.
 export function tctiRow(calls: readonly ToolCall[]): Check {
   return {
     name: "tcti-is-device-tpmrm0",
@@ -506,10 +507,11 @@ export function saltedRow(calls: readonly ToolCall[]): Check {
 
 // The secret scan, as rows: the key and the nonce appear in no file under the
 // store, and none in the tool log (every argument of every tool call as the
-// interposer recorded it). The environment is NOT in that log, so no row claims
-// it. A scan that read no file, or a log with no call, proves nothing and fails.
-// `log.filesRead > 0` assumes the interposer arm of opum-doc's pending A/B: under
-// an observer hook there may be no log file to read.
+// interposer recorded it). The log holds each variable's name and a sha256 of its
+// value, never the value, so this scan is not what judges the environment: envRow
+// in qualify-linux-shim.ts is. A scan that read no file, or a log with no call,
+// proves nothing and fails. `log.filesRead > 0` holds because the interposer arm
+// (DEC-262 a30) always writes the log.
 export function scanRows(
   store: ScanResult,
   log: ScanResult,

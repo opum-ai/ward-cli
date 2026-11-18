@@ -6,18 +6,23 @@
 // binaries", and the report says so. Nothing here touches a TPM.
 import {
   chmodSync,
+  closeSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
-  readFileSync,
+  readSync,
   realpathSync,
   type BigIntStats,
   type Stats,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
-import type { Tpm2Presence } from "../src/adapters/tpm2-tools.ts";
+import {
+  safeOpenFlags,
+  type Tpm2Presence,
+} from "../src/adapters/tpm2-tools.ts";
 import { ruledTcti, type ToolCall } from "./qualify-linux-rows.ts";
 import { type Check, holdsAny, sha256 } from "./qualify-linux-support.ts";
 
@@ -30,8 +35,12 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 // (PWD, OLDPWD, SHLVL, and _ , which bash sets for every command), with values
 // that are not the harness's to predict and that differ between shells, so the
 // script unsets them and runs both its own listing and the real tool through
-// /usr/bin/env -u for each of them: the tool sees exactly the environment the
-// adapter built. It records the call (the name, the TCTI the environment
+// /usr/bin/env -u for each of them. Those four names are a deliberate, explicit
+// exception: the tool sees the environment the adapter built (the adapter's four
+// variables, pinned by key set in test/tpm2-tools.test.ts) minus whatever a
+// shell would have added under those four names, and no other name is stripped or
+// allowed. A value the adapter never builds under one of the four would be
+// stripped unseen; that residual is for opum-doc to accept. It records the call (the name, the TCTI the environment
 // carried, the NAME of every environment variable with the sha256 of its value,
 // each argument), then runs the real tool by the absolute path detection
 // resolved. Stdin is untouched and is never logged. Stdout is never logged
@@ -48,34 +57,46 @@ export function interposerScript(
   for (const value of [tool, realTool, logPath])
     if (/[^A-Za-z0-9_./-]/.test(value))
       throw new Error("an interposer path is letters, digits and _ . / -");
+  const strip = "/usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD";
   const head = [
     "#!/bin/sh",
     "umask 077",
     "unset PWD OLDPWD SHLVL _",
     'for a in "$@"; do case $a in *\'',
     "'*) exit 97;; esac; done",
+    "case $TPM2TOOLS_TCTI in *'",
+    "'*) exit 97;; esac",
+    // A value holding a newline would split into several lines of the listing and
+    // put its continuation, which may be part of a key, in the log as a name. The
+    // NUL-separated listing has one entry per variable, so a count that differs from
+    // the line count means a split: the log then gets one fixed line the parser
+    // refuses, and no name at all. An env without -0 fails the same way.
+    `entries=$(${strip} /usr/bin/env -0 | tr -cd '\\000' | wc -c)`,
+    `lines=$(${strip} /usr/bin/env | wc -l)`,
     "{",
     `  printf 'CALL %s\\n' '${tool}'`,
     "  printf 'TCTI %s\\n' \"$TPM2TOOLS_TCTI\"",
-    "  /usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD /usr/bin/env | while IFS= read -r line; do",
+    '  if [ "$((entries))" -eq "$((lines))" ] && [ "$((entries))" -gt 0 ]; then',
+    `  ${strip} /usr/bin/env | while IFS= read -r line; do`,
     "    case $line in *=*) name=${line%%=*}; value=${line#*=};; *) name=$line; value=;; esac",
     "    digest=$(printf '%s' \"$value\" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)",
     '    printf \'ENV %s %s\\n\' "$name" "$digest"',
     "  done",
+    "  else printf 'ENV-SPLIT\\n'; fi",
     '  for a in "$@"; do printf \'ARG %s\\n\' "$a"; done',
     "  printf 'END\\n'",
-    `} >> '${logPath}'`,
+    `} >> '${logPath}' || exit 98`,
   ];
   const run = recordStdout
     ? [
         `capture='${logPath}.out.'$$`,
-        `/usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD '${realTool}' "$@" > "$capture"; rc=$?`,
+        `${strip} '${realTool}' "$@" > "$capture"; rc=$?`,
         'cat "$capture"',
-        `{ printf 'OUT-BEGIN\\n'; cat "$capture"; printf '\\nOUT-END\\nRC %s\\nDONE\\n' "$rc"; } >> '${logPath}'`,
+        `{ printf 'OUT-BEGIN\\n'; cat "$capture"; printf '\\nOUT-END\\nRC %s\\nDONE\\n' "$rc"; } >> '${logPath}' || { rm -f "$capture"; exit 98; }`,
         'rm -f "$capture"',
         'exit "$rc"',
       ]
-    : [`exec /usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD '${realTool}' "$@"`];
+    : [`exec ${strip} '${realTool}' "$@"`];
   return `${[...head, ...run].join("\n")}\n`;
 }
 
@@ -154,7 +175,9 @@ export function envRow(
   keyForms: readonly Buffer[],
 ): Check {
   const expected = expectedEnvironment(interposerDirectory);
+  const expectedNames = Object.keys(expected);
   const names = new Set<string>();
+  let unexpected = 0;
   let ok = calls.length > 0;
   // An expected value is a string the harness wrote; its bytes, each character
   // taken as one byte, are what a raw form would have to match.
@@ -168,11 +191,25 @@ export function envRow(
       ok = false;
       continue;
     }
-    for (const { name } of env) names.add(name);
-    for (const [name, value] of Object.entries(expected))
-      if (env.find((e) => e.name === name)?.digest !== digestOf(value))
+    // Exactly the adapter's four, each once, each with the digest of its value.
+    if (
+      env.length !== expectedNames.length ||
+      new Set(env.map((e) => e.name)).size !== env.length
+    )
+      ok = false;
+    for (const { name, digest } of env) {
+      // A name outside the four is never written into the row: a variable whose
+      // value was split over lines can put part of a key where a name goes.
+      if (!Object.hasOwn(expected, name)) {
+        unexpected++;
         ok = false;
-    for (const { name } of env) if (!Object.hasOwn(expected, name)) ok = false;
+        continue;
+      }
+      names.add(name);
+      if (digest !== digestOf(expected[name] as string)) ok = false;
+    }
+    for (const name of expectedNames)
+      if (!env.some((e) => e.name === name)) ok = false;
   }
   return {
     name: "key-not-in-tool-environment",
@@ -180,9 +217,10 @@ export function envRow(
     detail: {
       calls: calls.length,
       names: [...names].sort(),
+      unexpected,
       asserts: "no env value contains the synthetic key",
       proof:
-        "every logged variable is one of the adapter's four and its value's sha256 equals the sha256 of the value the harness expects, and none of the expected values holds a raw, hex or base64 form of the key",
+        "every call logged exactly the adapter's four variables, once each, and each value's sha256 equals the sha256 of the value the harness expects, and none of the expected values holds a raw, hex or base64 form of the key",
     },
   };
 }
@@ -306,13 +344,36 @@ export interface WindowScan {
   // it was read: neither can be this run's key.
   readonly foreign: number;
   readonly vanished: number;
-  // This user's own file that could not be read, or that is too large to scan.
+  // This user's own file that could not be read, that is not a regular file any
+  // more (a link or a FIFO swapped in after the listing), or that is too large to
+  // scan.
   readonly unreadable: readonly string[];
+  // Every path the scan accounted for, whichever way: read, foreign, vanished or
+  // unreadable. The row compares this list with the changed files by path.
+  readonly accounted: readonly string[];
+}
+
+// The bytes of an open regular file, read from the descriptor in chunks up to the
+// cap; undefined past it.
+function readCapped(fd: number): Buffer | undefined {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const chunk = Buffer.alloc(64 * 1024);
+    const n = readSync(fd, chunk, 0, chunk.length, null);
+    if (n === 0) return Buffer.concat(chunks);
+    total += n;
+    if (total > maxWindowFileBytes) return undefined;
+    chunks.push(chunk.subarray(0, n));
+  }
 }
 
 // Reads each changed file once and looks for the needles. `needlesFor` gives the
 // forms to look for in that file, so a file that holds the nonce by design
-// (state.json) is searched for the key forms only.
+// (state.json) is searched for the key forms only. A file is opened O_NOFOLLOW
+// and O_NONBLOCK (the adapter's safeOpenFlags) and judged by fstat on the
+// descriptor, so a co-tenant's symlink or FIFO swapped in after the listing is not
+// followed and cannot block the scan; the read is capped on the descriptor.
 export function scanWindow(
   paths: readonly string[],
   needlesFor: (path: string) => readonly Buffer[],
@@ -320,22 +381,32 @@ export function scanWindow(
 ): WindowScan {
   const matches: string[] = [];
   const bad: string[] = [];
+  const accounted: string[] = [];
   let filesRead = 0;
   let foreign = 0;
   let vanished = 0;
+  const flags = safeOpenFlags();
   for (const path of paths) {
+    accounted.push(path);
+    let fd: number | undefined;
     try {
-      const stats = statSync(path);
-      if (stats.size > maxWindowFileBytes) {
+      fd = openSync(path, flags);
+      const stats = fstatSync(fd);
+      if (!stats.isFile() || stats.size > maxWindowFileBytes) {
         bad.push(path);
         continue;
       }
-      const content = readFileSync(path);
+      const content = readCapped(fd);
+      if (content === undefined) {
+        bad.push(path);
+        continue;
+      }
       filesRead++;
       if (holdsAny(content, needlesFor(path))) matches.push(path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") vanished++;
+      else if (code === "ELOOP") bad.push(path);
       else if (unreadable(error)) {
         let owner: number | undefined;
         try {
@@ -346,9 +417,11 @@ export function scanWindow(
         if (owner !== undefined && owner !== uid) foreign++;
         else bad.push(path);
       } else throw error;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
   }
-  return { filesRead, matches, foreign, vanished, unreadable: bad };
+  return { filesRead, matches, foreign, vanished, unreadable: bad, accounted };
 }
 
 // The row for AC1's temp-file clause (DEC-262 a30 (ii)): every file new or
@@ -364,7 +437,10 @@ export function windowRow(
   scan: WindowScan,
   requiredRoots: readonly string[],
 ): Check {
-  const changed = changedFiles(before, after).length;
+  const changedPaths = changedFiles(before, after);
+  const changed = changedPaths.length;
+  const accountedFor =
+    JSON.stringify([...scan.accounted].sort()) === JSON.stringify(changedPaths);
   const rootsOk = requiredRoots.every(
     (root) => before.present[root] === true && after.present[root] === true,
   );
@@ -378,10 +454,10 @@ export function windowRow(
     after.ownUnreadable.length === 0 &&
     scan.unreadable.length === 0 &&
     scan.filesRead > 0 &&
-    scan.filesRead + scan.foreign + scan.vanished === changed &&
+    accountedFor &&
     scan.matches.length === 0;
   return {
-    name: "key-not-in-temp-files-of-the-window",
+    name: "key-not-in-files-present-at-the-after-listing",
     ok,
     detail: {
       changed,
@@ -391,6 +467,8 @@ export function windowRow(
       foreignUnreadableDirectories: after.foreignUnreadable,
       ownUnreadable: [...after.ownUnreadable, ...scan.unreadable],
       matches: scan.matches,
+      limit:
+        "files present at the after-listing; a file created and removed inside the window is never seen",
     },
   };
 }
