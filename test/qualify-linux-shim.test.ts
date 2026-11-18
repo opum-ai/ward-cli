@@ -28,6 +28,7 @@ import {
   type ToolCall,
 } from "../scripts/qualify-linux-rows.ts";
 import {
+  argvRow,
   changedFiles,
   envRow,
   expectedEnvironment,
@@ -306,26 +307,98 @@ describe("the environment row", () => {
     ...(dir === "" ? {} : {}),
   });
   const good = expectedEnvironment("/run/interposers");
+  const forms = needleForms([deriveKey(nonce)]);
 
-  test("the adapter's own four variables, each with its exact value, pass, with the shell's own names allowed", () => {
-    expect(envRow([callWith(good)], "/run/interposers").ok).toBe(true);
-    expect(
-      envRow(
-        [
-          callWith({
-            ...good,
-            PWD: "/x",
-            SHLVL: "1",
-            _: "/bin/sh",
-            OLDPWD: "/",
-          }),
-        ],
-        "/run/interposers",
-      ).ok,
-    ).toBe(true);
-    expect(envRow([callWith(good)], "/run/interposers").name).toBe(
-      "key-not-in-tool-environment",
+  test("the adapter's own four variables, each with its exact value, pass, and no name outside them does, the shell's own included", () => {
+    expect(envRow([callWith(good)], "/run/interposers", forms).ok).toBe(true);
+    for (const extra of ["PWD", "SHLVL", "_", "OLDPWD"])
+      expect(
+        envRow([callWith({ ...good, [extra]: "1" })], "/run/interposers", forms)
+          .ok,
+      ).toBe(false);
+    const row = envRow([callWith(good)], "/run/interposers", forms);
+    expect(row.name).toBe("key-not-in-tool-environment");
+    // The report states the assertion in (a30)(i)'s words, and how it is proved.
+    expect(JSON.stringify(row.detail)).toContain(
+      "no env value contains the synthetic key",
     );
+    expect(JSON.stringify(row.detail)).toContain("sha256");
+  });
+
+  test("an expected value that holds a raw, hex or base64 form of the key fails the row, whatever the digests say", () => {
+    const key = Buffer.from(deriveKey(nonce));
+    const seeded = [
+      key.toString("hex"),
+      key.toString("hex").toUpperCase(),
+      key.toString("base64"),
+      key.toString("base64url"),
+      key.toString("latin1"),
+    ];
+    for (const form of seeded) {
+      // The interposer directory is part of the expected PATH, so a directory
+      // whose name holds the key puts it in an expected value; the logged call
+      // carries the matching digests, so only the key check can fail the row.
+      const dir = `/run/${form}`;
+      const env = expectedEnvironment(dir);
+      expect(env.PATH).toContain(form);
+      expect(envRow([callWith(env)], dir, forms).ok).toBe(false);
+    }
+    // The real expected values hold none of them.
+    for (const value of Object.values(good))
+      for (const form of seeded) expect(value).not.toContain(form);
+    expect(envRow([callWith(good)], "/run/interposers", forms).ok).toBe(true);
+  });
+
+  test("the argv row: an argument holding the key in any form fails, a clean log passes, and nothing logged is not a pass", () => {
+    const key = Buffer.from(deriveKey(nonce));
+    const call = (...args: string[]): ToolCall => ({
+      tool: "tpm2_create",
+      tcti: ruledTcti,
+      args,
+    });
+    expect(argvRow([call("-c", "ctx")], forms).ok).toBe(true);
+    for (const form of [
+      key.toString("latin1"),
+      key.toString("hex"),
+      key.toString("base64"),
+      key.toString("base64url"),
+    ])
+      expect(argvRow([call("-c", `x${form}y`)], forms).ok).toBe(false);
+    expect(
+      argvRow([call("a"), call("-i", key.toString("hex"))], forms).ok,
+    ).toBe(false);
+    expect(argvRow([], forms).ok).toBe(false);
+    expect(argvRow([call("a")], forms).name).toBe("key-not-in-tool-argv");
+    expect(JSON.stringify(argvRow([call("a")], forms).detail)).toContain(
+      "no argv element contains the synthetic key",
+    );
+  });
+
+  test("a tool behind an interposer sees exactly the adapter's four variables, whichever shell runs the script", () => {
+    const dir = fresh("env");
+    const log = join(dir, "tools.log");
+    writeFileSync(log, "", { mode: 0o600 });
+    const script = join(dir, "tpm2_load");
+    // The real tool is env itself, so its stdout is the environment it received.
+    writeFileSync(
+      script,
+      interposerScript("tpm2_load", "/usr/bin/env", log, false),
+      {
+        mode: 0o700,
+      },
+    );
+    const result = run(script, [], expectedEnvironment(dir));
+    expect(result.code).toBe(0);
+    const received = result.stdout
+      .toString()
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => line.split("=")[0])
+      .sort();
+    expect(received).toEqual(["LANG", "LC_ALL", "PATH", "TPM2TOOLS_TCTI"]);
+    // And the log says the same, with no name the shell added.
+    const [call] = parseToolLog(readFileSync(log, "utf8"));
+    expect((call?.env ?? []).map((e) => e.name).sort()).toEqual(received);
   });
 
   test("an extra variable, a changed or missing value, or a call with no environment fails", () => {
@@ -337,28 +410,30 @@ describe("the environment row", () => {
       { ...good, LANG: "en_US.UTF-8" },
       { ...good, LC_ALL: `C${deriveKey(nonce)}` },
     ])
-      expect(envRow([callWith(env)], dir).ok).toBe(false);
+      expect(envRow([callWith(env)], dir, forms).ok).toBe(false);
     for (const missing of Object.keys(good)) {
       const env = { ...good };
       delete env[missing];
-      expect(envRow([callWith(env)], dir).ok).toBe(false);
+      expect(envRow([callWith(env)], dir, forms).ok).toBe(false);
     }
-    expect(envRow([{ tool: "x", tcti: ruledTcti, args: [] }], dir).ok).toBe(
-      false,
-    );
-    expect(envRow([], dir).ok).toBe(false);
+    expect(
+      envRow([{ tool: "x", tcti: ruledTcti, args: [] }], dir, forms).ok,
+    ).toBe(false);
+    expect(envRow([], dir, forms).ok).toBe(false);
     // One bad call among good ones fails the row.
     expect(
-      envRow([callWith(good), callWith({ ...good, EXTRA: "1" })], dir).ok,
+      envRow([callWith(good), callWith({ ...good, EXTRA: "1" })], dir, forms)
+        .ok,
     ).toBe(false);
     // A different interposer directory is a different PATH.
-    expect(envRow([callWith(good)], "/other").ok).toBe(false);
+    expect(envRow([callWith(good)], "/other", forms).ok).toBe(false);
   });
 
   test("the row's detail carries names and counts, never a value", () => {
     const row = envRow(
       [callWith({ ...good, SECRET_NAME_ONLY: "value-that-must-not-appear" })],
       "/run/interposers",
+      forms,
     );
     expect(JSON.stringify(row)).not.toContain("value-that-must-not-appear");
     expect(JSON.stringify(row.detail)).toContain("SECRET_NAME_ONLY");
@@ -374,7 +449,9 @@ describe("the environment row", () => {
       mode: 0o700,
     });
     run(script, ["a"], expectedEnvironment(dir));
-    expect(envRow(parseToolLog(readFileSync(log, "utf8")), dir).ok).toBe(true);
+    expect(envRow(parseToolLog(readFileSync(log, "utf8")), dir, forms).ok).toBe(
+      true,
+    );
     // The same call with the key in an environment variable fails.
     const leaked = fresh("env");
     const llog = join(leaked, "tools.log");
@@ -388,9 +465,9 @@ describe("the environment row", () => {
       ...expectedEnvironment(leaked),
       WARD_VAULT_KEY: Buffer.from(deriveKey(nonce)).toString("hex"),
     });
-    expect(envRow(parseToolLog(readFileSync(llog, "utf8")), leaked).ok).toBe(
-      false,
-    );
+    expect(
+      envRow(parseToolLog(readFileSync(llog, "utf8")), leaked, forms).ok,
+    ).toBe(false);
   });
 });
 
@@ -639,3 +716,9 @@ describe("the report statement row", () => {
 //   S22 parseToolLog accepts a name given twice in one call (qualify-linux-rows.ts)      -> "an ENV line is a name and a sha256 digest: a malformed one, or a name given twice in a call, is refused" only
 //   S23 parseToolLog accepts an ENV digest of any shape (qualify-linux-rows.ts)          -> "an ENV line is a name and a sha256 digest: a malformed one, or a name given twice in a call, is refused" only
 // OBSERVED (slice 4a-2b-1, bun 1.3.14 on a Mac, 2026-11-18; the predictions above are unchanged). S1-S15 and S17-S23 went red on exactly their predicted test(s) and no other (S5, S8 and S18 on the two tests predicted). S16 SURVIVED, as predicted: on a Mac a replaced file gets a new inode, so the ctime is only measured on Linux, where the CI run of #362 showed the inode reused. A first pass of S21-S23 also showed a red in the window test: the driver left S20's mutant in place while S21-S23 ran (it restored only at the end); S21-S23 were re-run with the file restored after each mutant and went red on their predicted test only. M1-M41 of the module are not re-run here: this slice changed only the ENV parsing and the private row in qualify-linux-rows.ts and exported holdsAny and needleForms from qualify-linux-support.ts, and the full suite is green.
+
+// MUTANT REGISTER, WCLI-21 slice 4a-2b-1, ADDENDUM for the leader's and opum-doc's added conditions (every logged name has an expected value; each expected value holds no form of the key; an explicit argv row), written and committed BEFORE the run of S24-S27. The interposer now strips the shell's own names (PWD, OLDPWD, SHLVL, _) with /usr/bin/env -u, so no name is allowed by name: S5 and S8 above are re-expressed against that text and S1-S23 are all re-run on this tree. Bun 1.3.14.
+//   S24 envRow skips the expected-values-hold-no-form-of-the-key check                       -> "an expected value that holds a raw, hex or base64 form of the key fails the row, whatever the digests say" only
+//   S25 the interposer stops stripping SHLVL (the -u SHLVL in each of its three uses)        -> on a Mac (bash as sh, which adds SHLVL): "a tool behind an interposer sees exactly the adapter's four variables, whichever shell runs the script", "a real interposed call under the adapter's environment passes the row end to end", and "a call is logged with ..." does not go red; on dash it would survive, so Linux-only survival is expected
+//   S26 argvRow ignores what it found in the arguments                                       -> "the argv row: an argument holding the key in any form fails, a clean log passes, and nothing logged is not a pass" only
+//   S27 the interposer stops stripping _ (the -u _ in each of its three uses)                -> the same two tests as S25 on a Mac

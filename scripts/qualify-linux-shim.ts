@@ -26,14 +26,19 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 
 // --- the interposer -----------------------------------------------------------
 
-// A shell script for one tool. It records the call (the name, the TCTI the
-// environment carried, the NAME of every environment variable with the sha256
-// of its value, each argument), then runs the real tool by the absolute path
-// detection resolved. Stdin is untouched and is never logged. Stdout is never
-// logged either, except for the one printout tool: that one is written to a
-// private file, copied to the caller byte for byte, and logged with its exit
-// code. An argument holding a newline would forge a log line, so it stops the
-// call before anything runs or is logged.
+// A shell script for one tool. A shell adds names of its own to what it runs
+// (PWD, OLDPWD, SHLVL, and _ , which bash sets for every command), with values
+// that are not the harness's to predict and that differ between shells, so the
+// script unsets them and runs both its own listing and the real tool through
+// /usr/bin/env -u for each of them: the tool sees exactly the environment the
+// adapter built. It records the call (the name, the TCTI the environment
+// carried, the NAME of every environment variable with the sha256 of its value,
+// each argument), then runs the real tool by the absolute path detection
+// resolved. Stdin is untouched and is never logged. Stdout is never logged
+// either, except for the one printout tool: that one is written to a private
+// file, copied to the caller byte for byte, and logged with its exit code. An
+// argument holding a newline would forge a log line, so it stops the call before
+// anything runs or is logged.
 export function interposerScript(
   tool: string,
   realTool: string,
@@ -46,12 +51,13 @@ export function interposerScript(
   const head = [
     "#!/bin/sh",
     "umask 077",
+    "unset PWD OLDPWD SHLVL _",
     'for a in "$@"; do case $a in *\'',
     "'*) exit 97;; esac; done",
     "{",
     `  printf 'CALL %s\\n' '${tool}'`,
     "  printf 'TCTI %s\\n' \"$TPM2TOOLS_TCTI\"",
-    "  env | while IFS= read -r line; do",
+    "  /usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD /usr/bin/env | while IFS= read -r line; do",
     "    case $line in *=*) name=${line%%=*}; value=${line#*=};; *) name=$line; value=;; esac",
     "    digest=$(printf '%s' \"$value\" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)",
     '    printf \'ENV %s %s\\n\' "$name" "$digest"',
@@ -63,13 +69,13 @@ export function interposerScript(
   const run = recordStdout
     ? [
         `capture='${logPath}.out.'$$`,
-        `'${realTool}' "$@" > "$capture"; rc=$?`,
+        `/usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD '${realTool}' "$@" > "$capture"; rc=$?`,
         'cat "$capture"',
         `{ printf 'OUT-BEGIN\\n'; cat "$capture"; printf '\\nOUT-END\\nRC %s\\nDONE\\n' "$rc"; } >> '${logPath}'`,
         'rm -f "$capture"',
         'exit "$rc"',
       ]
-    : [`exec '${realTool}' "$@"`];
+    : [`exec /usr/bin/env -u _ -u SHLVL -u PWD -u OLDPWD '${realTool}' "$@"`];
   return `${[...head, ...run].join("\n")}\n`;
 }
 
@@ -131,25 +137,31 @@ export function expectedEnvironment(
   };
 }
 
-// Names a shell adds to what it was given. They are accepted by name only: the
-// environment the adapter builds is closed, so the shell is their only source.
-const shellAdded = new Set(["PWD", "OLDPWD", "SHLVL", "_"]);
-
 const digestOf = (value: string): string => sha256(Buffer.from(value));
 
-// Every logged call saw the adapter's own environment and nothing else: its four
-// variables, each with a value whose digest is the expected one, and no variable
-// by any other name but the shell's own. A value that held the key could not
-// have this digest, so no key sits in any environment value (DEC-262 a30 (i)),
-// and no value is written anywhere. A call with no ENV lines, or no call at all,
-// proves nothing and fails.
+// (a30)(i) says no argv element and no environment value contains the synthetic
+// key. The environment half is proved here by equality, not by search: every
+// variable the interposer logged must be one of the adapter's four, with a value
+// whose sha256 is the sha256 of the value the harness expects. And the equality
+// proves nothing about the key unless the expected values hold none of its forms,
+// so each expected value is searched for them too. A name outside the four, a
+// missing name, a mismatched digest, an expected value holding a form of the key,
+// a call with no ENV lines, or no call at all, fails the row. No value is written
+// anywhere.
 export function envRow(
   calls: readonly ToolCall[],
   interposerDirectory: string,
+  keyForms: readonly Buffer[],
 ): Check {
   const expected = expectedEnvironment(interposerDirectory);
   const names = new Set<string>();
   let ok = calls.length > 0;
+  // An expected value is a string the harness wrote; its bytes, each character
+  // taken as one byte, are what a raw form would have to match.
+  const expectedHoldsKey = Object.values(expected).some((value) =>
+    holdsAny(Buffer.from(value, "latin1"), keyForms),
+  );
+  if (expectedHoldsKey) ok = false;
   for (const call of calls) {
     const env = call.env;
     if (env === undefined || env.length === 0) {
@@ -160,13 +172,39 @@ export function envRow(
     for (const [name, value] of Object.entries(expected))
       if (env.find((e) => e.name === name)?.digest !== digestOf(value))
         ok = false;
-    for (const { name } of env)
-      if (!Object.hasOwn(expected, name) && !shellAdded.has(name)) ok = false;
+    for (const { name } of env) if (!Object.hasOwn(expected, name)) ok = false;
   }
   return {
     name: "key-not-in-tool-environment",
     ok,
-    detail: { calls: calls.length, names: [...names].sort() },
+    detail: {
+      calls: calls.length,
+      names: [...names].sort(),
+      asserts: "no env value contains the synthetic key",
+      proof:
+        "every logged variable is one of the adapter's four and its value's sha256 equals the sha256 of the value the harness expects, and none of the expected values holds a raw, hex or base64 form of the key",
+    },
+  };
+}
+
+// (a30)(i)'s argv half: no argument of any logged call contains the key in raw,
+// hex or base64 form. A call with no argument list to read, or no call at all,
+// proves nothing and fails.
+export function argvRow(
+  calls: readonly ToolCall[],
+  keyForms: readonly Buffer[],
+): Check {
+  const holding = calls.filter((call) =>
+    call.args.some((arg) => holdsAny(Buffer.from(arg, "latin1"), keyForms)),
+  ).length;
+  return {
+    name: "key-not-in-tool-argv",
+    ok: calls.length > 0 && holding === 0,
+    detail: {
+      calls: calls.length,
+      holding,
+      asserts: "no argv element contains the synthetic key",
+    },
   };
 }
 
