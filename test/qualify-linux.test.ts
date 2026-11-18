@@ -182,3 +182,4 @@ describe("the verdict and the output line", () => {
 //   U6  containing stops looking for the hex form                                      -> "a value is found as is, in base64 and in hex..."
 //   U7  deriveKey ignores the nonce                                                    -> "the key is 32 bytes, derived from the nonce..."
 //   U8  parseState stops requiring bootId                                              -> "a state file round-trips, and each missing field is refused"
+// OBSERVED (slice 4a-1, bun 1.3.14, 2026-11-18; predictions above unchanged). U1-U8 each went red on exactly their predicted test(s); U2 also reddened the real-home test, as predicted.
