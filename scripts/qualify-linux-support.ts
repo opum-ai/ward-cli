@@ -518,11 +518,11 @@ export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
   // (a29) Q2 commands (id -G, uname -a, tpm2_getcap --version, ls -l
   // /dev/tpmrm0) can produce, so none of the run-wide rows either (a33): it runs
   // no ward binary, reads no ward metadata, and takes no handle list or TCTI.
+  // python3-recorded is not here either (a34): P0 runs no fifth command.
   facts: [
     "effective-groups-recorded",
     "tpm-device-present",
     "tpm2-tools-present",
-    "python3-recorded",
   ],
   // The delivery phase runs no TPM tool, so it owes neither the TCTI nor the
   // handle rows, only that the home directory was left alone.
@@ -539,6 +539,9 @@ export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
     ...shimCalls,
     ...shimWindow,
     "boot-id-differs-from-seal",
+    // The packaged python3 pty smoke runs at P3 (DEC-262 a34), so P3 records the
+    // interpreter it actually ran, its path and version; P0 runs no python3.
+    "python3-recorded",
   ],
   clean: [
     ...runWide,
