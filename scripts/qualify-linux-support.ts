@@ -582,10 +582,11 @@ export function verdict(
     : "FAILED";
 }
 
-// A lexical tripwire over qualify-linux.ts, not a guarantee (DEC-262: the
-// operator reboots, Ward never does). It reads that one file as code, with
-// comments removed, so a comment saying "never reboot" is not a finding; it does
-// not see the other modules the harness bundles or an evasion it does not list.
+// A lexical tripwire, not a guarantee (DEC-262: the operator reboots, Ward never
+// does). It takes any source string and reads it as code with comments removed,
+// so a comment saying "never reboot" is not a finding. Which file it is pointed at
+// is the test's choice (today only qualify-linux.ts); it does not see modules the
+// caller does not hand it, or an evasion it does not list.
 export const forbiddenSpawnWords = [
   "reboot",
   "shutdown",

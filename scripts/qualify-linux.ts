@@ -1,7 +1,9 @@
 // T26 on Linux, the run itself (WCLI-21 slice 4a-2b-2 part B, DEC-262, ADR 0028).
 // The pure parts live in qualify-linux-support.ts, -rows.ts and -shim.ts and are
 // measured by `bun test`; this file wires them to the phase plan P0-P4. Nothing
-// runs on import (main is guarded), so no test can start a phase.
+// runs on import (main is guarded). Tests do spawn the main dispatch, so that no
+// test starts a phase rests on one rule: no test ever spawns `--phase facts`
+// (CI is Linux and would really run P0).
 //
 //   bun scripts/qualify-linux.ts --build <dir>      (local build host, no TPM)
 //   ./ward-qualify-linux --phase facts              (P0, read-only)
@@ -132,9 +134,10 @@ export function parseArgs(argv: readonly string[]): Command {
 // resolved ONCE to an absolute path: buildExecutable runs bun with the repository
 // root as its cwd, so a relative dir would be written under the root while the
 // hash read it from the caller's cwd, and a stale file could be printed as built.
-// The build embeds the production service name ("opum.ward", the default define)
-// and, for a cross-compile, bun downloads the target runtime into ~/.bun on the
-// build host (the held --build clearance covers that).
+// The build embeds the production service name ("opum.ward", the default define).
+// That is harmless on Linux: selectKeyProvider routes a Linux host to the TPM2
+// backend only, and the service name belongs to the Keychain backend. A
+// cross-compile downloads the target runtime into ~/.bun on the build host.
 export function build(
   dir: string,
   builder: typeof buildExecutable = buildExecutable,
