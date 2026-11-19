@@ -320,9 +320,7 @@ export function listWindowRoots(
       let raw: Buffer[];
       try {
         // Bun hands back plain Uint8Arrays here, so wrap each in a Buffer.
-        raw = readdir(path, { encoding: "buffer" }).map((entry) =>
-          Buffer.from(entry),
-        );
+        raw = readdir(path).map((entry) => Buffer.from(entry));
       } catch (error) {
         if (!unreadable(error)) throw listingFailure(error, "readdir");
         if (stats.uid === uid) ownUnreadable.push(path);
