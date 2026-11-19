@@ -13,6 +13,7 @@
 //   Z4  qualify-linux.ts calls groupIdsRow( from a second function -> "groupIdsRow stays in P0" only
 //   Z5  test/support/harness-source.ts: "systemctl" removed from forbiddenWords -> "a spelled-out evasion is a finding" only
 //   Z6  qualify-linux-shim.ts: the plain interposer's final line gains a second exec word (`exec exec /usr/bin/env ...`) -> the plain golden test and "the one allowed exec" only
+// OBSERVED (Mac, bun 1.3.14, 2026-11-19; predictions unchanged, no divergence): the unmodified tree passes 9 of 9 (the positive control; it read 5 named bundled modules). Z1 red on exactly the spawn-anchor test. Z2 red on both golden tests. Z3 red on the no-findings test and the spawn-anchor test. Z4 red on exactly the N-5 test. Z5 red on exactly the spelled-out evasion test. Z6 red on the plain golden test and the one-allowed-exec test. rows.ts removeRunDirectoryUnder's /bin/rm spawn is a third allowed anchor (P4's delete by literal path), found by the first run of the scan. All Mac measurements; none depends on Linux.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

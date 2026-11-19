@@ -21,13 +21,7 @@
 // B2: the source-tripwire tests (X1b and the shell/exec cases) moved to test/qualify-linux-source.test.ts with the check, which now lives in test/support/harness-source.ts; the X1-X5 observations below stay as recorded.
 import { describe, expect, test } from "bun:test";
 // OBSERVED, ROUND 2 (Mac, bun 1.3.14, 2026-11-19; predictions unchanged): Y1, Y2, Y3 and Y4 each red on exactly their predicted test (Y4 took the full 5s sleep). A new test, "a missing binary reads as failed", found a real defect before any mutant: under Bun a failed spawn (ENOENT) has status undefined, not null, so the runner now maps it to null. N-2 (review): the harness compiled natively (no --target, so no download) into the scratchpad and run with --phase facts on the Mac refused ("refusing: the Linux qualification runs on Linux", exit 2); a find for files newer than a marker taken before the build found nothing new under the repository or dist/ (dist/ward Sep 29 12:06 and dist/ward-qualify Oct 20 23:11, unchanged), only the built binary.
-import {
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { buildExecutable } from "./../scripts/build.ts";
