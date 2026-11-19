@@ -11,6 +11,8 @@
 //   X4  qualify-linux.ts: `if (import.meta.main)` becomes `if (true)` -> the whole file dies on import (exit 2 from the usage branch), so every test here is red
 //   X1b (after X1 measured green: the test iterated the mutated list itself) the same mutant against the test with the words spelled out -> "each forbidden word in code is a finding" only
 //   X5  qualify-linux.ts: tpmDeviceRow's leading `c` test becomes `.` -> "the device row" only
+//
+// OBSERVED (Mac, bun 1.3.14, 2026-11-19): X1 GREEN, a divergence: the test iterated the mutated list, so it could not see the removal; fixed by spelling the words out (commit after the first), then X1b red on exactly "each forbidden word in code is a finding". X2, X3, X5 red on exactly their predicted test. X4 killed the test process on import (the usage branch printed and exited 2), so no test ran: red as predicted. Mac only; none of these are Linux-only.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
