@@ -3,11 +3,15 @@
 // how a row is decided and the hardware run only has to supply honest inputs.
 // Nothing here touches a TPM; the helpers that touch the filesystem (the run
 // directory, the ~/.ward snapshot) touch only what they are handed.
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, relative } from "node:path";
-import { classifySessionPrintoutForTest } from "../src/adapters/tpm2-tools.ts";
+import {
+  classifySessionPrintoutForTest,
+  diagnosticTool,
+  requiredTools,
+} from "../src/adapters/tpm2-tools.ts";
 import {
   assertRunDirectory,
   bootIdChanged,
@@ -562,5 +566,119 @@ export function reportStatementRow(statement: string): Check {
   return {
     name: "report-states-the-logging-shim",
     ok: statement === shimStatement,
+  };
+}
+
+// --- the expected calls -------------------------------------------------------
+
+// The tools a phase's log must show, and the only tools it may show (WCLI-21
+// #367 review N2: the interposer exits 98 on a log it cannot write, but a log
+// with a call missing would otherwise still pass every row that reads it). The
+// seal phase runs the whole adapter flow and the independent session probe;
+// the unseal phase after the reboot loads the sealed key and unseals it, and
+// creates nothing; clean only reads the handle lists. The facts phase has no
+// entry: it runs no interposer (DEC-262 a32), so there is no call log to check.
+export const expectedTools: Readonly<
+  Record<
+    "seal" | "unseal" | "clean",
+    {
+      readonly required: readonly string[];
+      readonly allowed: readonly string[];
+    }
+  >
+> = {
+  seal: {
+    required: [...requiredTools, diagnosticTool],
+    allowed: [...requiredTools, diagnosticTool],
+  },
+  unseal: {
+    required: [
+      "tpm2_createprimary",
+      "tpm2_load",
+      "tpm2_startauthsession",
+      "tpm2_sessionconfig",
+      "tpm2_unseal",
+      "tpm2_flushcontext",
+      diagnosticTool,
+    ],
+    allowed: [
+      "tpm2_createprimary",
+      "tpm2_load",
+      "tpm2_startauthsession",
+      "tpm2_sessionconfig",
+      "tpm2_unseal",
+      "tpm2_flushcontext",
+      diagnosticTool,
+    ],
+  },
+  clean: { required: [diagnosticTool], allowed: [diagnosticTool] },
+};
+
+// Every tool the phase must run was logged at least once, and no tool outside the
+// phase's own set was. The phase is named, not a list, so a caller cannot narrow
+// what a phase requires; an unknown phase fails.
+export function expectedCallsRow(
+  phase: string,
+  calls: readonly ToolCall[],
+): Check {
+  const set = Object.hasOwn(expectedTools, phase)
+    ? expectedTools[phase as keyof typeof expectedTools]
+    : undefined;
+  const logged = new Set(calls.map((call) => call.tool));
+  const missing =
+    set === undefined ? [] : set.required.filter((tool) => !logged.has(tool));
+  const unexpected =
+    set === undefined
+      ? []
+      : [...logged].filter((tool) => !set.allowed.includes(tool)).sort();
+  return {
+    name: "expected-tool-calls-made",
+    ok:
+      set !== undefined &&
+      calls.length > 0 &&
+      missing.length === 0 &&
+      unexpected.length === 0,
+    detail: { calls: calls.length, missing, unexpected },
+  };
+}
+
+// --- the control call ---------------------------------------------------------
+
+// The interposer logs the environment it listed, and the real tool is run through
+// the same /usr/bin/env -u wrapper, but nothing so far shows that the log equals
+// what a tool really received on THIS host's /bin/sh (WCLI-21 #367 review N9: the
+// unit test ran bash as sh on a Mac, the Linux target is dash). The harness runs
+// one control call whose real tool is /usr/bin/env and compares what it printed
+// with what the interposer logged for that same call: the same names, each with
+// the sha256 of the printed value. A printed value is never kept in the row.
+export function envControlRow(logged: ToolCall["env"], printed: string): Check {
+  const received = new Map<string, string>();
+  let wellFormed = true;
+  for (const line of printed.split("\n")) {
+    if (line === "") continue;
+    const at = line.indexOf("=");
+    const name = at === -1 ? "" : line.slice(0, at);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || received.has(name)) {
+      wellFormed = false;
+      continue;
+    }
+    received.set(
+      name,
+      createHash("sha256")
+        .update(Buffer.from(line.slice(at + 1), "latin1"))
+        .digest("hex"),
+    );
+  }
+  const seen = logged ?? [];
+  const same =
+    wellFormed &&
+    seen.length > 0 &&
+    seen.length === received.size &&
+    new Set(seen.map((entry) => entry.name)).size === seen.length &&
+    seen.every((entry) => received.get(entry.name) === entry.digest);
+  return {
+    name: "interposer-env-matches-tool-env",
+    ok: same,
+    detail: { logged: seen.length, received: received.size, wellFormed },
   };
 }

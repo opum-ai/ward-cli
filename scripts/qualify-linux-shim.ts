@@ -10,20 +10,31 @@ import {
   fstatSync,
   lstatSync,
   mkdirSync,
+  accessSync,
+  constants,
   openSync,
   readdirSync,
+  readFileSync,
   readSync,
   realpathSync,
+  statSync,
   type BigIntStats,
   type Stats,
   writeFileSync,
 } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import {
+  assertToolTrusted,
+  diagnosticTool,
+  requiredTools,
   safeOpenFlags,
   type Tpm2Presence,
 } from "../src/adapters/tpm2-tools.ts";
-import { ruledTcti, type ToolCall } from "./qualify-linux-rows.ts";
+import {
+  parseToolLog,
+  ruledTcti,
+  type ToolCall,
+} from "./qualify-linux-rows.ts";
 import { type Check, holdsAny, sha256 } from "./qualify-linux-support.ts";
 
 // The one tool whose stdout the shim records: its printout is not a secret.
@@ -40,13 +51,14 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 // toolEnvironment key-set pin (LANG, LC_ALL, PATH, TPM2TOOLS_TCTI) in
 // test/tpm2-tools.test.ts, red on any other name. The T26 report and ADR 0028
 // must name the four and the pin (both are owed; neither exists yet). It
-// records the call (the name, the TCTI the environment carried, the NAME of every environment variable with the sha256 of its value,
-// each argument), then runs the real tool by the absolute path detection
-// resolved. Stdin is untouched and is never logged. Stdout is never logged
-// either, except for the one printout tool: that one is written to a private
-// file, copied to the caller byte for byte, and logged with its exit code. An
-// argument holding a newline would forge a log line, so it stops the call before
-// anything runs or is logged.
+// records the call (the name, the TCTI the environment carried, the NAME of
+// every environment variable with the sha256 of its value, each argument), then
+// runs the real tool by the absolute path detection resolved. Stdin is untouched
+// and is never logged. Stdout is never logged either, except for the one
+// printout tool: that one is written to a private file, copied to the caller
+// byte for byte, and logged with its exit code. An argument holding a newline
+// would forge a log line, so it stops the call before anything runs or is
+// logged.
 export function interposerScript(
   tool: string,
   realTool: string,
@@ -261,41 +273,73 @@ export interface WindowListing {
   // the row fails. A directory another user owns and this user cannot read could
   // not have been written by this run, and is only counted.
   readonly foreignUnreadable: number;
+  // Also every directory, whoever owns it, holding a name that is not valid
+  // UTF-8 (/tmp and /dev/shm are other users' directories this run writes into),
+  // so the row fails on it.
   readonly ownUnreadable: readonly string[];
 }
 
 const unreadable = (error: unknown): boolean =>
   ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "");
 
+// A system error carries the path it failed on in .message and .path, and a path
+// can be named for the key. The listing therefore rethrows only the errno code.
+const listingFailure = (error: unknown, step: string): Error => {
+  const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+  return new Error(`window listing failed at ${step}: ${code}`);
+};
+
 // The regular files under each root, by lstat, without opening any. Symlinks
-// are neither followed nor listed. A root that does not exist is recorded as
-// absent; one that exists but cannot be resolved is an error.
+// are neither followed nor listed, so a key-named empty directory, symlink or
+// FIFO is not covered by the name scan (a stated limit), and a name that
+// vanishes between the directory read and its lstat is dropped uncounted, which
+// is within the row's "files present at the after-listing". A root that does not
+// exist is recorded as absent; one that exists but cannot be resolved, or that
+// resolves to a path lstat cannot find, is an error.
 export function listWindowRoots(
   roots: readonly string[],
   uid: number,
+  // A seam for the test of the readdir rethrow, which no file can force.
+  readdir: typeof readdirSync = readdirSync,
 ): WindowListing {
   const present: Record<string, boolean> = {};
   const files: Record<string, string> = {};
   const ownUnreadable: string[] = [];
   let foreignUnreadable = 0;
-  const walk = (path: string): void => {
+  const walk = (path: string, top = false): void => {
     let stats: Stats;
     let big: BigIntStats;
     try {
       big = lstatSync(path, { bigint: true });
       stats = lstatSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !top) return;
+      throw listingFailure(error, "lstat");
     }
     if (stats.isDirectory()) {
-      let entries: string[];
+      let raw: Buffer[];
       try {
-        entries = readdirSync(path);
+        // Bun hands back plain Uint8Arrays here, so wrap each in a Buffer.
+        raw = readdir(path, { encoding: "buffer" }).map((entry) =>
+          Buffer.from(entry),
+        );
       } catch (error) {
-        if (!unreadable(error)) throw error;
+        if (!unreadable(error)) throw listingFailure(error, "readdir");
         if (stats.uid === uid) ownUnreadable.push(path);
         else foreignUnreadable++;
+        return;
+      }
+      // A name that is not valid UTF-8 cannot be held as a string without
+      // becoming a different name (U+FFFD), which lstat then cannot find: the
+      // entry and its subtree would be dropped without a trace, and the name
+      // would escape the key-name scan. The directory's contents are unknown, so
+      // the row fails, whoever owns it: unlike an unreadable directory, this one
+      // WAS read, and may be one this run writes into (/tmp).
+      const entries = raw.map((entry) => entry.toString("utf8"));
+      if (
+        raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
+      ) {
+        ownUnreadable.push(path);
         return;
       }
       for (const entry of entries.sort()) walk(join(path, entry));
@@ -317,10 +361,10 @@ export function listWindowRoots(
         present[root] = false;
         continue;
       }
-      throw error;
+      throw listingFailure(error, "realpath");
     }
     present[root] = true;
-    walk(real);
+    walk(real, true);
   }
   return { present, files, foreignUnreadable, ownUnreadable };
 }
@@ -347,8 +391,15 @@ export interface WindowScan {
   // more (a link or a FIFO swapped in after the listing), or that is too large to
   // scan.
   readonly unreadable: readonly string[];
+  // How many scanned paths hold a form of the key in their NAME (a file can be
+  // called after the key it holds). The row fails on any, and a path whose name
+  // holds one is never printed: `matches` and `unreadable` carry the placeholder
+  // below in its place.
+  readonly nameMatches: number;
   // Every path the scan accounted for, whichever way: read, foreign, vanished or
   // unreadable. The row compares this list with the changed files by path.
+  // STATED LIMIT: these are raw paths, key-named ones included (shown() guards
+  // only what is printed), so the scan object itself is not safe to print.
   readonly accounted: readonly string[];
 }
 
@@ -373,6 +424,8 @@ function readCapped(fd: number): Buffer | undefined {
 // and O_NONBLOCK (the adapter's safeOpenFlags) and judged by fstat on the
 // descriptor, so a co-tenant's symlink or FIFO swapped in after the listing is not
 // followed and cannot block the scan; the read is capped on the descriptor.
+export const withheldPath = "(path withheld: its name holds a form of the key)";
+
 export function scanWindow(
   paths: readonly string[],
   needlesFor: (path: string) => readonly Buffer[],
@@ -385,11 +438,24 @@ export function scanWindow(
   let foreign = 0;
   let vanished = 0;
   const flags = safeOpenFlags();
+  let nameMatches = 0;
+  // What may be printed for a path: the path, unless its own name holds a form of
+  // the key. Each path is judged once.
+  const named = new Map<string, string>();
+  const shown = (path: string): string => {
+    const known = named.get(path);
+    if (known !== undefined) return known;
+    const holds = holdsAny(Buffer.from(path), needlesFor(path));
+    if (holds) nameMatches++;
+    const text = holds ? withheldPath : path;
+    named.set(path, text);
+    return text;
+  };
   // A path is accounted for only where it is disposed of: read, set aside as
   // foreign or vanished, or put in `bad`.
   const dispose = (path: string, bucket: "bad" | "foreign" | "vanished") => {
     accounted.push(path);
-    if (bucket === "bad") bad.push(path);
+    if (bucket === "bad") bad.push(shown(path));
     else if (bucket === "foreign") foreign++;
     else vanished++;
   };
@@ -409,7 +475,8 @@ export function scanWindow(
       }
       filesRead++;
       accounted.push(path);
-      if (holdsAny(content, needlesFor(path))) matches.push(path);
+      if (holdsAny(content, needlesFor(path))) matches.push(shown(path));
+      else shown(path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") dispose(path, "vanished");
@@ -422,12 +489,26 @@ export function scanWindow(
           owner = undefined;
         }
         dispose(path, owner !== undefined && owner !== uid ? "foreign" : "bad");
-      } else throw error;
+      } else
+        throw new Error(
+          `window scan failed on ${shown(path)}: ${code ?? "unknown"}`,
+        );
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
   }
-  return { filesRead, matches, foreign, vanished, unreadable: bad, accounted };
+  // A path that vanished or was foreign is judged by name too: the name is the
+  // one thing about it this run saw.
+  for (const path of accounted) shown(path);
+  return {
+    filesRead,
+    matches,
+    foreign,
+    vanished,
+    unreadable: bad,
+    nameMatches,
+    accounted,
+  };
 }
 
 // The row for AC1's temp-file clause (DEC-262 a30 (ii)): every file new or
@@ -463,6 +544,7 @@ export function windowRow(
     accountedFor &&
     scan.filesRead + scan.foreign + scan.vanished + scan.unreadable.length ===
       changed &&
+    scan.nameMatches === 0 &&
     scan.matches.length === 0;
   return {
     name: "key-not-in-files-present-at-the-after-listing",
@@ -473,7 +555,10 @@ export function windowRow(
       foreign: scan.foreign,
       vanished: scan.vanished,
       foreignUnreadableDirectories: after.foreignUnreadable,
-      ownUnreadable: [...after.ownUnreadable, ...scan.unreadable],
+      // A directory's name is a path this row did not judge, so only a count.
+      ownUnreadableDirectories: after.ownUnreadable.length,
+      unreadable: scan.unreadable,
+      nameMatches: scan.nameMatches,
       matches: scan.matches,
       limit:
         "files present at the after-listing; a file created and removed inside the window is never seen",
@@ -483,3 +568,52 @@ export function windowRow(
 
 export const interposerDirectoryName = "interposers";
 export const toolLogName = "tools.log";
+
+// The tool log, read as bytes and decoded as latin1: each byte becomes one
+// character, so an argument holding raw key bytes that are not valid UTF-8 is not
+// turned into U+FFFD before argvRow looks for them (WCLI-21 #367 review N3).
+export function readToolLog(path: string): ToolCall[] {
+  return parseToolLog(readFileSync(path, "latin1"));
+}
+
+// The presence with tpm2_getcap in it, so the handle snapshots go through the
+// interposers like every other tool. detectTpm2 does not resolve the diagnostic
+// tool, and src/adapters/tpm2-tools.ts stays unchanged (DEC-262 a30), so it is
+// resolved here the way the adapter does it: the first executable regular file
+// on an absolute PATH entry. It must sit in the directory of one of the required
+// tools, which detection already trust-walked (the directory and its ancestors),
+// and the file itself is trust-walked by `trust` before it is used. Anything else
+// is refused rather than looked for further on the path.
+export function withDiagnosticTool(
+  presence: Tpm2Presence,
+  path: string,
+  trust: (toolPath: string) => void = assertToolTrusted,
+): Tpm2Presence {
+  let resolved: string | undefined;
+  for (const directory of path.split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    const candidate = join(directory, diagnosticTool);
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      resolved = candidate;
+      break;
+    } catch {
+      // Not here; the next directory.
+    }
+  }
+  if (resolved === undefined)
+    throw new Error(`${diagnosticTool} was not found on the search path`);
+  const walked = new Set(
+    requiredTools.map((tool) => dirname(presence.tools[tool])),
+  );
+  if (!walked.has(dirname(resolved)))
+    throw new Error(
+      `${diagnosticTool} is not beside a trust-walked tool, so it is not used`,
+    );
+  trust(resolved);
+  return {
+    device: presence.device,
+    tools: { ...presence.tools, [diagnosticTool]: resolved },
+  } as Tpm2Presence;
+}
