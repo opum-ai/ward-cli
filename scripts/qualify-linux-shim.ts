@@ -324,7 +324,7 @@ export function listWindowRoots(
           Buffer.from(entry),
         );
       } catch (error) {
-        if (!unreadable(error)) throw listingFailure(error, "readdir");
+        if (!unreadable(error)) throw error;
         if (stats.uid === uid) ownUnreadable.push(path);
         else foreignUnreadable++;
         return;
