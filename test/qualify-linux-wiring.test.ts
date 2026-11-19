@@ -595,8 +595,8 @@ describe("a file named after the key", () => {
     }
   });
 
-  test("a bad name or an unreadable directory present at the BEFORE listing fails the row though the after listing is clean", () => {
-    // Each half is planted before the before listing and removed before the
+  test("a non-UTF-8 name present at the BEFORE listing fails the row though the after listing is clean (Linux only; the own-unreadable half is the next test)", () => {
+    // The name is planted before the before listing and removed before the
     // after one, with a sound file read in a second root, so only the before
     // clause can fail the row. A control with nothing planted passes.
     const judge = (
@@ -673,6 +673,11 @@ describe("a file named after the key", () => {
         const detail = row.detail as Record<string, unknown>;
         expect(detail.beforeOwnUnreadableDirectories).toBe(1);
         expect(detail.ownUnreadableDirectories).toBe(0);
+        // The same window with the before listing's locked directory cleared
+        // passes, so it is the before clause that fails it.
+        expect(judge({ ...before, ownUnreadable: [] }, after, rs).row.ok).toBe(
+          true,
+        );
       } finally {
         chmodSync(locked, 0o700);
       }
@@ -852,6 +857,7 @@ describe("the adapter, through real interposers, over fake tools", () => {
 //   W35  qualify-linux-shim.ts: windowRow's `scan.filesRead > 0` becomes `scan.filesRead > 1` (a clause other than the before one starts failing the follow-up 4 window) -> the same-window pins in the BEFORE tests go red together with the controls that already read one file; the pin is not isolated from them, so this only shows it is not vacuous
 //   W36  this file: the CI root guard test is deleted -> nothing goes red on a runner as non-root; with CI=1 and a preload making process.getuid() return 0 (Mac, not measurable on a hosted runner, which is not root), the intact file fails exactly the guard test and the mode tests skip, and the mutant file passes with those skipped
 // OBSERVED, FOLLOW-UP 4 (Mac, bun 1.3.14, and Linux, ubuntu-24.04-arm Check jobs through throwaway draft PRs cut from 32e11b8, 2026-11-19; predictions unchanged): W32 red on exactly the AFTER mirror test on the Mac and on Linux (opum-ai/ward-cli#400, run 44459793024); W33 red on the BEFORE test and the AFTER mirror test on the Mac and on Linux (#401, run 44459797895). No divergence.
+//   W35 (REVISED after review B1/B2, prediction committed before the re-measure): the record below was wrong for 4587c94 because the own-unreadable BEFORE test had no pin and asserted only ok false. With the pin added, `scan.filesRead > 1` is red on the own-unreadable BEFORE test (its pin), the AFTER mirror, and the shim and wiring window tests that read exactly one file; the non-UTF-8 BEFORE test is red on Linux only (its pin is inside makeBad's branch, which a Mac skips). W36 counts the 2 skipIf tests of this file under the faked-uid run.
 // OBSERVED, FOLLOW-UP 4 PART 2 (Mac, bun 1.3.14, 2026-11-19; predictions unchanged): W34 red on exactly the own-unreadable BEFORE test. W35 red on 8 tests: both BEFORE tests, the AFTER mirror and five that read one file, so the pin is not isolated from the controls, as predicted. W36 under CI=1 with a preload faking uid 0: the intact file fails the guard test and 4 mode tests skip; with the guard deleted that failure is gone (the other fake-root failures are the same in both, from tests that need a real uid). The Linux hosted runner is not root, so W36 is Mac-only; W34 and W35 are platform-neutral and the PR's Check job runs them on Linux.
 // OBSERVED, ROUND 2 (bun 1.3.14 on a Mac, predictions above unchanged, a driver restoring each file after each mutant): W17, W18 and W19 each went red on exactly the one test predicted.
 // OBSERVED, ROUND 1 (bun 1.3.14 on a Mac, 2026-11-18, predictions above unchanged, a driver restoring each file after each mutant, on e24053f): W11, W12, W14 and W15 each went red on exactly the one test predicted. W13 and W16 were NOT run: the Mac cannot create a non-UTF-8 name, so they are unobservable here and the Linux arm runner is where they are measured. Bun returns plain Uint8Arrays from readdirSync with encoding buffer (not Buffers), which the first run of the fix exposed. STATED LIMIT: the name scan does not cover a key-named empty directory, symlink or FIFO, because the listing holds regular files only.
