@@ -536,7 +536,8 @@ describe("a file named after the key", () => {
       writeFileSync(join(sound, "ordinary"), "x");
       if (!makeBad(dir)) return;
       const after = listWindowRoots(roots, judge);
-      expect(after.ownUnreadable).toEqual([dir]);
+      expect(after.nonUtf8Directories).toEqual([dir]);
+      expect(after.ownUnreadable).toEqual([]);
       const scan = scanWindow(changedFiles(before, after), () => forms, uid);
       expect(scan.filesRead).toBe(1);
       expect(scan.nameMatches).toBe(0);
@@ -552,6 +553,28 @@ describe("a file named after the key", () => {
           roots,
         ).ok,
       ).toBe(true);
+    }
+  });
+
+  test("a non-UTF-8 name in a nested directory fails the row, and the report counts it apart from unreadable directories, without a name", () => {
+    for (const judge of [uid, uid + 1]) {
+      const dir = fresh("window");
+      const sound = fresh("window");
+      const roots = [dir, sound];
+      const before = listWindowRoots(roots, judge);
+      writeFileSync(join(sound, "ordinary"), "x");
+      const sub = join(dir, "sub");
+      mkdirSync(sub);
+      if (!makeBad(sub)) return;
+      const after = listWindowRoots(roots, judge);
+      expect(after.nonUtf8Directories).toEqual([sub]);
+      const scan = scanWindow(changedFiles(before, after), () => forms, uid);
+      const row = windowRow(before, after, scan, roots);
+      expect(row.ok).toBe(false);
+      const detail = row.detail as Record<string, unknown>;
+      expect(detail.nonUtf8NameDirectories).toBe(1);
+      expect(detail.ownUnreadableDirectories).toBe(0);
+      expect(JSON.stringify(row)).not.toContain(sub);
     }
   });
 
@@ -663,6 +686,11 @@ describe("the adapter, through real interposers, over fake tools", () => {
 //   W22  qualify-linux-support.ts: clean drops runWide                                                -> the first of those two tests only
 // OBSERVED, ROUND 3, Mac (bun 1.3.14, predictions above unchanged, a driver restoring each file after each mutant, on 3732ac6): W11a, W11b, W11c and W20 went red on exactly the tests predicted (W11b and W11c on the same one). W21 went red on the two predicted. W22 DIVERGED: it also reddened "each phase's list holds the (a29) and T26 rows it owes, ..." because clean's owed list there names the three rows, so it went red on two tests, not the one predicted. W13, W16, W23 and W24 went red on nothing on the Mac, as predicted (Linux-only; their Linux results are recorded below once measured).
 // OBSERVED, ROUND 3, Linux (ubuntu-24.04-arm Check jobs through throwaway draft PRs cut from 867a99a, one per mutant, 2026-11-19; predictions unchanged): W11a, W11c, W13, W16, W23 each went red on exactly the one test predicted (W11a opum-ai/ward-cli#382, W11c #384, W13 #385, W16 #386, W23 #387). W11b (#383) DIVERGED: red on the predicted test AND on "a root that resolves to a path the listing cannot find is an error, not a silent absence", whose /lstat: ENOENT/ pattern a raw rethrow no longer matches. W24 (#388) went red on its one predicted test. Two earlier attempts are void: the first set was cut from af1bf25, whose bad-name test wrongly expected a sound file in the unlistable directory to be read (found by #370's own Check, fixed in 867a99a), and the first W13 body failed the format gate before any test ran.
+// FOLLOW-UP (opus round 3 approval NB2 and NB4(b)), predictions written and committed BEFORE any run:
+//   W25  qualify-linux-shim.ts: the round-trip check applied only at the top-level directory          -> "a non-UTF-8 name in a nested directory fails the row, and the report counts it apart from unreadable directories, without a name" only (Linux; the Mac returns early)
+//   W26  qualify-linux-shim.ts: a non-UTF-8 directory pushed to ownUnreadable again (the count not kept apart) -> the nested test and "a name that is not valid UTF-8 fails the row whoever owns the directory, with the window otherwise sound" (Linux)
+//   W27  qualify-linux-shim.ts: windowRow ignores nonUtf8Directories                                  -> both of those tests (Linux)
+// OBSERVED, FOLLOW-UP, Linux (ubuntu-24.04-arm Check jobs through throwaway draft PRs cut from 3a1c7a6, 2026-11-19; predictions unchanged): W25 (opum-ai/ward-cli#390, run 44454153475) red on exactly the nested test; W26 (#391, run 44454155820) red on the nested test and the owner test, as predicted; W27 (#392, run 44454158967) red on the same two, as predicted. No divergence.
 // OBSERVED, ROUND 2 (bun 1.3.14 on a Mac, predictions above unchanged, a driver restoring each file after each mutant): W17, W18 and W19 each went red on exactly the one test predicted.
 // OBSERVED, ROUND 1 (bun 1.3.14 on a Mac, 2026-11-18, predictions above unchanged, a driver restoring each file after each mutant, on e24053f): W11, W12, W14 and W15 each went red on exactly the one test predicted. W13 and W16 were NOT run: the Mac cannot create a non-UTF-8 name, so they are unobservable here and the Linux arm runner is where they are measured. Bun returns plain Uint8Arrays from readdirSync with encoding buffer (not Buffers), which the first run of the fix exposed. STATED LIMIT: the name scan does not cover a key-named empty directory, symlink or FIFO, because the listing holds regular files only.
 // OBSERVED (slice 4a-2b-2 part A, bun 1.3.14 on a Mac with bash as sh, 2026-11-18; the predictions above unchanged, a driver restoring each file after each mutant, run on the tree at 03cdd71). No survivor. W2, W4-W7 and W10 each went red on exactly the one test predicted; W8 on its two; W9 on its two. Divergences from the predictions: W1 reddened ONE test, not two ("every phase that runs a tool requires the shim rows, and all but clean the window row"): the second test builds its all-ok list from requiredChecks itself, so a phase that stops requiring the shim rows is invisible to it, and only the first test (which names the rows) closes the mutant; W3 reddened a third test, the end-to-end one, which asserts that a seal log is not an unseal log because of the seal-only tools (so an unseal that ignores unexpected tools reads it as passing). The Linux target's /bin/sh is dash; none of this was measured there.
