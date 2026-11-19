@@ -361,7 +361,7 @@ export function listWindowRoots(
         present[root] = false;
         continue;
       }
-      throw listingFailure(error, "realpath");
+      throw error;
     }
     present[root] = true;
     walk(real, true);
