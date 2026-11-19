@@ -13,10 +13,18 @@
 //   Z4  qualify-linux.ts calls groupIdsRow( from a second function -> "groupIdsRow stays in P0" only
 //   Z5  test/support/harness-source.ts: "systemctl" removed from forbiddenWords -> "a spelled-out evasion is a finding" only
 //   Z6  qualify-linux-shim.ts: the plain interposer's final line gains a second exec word (`exec exec /usr/bin/env ...`) -> the plain golden test and "the one allowed exec" only
+// ROUND 2 (opus r1 REQUEST_CHANGES at 01b8a7e; predictions committed before the run):
+//   V1  harness-source.ts: the shell rules lose their path prefix -> "a spelled-out evasion is a finding" only
+//   V2  qualify-linux-shim.ts: a `Bun.spawnSync(["/bin/true"]);` statement inside interposerScript's body -> "every spawn call is an allowed anchor" only (the golden text is unchanged)
+//   V3  harness-source.ts: closure() drops an unresolved import instead of throwing -> "a relative import that does not resolve throws" only
+//   V4  qualify-linux.ts: `const weaker = groupIdsRow;` after runFacts (a reference, not a call) -> "groupIdsRow stays in P0" only
+//   V5  harness-source.ts: the default/namespace child_process import rule removed -> "a spelled-out evasion is a finding" only
+//   V6  harness-source.ts: withoutInterposerText blanks the whole body again (the r1 window) -> "inside interposerScript only string contents are blanked" only
 // OBSERVED (Mac, bun 1.3.14, 2026-11-19; predictions unchanged, no divergence): the unmodified tree passes 9 of 9 (the positive control; it read 5 named bundled modules). Z1 red on exactly the spawn-anchor test. Z2 red on both golden tests. Z3 red on the no-findings test and the spawn-anchor test. Z4 red on exactly the N-5 test. Z5 red on exactly the spelled-out evasion test. Z6 red on the plain golden test and the one-allowed-exec test. rows.ts removeRunDirectoryUnder's /bin/rm spawn is a third allowed anchor (P4's delete by literal path), found by the first run of the scan. All Mac measurements; none depends on Linux.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { interposerScript } from "../scripts/qualify-linux-shim.ts";
 import {
   allowedSpawns,
@@ -30,15 +38,16 @@ import {
 } from "./support/harness-source.ts";
 
 const entry = "scripts/qualify-linux.ts";
-// Named as well as followed: rows and shim are bundled once P2 imports them.
-const scanned = [
-  ...new Set([
-    ...closure(entry),
-    "scripts/qualify-linux-rows.ts",
-    "scripts/qualify-linux-shim.ts",
-    "scripts/qualify-linux-support.ts",
-  ]),
-].sort();
+// Every named root is followed: rows and shim are bundled once P2 imports them,
+// and they bring src/adapters/tpm2-tools.ts with them, so its spawn allowance is
+// settled here and not discovered in B3.
+const roots = [
+  entry,
+  "scripts/qualify-linux-rows.ts",
+  "scripts/qualify-linux-shim.ts",
+  "scripts/qualify-linux-support.ts",
+];
+const scanned = closure(roots);
 const read = (file: string): string =>
   readFileSync(resolve(root, file), "utf8");
 
@@ -51,12 +60,16 @@ describe("the bundled modules", () => {
         "scripts/qualify-linux-rows.ts",
         "scripts/qualify-linux-shim.ts",
         "scripts/qualify-linux-support.ts",
+        "src/adapters/tpm2-tools.ts",
       ]),
     );
     for (const file of scanned)
       expect([
         file,
-        sourceProblems(withoutInterposerText(file, read(file))),
+        sourceProblems(
+          withoutInterposerText(file, read(file)),
+          file.startsWith("scripts/"),
+        ),
       ]).toEqual([file, []]);
   });
 
@@ -97,6 +110,22 @@ describe("the scan", () => {
       ['run("\\u0072eboot")', "names reboot"],
       ['run("\\x72eboot")', "names reboot"],
       ['run("sh", ["-c", "id"])', "a shell as a command"],
+      ['run("/bin/sh", ["-c", "id"])', "a shell as a command"],
+      ['run("/usr/bin/bash", ["-lc", "id"])', "a shell as a command"],
+      ['run("/bin/dash", ["-ec", "id"])', "a shell as a command"],
+      ['run("/bin/sh -c id")', "sh -c in one string"],
+      ['spawnSync("id", [], { shell })', "a shell shorthand option"],
+      ["run('re' + \"boot\")", "names reboot"],
+      [
+        'import proc from "node:child_process"; proc.exec("id");',
+        "a default or namespace child_process import",
+      ],
+      [
+        'import * as cp from "node:child_process";',
+        "a default or namespace child_process import",
+      ],
+      ['import { $ as run } from "bun";', "a $ taken from bun"],
+      ["const { $: run } = Bun;", "a $ taken from bun"],
       ['run("bash", ["-lc", "id"])', "a shell as a command"],
       ['run("dash", ["-ec", "id"])', "a shell as a command"],
       ['run("zsh -c id")', "sh -c in one string"],
@@ -184,20 +213,50 @@ describe("the generated interposer shell", () => {
 });
 
 describe("N-5", () => {
-  test("groupIdsRow stays in P0: its only use is inside runFacts, so seal and unseal cannot wire the weaker row", () => {
+  test("groupIdsRow stays in P0: every reference in every bundled module is its definition or the one call inside runFacts", () => {
+    let references = 0;
+    for (const file of scanned)
+      references += [...normalise(read(file)).matchAll(/\bgroupIdsRow\b/g)]
+        .length;
+    // The definition and the single call; a reference that is not a call counts.
+    expect(references).toBe(2);
     const source = normalise(read(entry));
-    const start = source.indexOf("function groupIdsRow(");
     const facts = source.indexOf("function runFacts(");
-    expect(start).toBeGreaterThan(-1);
-    expect(facts).toBeGreaterThan(start);
-    const factsEnd = source.indexOf("\nfunction", facts + 1);
-    const outside =
-      source.slice(0, start) +
-      source.slice(source.indexOf("\n}\n", start) + 3, facts) +
-      source.slice(factsEnd === -1 ? source.length : factsEnd);
-    expect([...outside.matchAll(/\bgroupIdsRow\b/g)].length).toBe(0);
+    const end = source.indexOf("\nexport function", facts + 1);
+    const insideFacts = source.slice(facts, end === -1 ? source.length : end);
+    expect([...insideFacts.matchAll(/\bgroupIdsRow\b/g)].length).toBe(1);
+  });
+});
+
+describe("the closure and the interposer window", () => {
+  test("a relative import that does not resolve throws, and an extensionless one resolves", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ward-closure-"));
+    try {
+      writeFileSync(join(dir, "a.ts"), 'import { b } from "./b";\n');
+      writeFileSync(join(dir, "b.ts"), "export const b = 1;\n");
+      expect(closure(["a.ts"], dir)).toEqual(["a.ts", "b.ts"]);
+      writeFileSync(join(dir, "a.ts"), 'import { x } from "./nope";\n');
+      expect(() => closure(["a.ts"], dir)).toThrow(/does not resolve/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("inside interposerScript only string contents are blanked: a spawn in its body is still counted, a word in a string is not", () => {
+    const source =
+      'export function interposerScript() {\n  const x = "/sbin/reboot";\n  return Bun.spawnSync(["/bin/true"]);\n}\nexport function other() {\n  return 1;\n}\n';
+    const code = normalise(
+      withoutInterposerText("scripts/qualify-linux-shim.ts", source),
+    );
+    expect([...code.matchAll(spawnCall)].length).toBe(1);
     expect(
-      [...source.slice(facts, factsEnd).matchAll(/\bgroupIdsRow\(/g)].length,
-    ).toBe(1);
+      sourceProblems(
+        withoutInterposerText("scripts/qualify-linux-shim.ts", source),
+      ),
+    ).toEqual([]);
+    // Outside the window the same string is a finding.
+    expect(sourceProblems('const x = "/sbin/reboot";')).toEqual(
+      expect.arrayContaining(["names reboot"]),
+    );
   });
 });
