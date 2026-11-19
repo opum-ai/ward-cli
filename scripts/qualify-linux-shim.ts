@@ -39,7 +39,7 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 // accepted as a stated limit of (a30). The compensating control is the exact
 // toolEnvironment key-set pin (LANG, LC_ALL, PATH, TPM2TOOLS_TCTI) in
 // test/tpm2-tools.test.ts, red on any other name. The T26 report and ADR 0028
-// name the four and the pin. It records the call (the name, the TCTI the environment
+// must name the four and the pin (both are owed; neither exists yet). It records the call (the name, the TCTI the environment
 // carried, the NAME of every environment variable with the sha256 of its value,
 // each argument), then runs the real tool by the absolute path detection
 // resolved. Stdin is untouched and is never logged. Stdout is never logged
@@ -385,27 +385,35 @@ export function scanWindow(
   let foreign = 0;
   let vanished = 0;
   const flags = safeOpenFlags();
-  for (const path of paths) {
+  // A path is accounted for only where it is disposed of: read, set aside as
+  // foreign or vanished, or put in `bad`.
+  const dispose = (path: string, bucket: "bad" | "foreign" | "vanished") => {
     accounted.push(path);
+    if (bucket === "bad") bad.push(path);
+    else if (bucket === "foreign") foreign++;
+    else vanished++;
+  };
+  for (const path of paths) {
     let fd: number | undefined;
     try {
       fd = openSync(path, flags);
       const stats = fstatSync(fd);
       if (!stats.isFile() || stats.size > maxWindowFileBytes) {
-        bad.push(path);
+        dispose(path, "bad");
         continue;
       }
       const content = readCapped(fd);
       if (content === undefined) {
-        bad.push(path);
+        dispose(path, "bad");
         continue;
       }
       filesRead++;
+      accounted.push(path);
       if (holdsAny(content, needlesFor(path))) matches.push(path);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") vanished++;
-      else if (code === "ELOOP") bad.push(path);
+      if (code === "ENOENT") dispose(path, "vanished");
+      else if (code === "ELOOP") dispose(path, "bad");
       else if (unreadable(error)) {
         let owner: number | undefined;
         try {
@@ -413,8 +421,7 @@ export function scanWindow(
         } catch {
           owner = undefined;
         }
-        if (owner !== undefined && owner !== uid) foreign++;
-        else bad.push(path);
+        dispose(path, owner !== undefined && owner !== uid ? "foreign" : "bad");
       } else throw error;
     } finally {
       if (fd !== undefined) closeSync(fd);
@@ -454,6 +461,8 @@ export function windowRow(
     scan.unreadable.length === 0 &&
     scan.filesRead > 0 &&
     accountedFor &&
+    scan.filesRead + scan.foreign + scan.vanished + scan.unreadable.length ===
+      changed &&
     scan.matches.length === 0;
   return {
     name: "key-not-in-files-present-at-the-after-listing",

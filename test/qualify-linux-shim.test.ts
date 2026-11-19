@@ -43,6 +43,7 @@ import {
 } from "../scripts/qualify-linux-shim.ts";
 import {
   deriveKey,
+  holdsAny,
   needleForms,
   secretNeedles,
   sha256,
@@ -63,10 +64,8 @@ const uid = process.getuid?.() ?? 0;
 const nonce =
   "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2";
 
-// A fake real tool: it echoes its arguments, copies stdin to stderr's sibling
-// file named by $FAKE_STDIN_COPY... kept simple: it prints what the test tells
-// it to print (a file's bytes), exits with the code in its code file, and
-// reports what it received on stdin on stderr as a byte count.
+// A fake real tool: it prints the bytes the test gives it on stdout, copies
+// whatever it receives on stdin to stderr, and exits with the given code.
 const fakeTool = (dir: string, stdoutBytes: Uint8Array, code = 0): string => {
   const out = join(dir, "fake.out");
   writeFileSync(out, stdoutBytes);
@@ -298,10 +297,7 @@ describe("installing the interposers", () => {
 });
 
 describe("the environment row", () => {
-  const callWith = (
-    env: Record<string, string>,
-    dir = "/run/interposers",
-  ): ToolCall => ({
+  const callWith = (env: Record<string, string>): ToolCall => ({
     tool: "tpm2_load",
     tcti: ruledTcti,
     args: [],
@@ -309,7 +305,6 @@ describe("the environment row", () => {
       name,
       digest: sha256(Buffer.from(value)),
     })),
-    ...(dir === "" ? {} : {}),
   });
   const good = expectedEnvironment("/run/interposers");
   const forms = needleForms([deriveKey(nonce)]);
@@ -384,45 +379,86 @@ describe("the environment row", () => {
       key.toString("base64"),
       "just text with no equals",
     ];
-    for (const continuation of continuations) {
+    for (const continuation of continuations)
+      for (const recordStdout of [false, true]) {
+        const dir = fresh("env");
+        const log = join(dir, "tools.log");
+        writeFileSync(log, "", { mode: 0o600 });
+        const script = join(dir, "tpm2_load");
+        // The real tool prints nothing of the environment, so the log holds only
+        // what the shim itself wrote.
+        const tool = fakeTool(dir, Buffer.from("ok\n"));
+        writeFileSync(
+          script,
+          interposerScript("tpm2_load", tool, log, recordStdout),
+          {
+            mode: 0o700,
+          },
+        );
+        const result = run(script, [], {
+          ...expectedEnvironment(dir),
+          ZZ_SPLIT: `x\n${continuation}`,
+        });
+        expect(result.code).toBe(0);
+        const text = readFileSync(log, "utf8");
+        // Over the log's bytes, for the key in every form and the continuation in
+        // every form, not one substring.
+        expect(
+          holdsAny(readFileSync(log), [
+            ...forms,
+            ...needleForms([Buffer.from(continuation)]),
+          ]),
+        ).toBe(false);
+        expect(text).toContain("ENV-SPLIT");
+        // The parser refuses the log, so no row is ever built from it ...
+        expect(() => parseToolLog(text)).toThrow(/malformed/);
+        // ... and a row built from a hand-made call would not carry it either.
+        const forged: ToolCall = {
+          tool: "tpm2_load",
+          tcti: ruledTcti,
+          args: [],
+          env: [
+            {
+              name: continuation.split("=")[0] as string,
+              digest: "0".repeat(64),
+            },
+          ],
+        };
+        const row = envRow([forged], dir, forms);
+        expect(row.ok).toBe(false);
+        expect(JSON.stringify(row)).not.toContain(
+          continuation.split("=")[0] as string,
+        );
+      }
+  });
+
+  test.skipIf(asRoot)(
+    "a printout call whose log cannot be written after the tool ran exits 98 and leaves no capture file",
+    () => {
       const dir = fresh("env");
       const log = join(dir, "tools.log");
       writeFileSync(log, "", { mode: 0o600 });
-      const script = join(dir, "tpm2_load");
+      // The tool makes the log read-only as its last act, so the OUT-block append
+      // is the write that fails.
+      const tool = join(dir, "fake-tool");
+      writeFileSync(tool, `#!/bin/sh\necho printed\nchmod 0400 '${log}'\n`, {
+        mode: 0o700,
+      });
+      const script = join(dir, "tpm2_sessionconfig");
       writeFileSync(
         script,
-        interposerScript("tpm2_load", "/usr/bin/env", log, false),
-        { mode: 0o700 },
+        interposerScript("tpm2_sessionconfig", tool, log, true),
+        {
+          mode: 0o700,
+        },
       );
-      const result = run(script, [], {
-        ...expectedEnvironment(dir),
-        ZZ_SPLIT: `x\n${continuation}`,
-      });
-      expect(result.code).toBe(0);
-      const text = readFileSync(log, "utf8");
-      expect(text).not.toContain(continuation);
-      expect(text).toContain("ENV-SPLIT");
-      // The parser refuses the log, so no row is ever built from it ...
-      expect(() => parseToolLog(text)).toThrow(/malformed/);
-      // ... and a row built from a hand-made call would not carry it either.
-      const forged: ToolCall = {
-        tool: "tpm2_load",
-        tcti: ruledTcti,
-        args: [],
-        env: [
-          {
-            name: continuation.split("=")[0] as string,
-            digest: "0".repeat(64),
-          },
-        ],
-      };
-      const row = envRow([forged], dir, forms);
-      expect(row.ok).toBe(false);
-      expect(JSON.stringify(row)).not.toContain(
-        continuation.split("=")[0] as string,
-      );
-    }
-  });
+      const result = run(script, ["/s.ctx"], expectedEnvironment(dir));
+      expect(result.code).toBe(98);
+      expect(
+        readdirSync(dir).filter((f) => f.startsWith("tools.log.out")),
+      ).toEqual([]);
+    },
+  );
 
   test("a clean environment writes no split marker, and a TCTI holding a newline stops the call", () => {
     const dir = fresh("env");
@@ -713,6 +749,21 @@ describe("the window rows", () => {
     expect(
       windowRow(w.before, w.after, { ...w.scan, filesRead: 0 }, [dir]).ok,
     ).toBe(false);
+    // A scan that read one file too many, or too few.
+    expect(
+      windowRow(w.before, w.after, { ...w.scan, filesRead: 2 }, [dir]).ok,
+    ).toBe(false);
+    // A path that is accounted for but never disposed of: two files changed, both
+    // listed as accounted, one read and the other neither read, foreign, vanished
+    // nor set aside.
+    const two = window([dir], () => {
+      writeFileSync(join(dir, "a"), "x");
+      writeFileSync(join(dir, "b"), "y");
+    });
+    expect(windowRow(two.before, two.after, two.scan, [dir]).ok).toBe(true);
+    expect(
+      windowRow(two.before, two.after, { ...two.scan, filesRead: 1 }, [dir]).ok,
+    ).toBe(false);
     // Counts that add up but name another path: accounted by path, not by number.
     expect(
       windowRow(
@@ -927,3 +978,10 @@ describe("the report statement row", () => {
 //   S34 scanWindow drops the size cap (the fstat check and the capped read)                -> "a file larger than the cap is not scanned and fails the row, and a vanished file is accounted for" only
 //   S35 interposerScript drops the TCTI newline stop                                       -> "a clean environment writes no split marker, and a TCTI holding a newline stops the call" only
 //   S36 src/adapters/tpm2-tools.ts toolEnvironment gains a fifth variable (FOO)            -> "the adapter builds exactly four environment variables, by the names in its source" and "the child sees the search path and the device and nothing else" in test/tpm2-tools.test.ts; reverted after
+
+// MUTANT REGISTER, ROUND 3 (the #367 round-2 REQUEST_CHANGES at f7075e6: X1 runtime key-set pin with no shell, X2 per-file disposition, X3 observations; n2, n3, n7), written and committed BEFORE any run of S37-S41, and BEFORE the re-run of S28-S36 whose round-2 observations were never recorded in this file. Bun 1.3.14. Each mutant goes red on the named test(s) only, across test/qualify-linux-shim.test.ts, test/qualify-linux-rows.test.ts, test/qualify-linux.test.ts and test/tpm2-tools.test.ts. S28-S36 keep their round-2 predictions above and are re-run on this tree (S28 and S35 now also run with the recording interposer, S28 on both paths).
+//   S37 src/adapters/tpm2-tools.ts toolEnvironment gains SHLVL by spread (`...{ SHLVL: "1" }`)  -> "the adapter's tool environment is exactly LANG, LC_ALL, PATH and TPM2TOOLS_TCTI, read from a tool that is env itself, no shell in between" only (the shell-based child test filters SHLVL, so it stays green); reverted after
+//   S38 windowRow drops the count identity (filesRead + foreign + vanished + unreadable === changed)  -> "a window that read no file, a missing required root, and a file nobody accounted for all fail" only
+//   S39 scanWindow accounts a path at the top of the loop again, before it is disposed of, and the count identity is dropped (the round-2 shape)  -> "a window that read no file, a missing required root, and a file nobody accounted for all fail" only
+//   S40 scanWindow does not push a read file into `accounted`                              -> every test whose row must pass: "a file new in the window that holds the key, in any form, fails the row; a clean one passes", "state.json is searched for the key forms only, because it holds the nonce by design", "a window that read no file, a missing required root, and a file nobody accounted for all fail", "a root that does not exist is recorded as absent, not an error, and may stay absent", "a file larger than the cap is not scanned and fails the row, and a vanished file is accounted for"
+//   S41 interposerScript drops the OUT-block `|| { rm -f "$capture"; exit 98; }`            -> "a printout call whose log cannot be written after the tool ran exits 98 and leaves no capture file" only (a non-root user)
