@@ -582,9 +582,10 @@ export function verdict(
     : "FAILED";
 }
 
-// The harness never reboots, powers off or reaches for a shell (DEC-262: the
-// operator reboots, Ward never does). This reads the harness source as code, with
-// comments removed, so a comment saying "never reboot" is not a finding.
+// A lexical tripwire over qualify-linux.ts, not a guarantee (DEC-262: the
+// operator reboots, Ward never does). It reads that one file as code, with
+// comments removed, so a comment saying "never reboot" is not a finding; it does
+// not see the other modules the harness bundles or an evasion it does not list.
 export const forbiddenSpawnWords = [
   "reboot",
   "shutdown",

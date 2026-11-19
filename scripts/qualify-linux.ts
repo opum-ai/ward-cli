@@ -11,7 +11,7 @@
 // never read as a run.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { buildExecutable, entry } from "./build.ts";
 import { type Check, sha256, verdict } from "./qualify-linux-support.ts";
 
@@ -85,21 +85,28 @@ export function runFacts(run: Runner): {
   return {
     result: verdict("facts", checks),
     checks,
+    // A failed uname leaves "unavailable" and the run can still PASS: uname -a
+    // is recorded, not a required row (DEC-262 a33), so only its absence shows.
     facts: { uname: uname.status === 0 ? uname.stdout.trim() : "unavailable" },
   };
 }
 
 // No shell, a fixed environment, a bounded wait; a missing binary or a timeout
 // reads as a failed probe, never as an empty success.
-const spawnRunner: Runner = (command, args) => {
-  const run = spawnSync(command, [...args], {
-    encoding: "latin1",
-    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
-    timeout: 10_000,
-    shell: false,
-  });
-  return { status: run.status, stdout: run.stdout ?? "" };
-};
+export const probeTimeoutMs = 10_000;
+export function makeRunner(timeoutMs: number = probeTimeoutMs): Runner {
+  return (command, args) => {
+    const run = spawnSync(command, [...args], {
+      encoding: "latin1",
+      env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+      timeout: timeoutMs,
+      shell: false,
+    });
+    // A spawn that failed (ENOENT) has no status at all under Bun, not null.
+    return { status: run.status ?? null, stdout: run.stdout ?? "" };
+  };
+}
+export const spawnRunner: Runner = makeRunner();
 
 export type Command =
   | { kind: "build"; dir: string }
@@ -121,15 +128,26 @@ export function parseArgs(argv: readonly string[]): Command {
   return phase === undefined ? { kind: "usage" } : { kind: "phase", phase };
 }
 
-function build(dir: string): void {
-  mkdirSync(dir, { recursive: true });
-  const built = Object.fromEntries(
+// Builds the shipped ward and this harness for a Linux arm64 host. The dir is
+// resolved ONCE to an absolute path: buildExecutable runs bun with the repository
+// root as its cwd, so a relative dir would be written under the root while the
+// hash read it from the caller's cwd, and a stale file could be printed as built.
+// The build embeds the production service name ("opum.ward", the default define)
+// and, for a cross-compile, bun downloads the target runtime into ~/.bun on the
+// build host (the held --build clearance covers that).
+export function build(
+  dir: string,
+  builder: typeof buildExecutable = buildExecutable,
+): Record<string, string> {
+  const out = resolve(dir);
+  mkdirSync(out, { recursive: true });
+  return Object.fromEntries(
     [
       ["ward", entry],
       ["ward-qualify-linux", import.meta.path],
     ].map(([name, source]) => {
-      const outfile = join(dir, name as string);
-      buildExecutable({
+      const outfile = join(out, name as string);
+      builder({
         entry: source as string,
         outfile,
         target: "bun-linux-arm64",
@@ -137,13 +155,12 @@ function build(dir: string): void {
       return [name, sha256(readFileSync(outfile))];
     }),
   );
-  console.log(JSON.stringify({ built }));
 }
 
 if (import.meta.main) {
   const command = parseArgs(process.argv.slice(2));
   if (command.kind === "build") {
-    build(command.dir);
+    console.log(JSON.stringify({ built: build(command.dir) }));
   } else if (command.kind === "phase" && command.phase === "facts") {
     if (process.platform !== "linux") {
       console.error("refusing: the Linux qualification runs on Linux");
