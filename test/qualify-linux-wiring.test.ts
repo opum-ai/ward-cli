@@ -633,10 +633,26 @@ describe("a file named after the key", () => {
         const detail = row.detail as Record<string, unknown>;
         expect(detail.beforeNonUtf8NameDirectories).toBe(1);
         expect(detail.nonUtf8NameDirectories).toBe(0);
+        // The same window with the before listing's bad name cleared passes, so
+        // it is the before clause that fails it.
+        expect(
+          judge({ ...before, nonUtf8Directories: [] }, after, rs).row.ok,
+        ).toBe(true);
       }
     }
-    // An own directory that cannot be read (not as root: root ignores modes).
-    if (uid !== 0) {
+  });
+
+  test.skipIf(uid === 0)(
+    "an own unreadable directory at the BEFORE listing alone fails the row (root ignores modes, so it is skipped there)",
+    () => {
+      const judge = (
+        before: ReturnType<typeof listWindowRoots>,
+        after: ReturnType<typeof listWindowRoots>,
+        rs: string[],
+      ) => {
+        const scan = scanWindow(changedFiles(before, after), () => forms, uid);
+        return { scan, row: windowRow(before, after, scan, rs) };
+      };
       const dir = fresh("window");
       const sound = fresh("window");
       const rs = [dir, sound];
@@ -660,45 +676,53 @@ describe("a file named after the key", () => {
       } finally {
         chmodSync(locked, 0o700);
       }
-    }
+    },
+  );
+
+  // Root ignores modes, so these skip there; a skip reads as success, so under
+  // CI (never root on the hosted runner) running as root fails instead.
+  test("the mode-dependent window tests do not silently skip under CI", () => {
+    if (process.env.CI) expect(uid).not.toBe(0);
   });
 
-  test("an own unreadable directory at the AFTER listing alone fails the row (the mirror of the before test)", () => {
-    if (uid === 0) return; // root ignores modes
-    const dir = fresh("window");
-    const sound = fresh("window");
-    const rs = [dir, sound];
-    const locked = join(dir, "locked");
-    mkdirSync(locked);
-    const before = listWindowRoots(rs, uid);
-    expect(before.ownUnreadable).toEqual([]);
-    chmodSync(locked, 0o000);
-    try {
-      writeFileSync(join(sound, "ordinary"), "x");
-      const after = listWindowRoots(rs, uid);
-      expect(after.ownUnreadable).toEqual([locked]);
-      const scan = scanWindow(changedFiles(before, after), () => forms, uid);
-      expect(scan.filesRead).toBe(1);
-      const row = windowRow(before, after, scan, rs);
-      expect(row.ok).toBe(false);
-      const detail = row.detail as Record<string, unknown>;
-      expect(detail.ownUnreadableDirectories).toBe(1);
-      expect(detail.beforeOwnUnreadableDirectories).toBe(0);
-      // Unlocked again, the same window passes, so it is the directory that fails.
-      chmodSync(locked, 0o700);
-      const clean = listWindowRoots(rs, uid);
-      expect(
-        windowRow(
-          before,
-          clean,
-          scanWindow(changedFiles(before, clean), () => forms, uid),
-          rs,
-        ).ok,
-      ).toBe(true);
-    } finally {
-      chmodSync(locked, 0o700);
-    }
-  });
+  test.skipIf(uid === 0)(
+    "an own unreadable directory at the AFTER listing alone fails the row (the mirror of the before test)",
+    () => {
+      const dir = fresh("window");
+      const sound = fresh("window");
+      const rs = [dir, sound];
+      const locked = join(dir, "locked");
+      mkdirSync(locked);
+      const before = listWindowRoots(rs, uid);
+      expect(before.ownUnreadable).toEqual([]);
+      chmodSync(locked, 0o000);
+      try {
+        writeFileSync(join(sound, "ordinary"), "x");
+        const after = listWindowRoots(rs, uid);
+        expect(after.ownUnreadable).toEqual([locked]);
+        const scan = scanWindow(changedFiles(before, after), () => forms, uid);
+        expect(scan.filesRead).toBe(1);
+        const row = windowRow(before, after, scan, rs);
+        expect(row.ok).toBe(false);
+        const detail = row.detail as Record<string, unknown>;
+        expect(detail.ownUnreadableDirectories).toBe(1);
+        expect(detail.beforeOwnUnreadableDirectories).toBe(0);
+        // Unlocked again, the same window passes, so it is the directory that fails.
+        chmodSync(locked, 0o700);
+        const clean = listWindowRoots(rs, uid);
+        expect(
+          windowRow(
+            before,
+            clean,
+            scanWindow(changedFiles(before, clean), () => forms, uid),
+            rs,
+          ).ok,
+        ).toBe(true);
+      } finally {
+        chmodSync(locked, 0o700);
+      }
+    },
+  );
 
   test("a root that resolves to a path the listing cannot find is an error, not a silent absence", () => {
     const base = fresh("window");
@@ -824,6 +848,9 @@ describe("the adapter, through real interposers, over fake tools", () => {
 // FOLLOW-UP 4 (opus #395 approval F1, F2, F4), predictions written and committed BEFORE any run:
 //   W32  qualify-linux-shim.ts: windowRow drops the after.ownUnreadable clause                         -> "an own unreadable directory at the AFTER listing alone fails the row (the mirror of the before test)" only (Mac, and Linux when not root); the existing shim.test.ts own-unreadable test passes the same listing as before and after, so it stays green
 //   W33  qualify-linux-shim.ts: windowRow's detail reports no before counts (beforeOwnUnreadableDirectories and beforeNonUtf8NameDirectories removed) -> "a bad name or an unreadable directory present at the BEFORE listing fails the row though the after listing is clean" and the AFTER mirror test (Mac for the own count; Linux for the non-UTF-8 count)
+//   W34  qualify-linux-shim.ts: windowRow drops the before.ownUnreadable clause -> "an own unreadable directory at the BEFORE listing alone fails the row (root ignores modes, so it is skipped there)" only (Mac, and Linux when not root); the AFTER mirror stays green
+//   W35  qualify-linux-shim.ts: windowRow's `scan.filesRead > 0` becomes `scan.filesRead > 1` (a clause other than the before one starts failing the follow-up 4 window) -> the same-window pins in the BEFORE tests go red together with the controls that already read one file; the pin is not isolated from them, so this only shows it is not vacuous
+//   W36  this file: the CI root guard test is deleted -> nothing goes red on a runner as non-root; with CI=1 and a preload making process.getuid() return 0 (Mac, not measurable on a hosted runner, which is not root), the intact file fails exactly the guard test and the mode tests skip, and the mutant file passes with those skipped
 // OBSERVED, FOLLOW-UP 4 (Mac, bun 1.3.14, and Linux, ubuntu-24.04-arm Check jobs through throwaway draft PRs cut from 32e11b8, 2026-11-19; predictions unchanged): W32 red on exactly the AFTER mirror test on the Mac and on Linux (opum-ai/ward-cli#400, run 44459793024); W33 red on the BEFORE test and the AFTER mirror test on the Mac and on Linux (#401, run 44459797895). No divergence.
 // OBSERVED, ROUND 2 (bun 1.3.14 on a Mac, predictions above unchanged, a driver restoring each file after each mutant): W17, W18 and W19 each went red on exactly the one test predicted.
 // OBSERVED, ROUND 1 (bun 1.3.14 on a Mac, 2026-11-18, predictions above unchanged, a driver restoring each file after each mutant, on e24053f): W11, W12, W14 and W15 each went red on exactly the one test predicted. W13 and W16 were NOT run: the Mac cannot create a non-UTF-8 name, so they are unobservable here and the Linux arm runner is where they are measured. Bun returns plain Uint8Arrays from readdirSync with encoding buffer (not Buffers), which the first run of the fix exposed. STATED LIMIT: the name scan does not cover a key-named empty directory, symlink or FIFO, because the listing holds regular files only.
