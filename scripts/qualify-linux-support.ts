@@ -371,19 +371,37 @@ export function containing(
   const searched = needles.flatMap(forms);
   const files = regularFiles(directory);
   const matches = files.filter((name) => {
-    const content = readFileSync(join(directory, name));
-    // The same bytes with every whitespace run read as one space: a listing
-    // wrapped over lines, or padded to align its columns, then matches the
-    // single-space forms.
-    const collapsed = Buffer.from(
-      content.toString("latin1").replace(/\s+/g, " "),
-      "latin1",
-    );
-    return searched.some(
-      (form) => content.includes(form) || collapsed.includes(form),
-    );
+    return holdsAny(readFileSync(join(directory, name)), searched);
   });
   return { matches, filesRead: files.length };
+}
+
+// Whether `content` holds any of the already-expanded forms, as is or with every
+// whitespace run read as one space: a listing wrapped over lines, or padded to
+// align its columns, then matches the single-space forms.
+export function holdsAny(
+  content: Buffer,
+  searched: readonly Buffer[],
+): boolean {
+  const collapsed = Buffer.from(
+    content.toString("latin1").replace(/\s+/g, " "),
+    "latin1",
+  );
+  return searched.some(
+    (form) => content.includes(form) || collapsed.includes(form),
+  );
+}
+
+// Every form of each needle (see forms), for a scan that reads files itself.
+export function needleForms(needles: readonly Uint8Array[]): Buffer[] {
+  if (
+    needles.length === 0 ||
+    needles.some((needle) => needle.length < minimumNeedleBytes)
+  )
+    throw new Error(
+      `the scan needs at least one needle and each is at least ${minimumNeedleBytes} bytes`,
+    );
+  return needles.flatMap(forms);
 }
 
 // A shorter needle matches unrelated files in some form of it, which would fail

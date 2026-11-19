@@ -301,15 +301,20 @@ export interface ToolCall {
   // The exit code the log recorded for the printout block. A printout of a tool
   // that failed is not evidence of anything.
   readonly rc?: number;
+  // The environment the tool was started with, as the interposer saw it: each
+  // variable's NAME and the sha256 of its value, never the value (DEC-262 a30).
+  // Absent when the log carried no ENV line for the call.
+  readonly env?: readonly { readonly name: string; readonly digest: string }[];
 }
 
-// The log back into calls. The format (CALL, TCTI, ARG lines, END, and for one
-// tool an OUT-BEGIN/OUT-END block with RC and DONE) is the one the proposed tool
-// interposer would write; the interposer itself is NOT in this slice, and the
-// format awaits opum-doc's ruling on the measurement method (DEC-262 a29). This
-// parser assumes the interposer arm of that ruling: under an observer hook in
-// the adapter the log would not have this shape. A line that is not part of the
-// format is a refusal: a log that cannot be read whole is not evidence. Each
+// The log back into calls. The format (CALL, TCTI, ENV and ARG lines, END, and
+// for one tool an OUT-BEGIN/OUT-END block with RC and DONE) is the one the tool
+// interposer in qualify-linux-shim.ts writes, the arm opum-doc ruled (DEC-262
+// a30). An ENV line is `ENV <name> <sha256 of the value>`: a name that is not an
+// identifier, a digest that is not 64 lowercase hex, or a name given twice in
+// one call is a refusal. A line that is not part of the format is a refusal (the
+// shim's one ENV-SPLIT marker, written when a value split over lines, is such a
+// line): a log that cannot be read whole is not evidence. Each
 // call has exactly one TCTI line, no call follows an OUT block until its RC and
 // DONE, and no tool whose stdout carries the key (tpm2_unseal, tpm2_create) has
 // an OUT block at all.
@@ -322,6 +327,7 @@ export function parseToolLog(text: string): ToolCall[] {
     args: string[];
     stdout?: string;
     rc?: number;
+    env?: { name: string; digest: string }[];
   };
   const calls: Open[] = [];
   const lines = text.split("\n");
@@ -351,6 +357,15 @@ export function parseToolLog(text: string): ToolCall[] {
       if (tctiSeen) malformed();
       tctiSeen = true;
       (current as Open).tcti = line.slice(5);
+    } else if (state === "args" && line.startsWith("ENV ")) {
+      const match = /^ENV ([A-Za-z_][A-Za-z0-9_]*) ([0-9a-f]{64})$/.exec(line);
+      const open = current as Open;
+      if (match === null || open.env?.some((e) => e.name === match[1]))
+        malformed();
+      open.env = [
+        ...(open.env ?? []),
+        { name: match?.[1] as string, digest: match?.[2] as string },
+      ];
     } else if (state === "args" && line.startsWith("ARG "))
       (current as Open).args.push(line.slice(4));
     else if (state === "args" && line === "END") state = "idle";
@@ -373,9 +388,8 @@ export function parseToolLog(text: string): ToolCall[] {
   return calls;
 }
 
-// Under the interposer arm this is the TCTI each interposed call was given; under
-// an observer hook it would be what the adapter passed. The two are not the same
-// claim, and which one this row makes waits on opum-doc's pending A/B.
+// This is the TCTI each interposed call was given, as the interposer recorded it
+// (the arm opum-doc ruled, DEC-262 a30), not what the adapter passed.
 export function tctiRow(calls: readonly ToolCall[]): Check {
   return {
     name: "tcti-is-device-tpmrm0",
@@ -493,10 +507,11 @@ export function saltedRow(calls: readonly ToolCall[]): Check {
 
 // The secret scan, as rows: the key and the nonce appear in no file under the
 // store, and none in the tool log (every argument of every tool call as the
-// interposer recorded it). The environment is NOT in that log, so no row claims
-// it. A scan that read no file, or a log with no call, proves nothing and fails.
-// `log.filesRead > 0` assumes the interposer arm of opum-doc's pending A/B: under
-// an observer hook there may be no log file to read.
+// interposer recorded it). The log holds each variable's name and a sha256 of its
+// value, never the value, so this scan is not what judges the environment: envRow
+// in qualify-linux-shim.ts is. A scan that read no file, or a log with no call,
+// proves nothing and fails. `log.filesRead > 0` holds because the interposer arm
+// (DEC-262 a30) always writes the log.
 export function scanRows(
   store: ScanResult,
   log: ScanResult,
@@ -517,12 +532,35 @@ export function scanRows(
   ];
 }
 
-// The run directory is private all the way down.
-export function privateRow(directory: string): Check {
-  const problems = modeProblems(directory);
+// The run directory is private all the way down: 0600 files, 0700 directories.
+// The one exception is the interposer directory's own scripts, which must be
+// executable (0700), and only those: a file at 0700 anywhere else is a problem.
+export function privateRow(directory: string, executableUnder?: string): Check {
+  const problems = modeProblems(directory).filter(
+    (problem) =>
+      executableUnder === undefined ||
+      !new RegExp(`^${escapeRegExp(executableUnder)}/[^/]+: 700$`).test(
+        problem,
+      ),
+  );
   return {
     name: "run-directory-private",
     ok: problems.length === 0,
     detail: { problems },
+  };
+}
+
+const escapeRegExp = (text: string): string =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// What the report must say about how the run measured (DEC-262 a30): the tools
+// were reached through a logging shim, and that is what qualified.
+export const shimStatement =
+  "Ward plus a logging shim in front of the trusted binaries";
+
+export function reportStatementRow(statement: string): Check {
+  return {
+    name: "report-states-the-logging-shim",
+    ok: statement === shimStatement,
   };
 }

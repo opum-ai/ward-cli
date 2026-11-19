@@ -38,6 +38,7 @@ import {
   diagnoseTpm2ForTest,
   maxToolOutputBytes,
   preparePrivateDirectory,
+  diagnosticTool,
   requiredTools,
   requirePrivateFile,
   runTool,
@@ -53,6 +54,8 @@ import {
   spawnTool,
   Tpm2Error,
   type Tpm2Host,
+  type Tpm2Presence,
+  type Tpm2Tool,
   type Tpm2Reason,
   tpm2StateFor,
   keyUnloadableHint,
@@ -873,11 +876,54 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     expect(env.TPM2TOOLS_TCTI).toBe(`device:${DEVICE}`);
     expect(env.LANG).toBe("C");
     expect(env.LC_ALL).toBe("C");
+    // The fake tool's shell adds PWD, SHLVL, _ and possibly OLDPWD of its own, so
+    // the exact key set is pinned in the next test, from a tool that is env
+    // itself; here the names are pinned modulo those four.
+    expect(
+      Object.keys(env)
+        .filter((name) => !["_", "SHLVL", "PWD", "OLDPWD"].includes(name))
+        .sort(),
+    ).toEqual(["LANG", "LC_ALL", "PATH", "TPM2TOOLS_TCTI"]);
     expect(env).not.toHaveProperty(key);
     expect(env).not.toHaveProperty("HOME");
     expect(
       Object.keys(env).filter((name) => /^(LD_|DYLD_)/.test(name)),
     ).toEqual([]);
+  });
+
+  test("the adapter's tool environment is exactly LANG, LC_ALL, PATH and TPM2TOOLS_TCTI, read from a tool that is env itself, no shell in between", async () => {
+    // DEC-262 (a31): the exact key-set pin, red on any other name including _,
+    // SHLVL, PWD and OLDPWD. /usr/bin/env is run directly by runTool, so what it
+    // prints is the environment the adapter built and nothing a shell added.
+    const saved = { SHLVL: process.env.SHLVL, PWD: process.env.PWD };
+    process.env.SHLVL = "3";
+    process.env.PWD = "/somewhere";
+    try {
+      // Every tool Ward runs, so a name added for one tool only is still seen.
+      const all: Tpm2Tool[] = [...requiredTools, diagnosticTool];
+      const presence = {
+        device: DEVICE,
+        tools: Object.fromEntries(all.map((tool) => [tool, "/usr/bin/env"])),
+      } as unknown as Tpm2Presence;
+      for (const tool of all) {
+        const run = await runTool(presence, tool, []);
+        const names = Buffer.from(run.stdout)
+          .toString("latin1")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split("=")[0]);
+        expect(names.sort()).toEqual([
+          "LANG",
+          "LC_ALL",
+          "PATH",
+          "TPM2TOOLS_TCTI",
+        ]);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(saved))
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+    }
   });
 
   test("stdin carries bytes to the tool and argv carries none of them", async () => {
