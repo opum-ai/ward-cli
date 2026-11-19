@@ -339,7 +339,8 @@ export function listWindowRoots(
       if (
         raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
       ) {
-        ownUnreadable.push(path);
+        if (stats.uid === uid) ownUnreadable.push(path);
+        else foreignUnreadable++;
         return;
       }
       for (const entry of entries.sort()) walk(join(path, entry));
