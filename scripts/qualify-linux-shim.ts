@@ -273,10 +273,13 @@ export interface WindowListing {
   // the row fails. A directory another user owns and this user cannot read could
   // not have been written by this run, and is only counted.
   readonly foreignUnreadable: number;
-  // Also every directory, whoever owns it, holding a name that is not valid
-  // UTF-8 (/tmp and /dev/shm are other users' directories this run writes into),
-  // so the row fails on it.
   readonly ownUnreadable: readonly string[];
+  // Every directory, whoever owns it, holding a name that is not valid UTF-8
+  // (/tmp and /dev/shm are other users' directories this run writes into): a
+  // name that cannot be held as a string without becoming a different one, so
+  // the directory's contents are unknown and the row fails. Kept apart from
+  // ownUnreadable so the report can say which of the two it was.
+  readonly nonUtf8Directories: readonly string[];
 }
 
 const unreadable = (error: unknown): boolean =>
@@ -305,6 +308,7 @@ export function listWindowRoots(
   const present: Record<string, boolean> = {};
   const files: Record<string, string> = {};
   const ownUnreadable: string[] = [];
+  const nonUtf8Directories: string[] = [];
   let foreignUnreadable = 0;
   const walk = (path: string, top = false): void => {
     let stats: Stats;
@@ -339,7 +343,7 @@ export function listWindowRoots(
       if (
         raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
       ) {
-        ownUnreadable.push(path);
+        nonUtf8Directories.push(path);
         return;
       }
       for (const entry of entries.sort()) walk(join(path, entry));
@@ -366,7 +370,13 @@ export function listWindowRoots(
     present[root] = true;
     walk(real, true);
   }
-  return { present, files, foreignUnreadable, ownUnreadable };
+  return {
+    present,
+    files,
+    foreignUnreadable,
+    ownUnreadable,
+    nonUtf8Directories,
+  };
 }
 
 // The files that are new, or whose size, times or inode moved, between the two
@@ -514,7 +524,8 @@ export function scanWindow(
 // The row for AC1's temp-file clause (DEC-262 a30 (ii)): every file new or
 // changed between the two listings was read, and none holds the key. It fails
 // when a root the run must have (the run directory) is missing from either
-// listing, when a directory of this user's own could not be listed, when a file
+// listing, when a directory of this user's own could not be listed or holds a
+// name that is not valid UTF-8, when a file
 // of this user's own could not be read or was too large, when a file was
 // neither read nor accounted for, and when nothing at all was read (the run
 // directory alone gains files, so a window that read none looked at nothing).
@@ -539,6 +550,8 @@ export function windowRow(
     sameRoots &&
     before.ownUnreadable.length === 0 &&
     after.ownUnreadable.length === 0 &&
+    before.nonUtf8Directories.length === 0 &&
+    after.nonUtf8Directories.length === 0 &&
     scan.unreadable.length === 0 &&
     scan.filesRead > 0 &&
     accountedFor &&
@@ -557,6 +570,8 @@ export function windowRow(
       foreignUnreadableDirectories: after.foreignUnreadable,
       // A directory's name is a path this row did not judge, so only a count.
       ownUnreadableDirectories: after.ownUnreadable.length,
+      // Counts only, never the directory names: one holding a non-UTF-8 name.
+      nonUtf8NameDirectories: after.nonUtf8Directories.length,
       unreadable: scan.unreadable,
       nameMatches: scan.nameMatches,
       matches: scan.matches,
