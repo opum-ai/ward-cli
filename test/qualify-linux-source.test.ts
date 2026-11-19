@@ -42,6 +42,7 @@
 //   T7  harness-source.ts: the word regex loses its `i` flag -> "a spelled-out evasion is a finding" and "a whole quoted literal or its last path component is a finding" only
 //   T8  harness-source.ts: the \n \t whitespace conversion removed -> "a spelled-out evasion is a finding" only
 //   T9  harness-source.ts: the package.json directory throw removed -> "a directory import with a package.json throws" only
+// OBSERVED, ROUND 4 (Mac, bun 1.3.14, 2026-11-19; unmodified tree 17 of 17, the positive control, which also read every tool and both variants: 14 generated texts): T1, T4, T7, T8, T9 red on exactly their predicted tests (T7 on both the evasion and the src-literal test). T2 and T3 red on the per-tool test AND the source pin, as predicted. T5 red on the spawn-anchor test AND the source pin, as predicted. T6 DIVERGED: GREEN, because the window test counted spawns through normalise() directly and never exercised sourceProblems' own structural rules; a case was added (execSync through the regex-quote route and the `${}`-brace route, read by sourceProblems) and T6 re-run is then red on exactly that test. Pin: test/fixtures/qualify-linux/interposer-source.sha256.
 import "./support/no-real-keychain.ts";
 import { describe, expect, test } from "bun:test";
 import {
@@ -405,6 +406,14 @@ describe("the closure and the interposer window", () => {
         ),
       ),
     ).toBe(1);
+    // The other structural rules read the unblanked code too (exec, here).
+    for (const body of [
+      "  /'/.test(tool); execSync(\"x\"); /'/.test(tool);",
+      '  return `${tool === "x" ? "}" + execSync("x") : ""}`;',
+    ])
+      expect(sourceProblems(window(body), { file: shim })).toEqual(
+        expect.arrayContaining(["exec"]),
+      );
     // Outside the window the same string is a finding.
     expect(sourceProblems('const x = "/sbin/reboot";')).toEqual(
       expect.arrayContaining(["names reboot"]),
