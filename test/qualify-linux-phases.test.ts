@@ -19,6 +19,7 @@
 //   Y4  qualify-linux.ts: makeRunner drops its timeout -> "a probe past its timeout reads as failed" only
 // OBSERVED (Mac, bun 1.3.14, 2026-11-19): X1 GREEN, a divergence: the test iterated the mutated list, so it could not see the removal; fixed by spelling the words out (commit after the first), then X1b red on exactly "each forbidden word in code is a finding". X2, X3, X5 red on exactly their predicted test. X4 killed the test process on import (the usage branch printed and exited 2), so no test ran: red as predicted. Mac only; none of these are Linux-only.
 import { describe, expect, test } from "bun:test";
+// OBSERVED, ROUND 2 (Mac, bun 1.3.14, 2026-11-19; predictions unchanged): Y1, Y2, Y3 and Y4 each red on exactly their predicted test (Y4 took the full 5s sleep). A new test, "a missing binary reads as failed", found a real defect before any mutant: under Bun a failed spawn (ENOENT) has status undefined, not null, so the runner now maps it to null. N-2 (review): the harness compiled natively (no --target, so no download) into the scratchpad and run with --phase facts on the Mac refused ("refusing: the Linux qualification runs on Linux", exit 2); a find for files newer than a marker taken before the build found nothing new under the repository or dist/ (dist/ward Sep 29 12:06 and dist/ward-qualify Oct 20 23:11, unchanged), only the built binary.
 import {
   mkdtempSync,
   readFileSync,
