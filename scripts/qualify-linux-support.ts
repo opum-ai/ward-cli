@@ -478,6 +478,21 @@ const runWide = [
   "handle-lists-unchanged",
   "real-ward-metadata-unchanged",
 ] as const;
+// The rows the logging shim adds (DEC-262 a30): what the interposers saw of the
+// environment and the arguments, the report statement, and that the calls the
+// phase must make were logged. Without them in this list a run that never
+// produced one would still read PASSED.
+const shimCalls = [
+  "key-not-in-tool-environment",
+  "key-not-in-tool-argv",
+  "report-states-the-logging-shim",
+  "expected-tool-calls-made",
+  "interposer-env-matches-tool-env",
+] as const;
+// The listing of the places a key could be left. The clean phase takes none: the
+// run directory it works in is deleted by the end of it, so a window over it has
+// nothing to compare.
+const shimWindow = ["key-not-in-files-present-at-the-after-listing"] as const;
 const stored = [
   "run-directory-is-ruled-literal-path",
   "run-directory-private",
@@ -498,6 +513,8 @@ const keyHandling = [
 export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
   facts: [
     ...runWide,
+    ...shimCalls,
+    ...shimWindow,
     "effective-groups-recorded",
     "tpm-device-present",
     "tpm2-tools-present",
@@ -511,10 +528,17 @@ export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
     "real-ward-metadata-unchanged",
     "binaries-sha256-match-both-ends",
   ],
-  seal: [...stored, ...keyHandling],
-  unseal: [...stored, ...keyHandling, "boot-id-differs-from-seal"],
+  seal: [...stored, ...keyHandling, ...shimCalls, ...shimWindow],
+  unseal: [
+    ...stored,
+    ...keyHandling,
+    ...shimCalls,
+    ...shimWindow,
+    "boot-id-differs-from-seal",
+  ],
   clean: [
     ...runWide,
+    ...shimCalls,
     "run-directory-is-ruled-literal-path",
     "run-directory-removed",
   ],

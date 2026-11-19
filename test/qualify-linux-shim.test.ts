@@ -818,6 +818,7 @@ describe("the window rows", () => {
             foreign: 0,
             vanished: 0,
             unreadable: [],
+            nameMatches: 0,
             accounted: [],
           },
           [dir],
