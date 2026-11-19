@@ -343,7 +343,7 @@ export function listWindowRoots(
       if (
         raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
       ) {
-        nonUtf8Directories.push(path);
+        ownUnreadable.push(path);
         return;
       }
       for (const entry of entries.sort()) walk(join(path, entry));
