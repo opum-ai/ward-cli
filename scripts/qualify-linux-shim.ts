@@ -314,7 +314,7 @@ export function listWindowRoots(
       stats = lstatSync(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" && !top) return;
-      throw listingFailure(error, "lstat");
+      throw error;
     }
     if (stats.isDirectory()) {
       let raw: Buffer[];
