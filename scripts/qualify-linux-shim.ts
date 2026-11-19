@@ -287,7 +287,8 @@ const listingFailure = (error: unknown, step: string): Error =>
   );
 
 // The regular files under each root, by lstat, without opening any. Symlinks
-// are neither followed nor listed. A root that does not exist is recorded as
+// are neither followed nor listed, so a key-named empty directory, symlink or
+// FIFO is not covered by the name scan (a stated limit). A root that does not exist is recorded as
 // absent; one that exists but cannot be resolved is an error.
 export function listWindowRoots(
   roots: readonly string[],
