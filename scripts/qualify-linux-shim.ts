@@ -341,6 +341,7 @@ export function listWindowRoots(
       // WAS read, and may be one this run writes into (/tmp).
       const entries = raw.map((entry) => entry.toString("utf8"));
       if (
+        top &&
         raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
       ) {
         nonUtf8Directories.push(path);
