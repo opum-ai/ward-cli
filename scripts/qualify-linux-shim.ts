@@ -524,8 +524,10 @@ export function scanWindow(
 // The row for AC1's temp-file clause (DEC-262 a30 (ii)): every file new or
 // changed between the two listings was read, and none holds the key. It fails
 // when a root the run must have (the run directory) is missing from either
-// listing, when a directory of this user's own could not be listed or holds a
-// name that is not valid UTF-8, when a file
+// listing, when a directory of this user's own could not be listed, when ANY
+// directory, whoever owns it, holds a name that is not valid UTF-8 (the owner is
+// deliberately not consulted: /tmp and /dev/shm are other users' directories
+// this run writes into), when a file
 // of this user's own could not be read or was too large, when a file was
 // neither read nor accounted for, and when nothing at all was read (the run
 // directory alone gains files, so a window that read none looked at nothing).

@@ -767,7 +767,6 @@ describe("the verdict and the output line", () => {
         "effective-groups-recorded",
         "tpm-device-present",
         "tpm2-tools-present",
-        "python3-recorded",
       ],
       deliver: [
         "run-directory-is-ruled-literal-path",
@@ -788,7 +787,11 @@ describe("the verdict and the output line", () => {
         "key-not-in-store-or-tool-log",
         "secret-scan-clean",
       ],
-      unseal: ["handle-lists-unchanged", "unseal-matches-sealed"],
+      unseal: [
+        "handle-lists-unchanged",
+        "unseal-matches-sealed",
+        "python3-recorded",
+      ],
       clean: [
         "run-directory-is-ruled-literal-path",
         "run-directory-removed",
