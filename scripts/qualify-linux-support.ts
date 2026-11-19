@@ -539,8 +539,10 @@ export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
     ...shimCalls,
     ...shimWindow,
     "boot-id-differs-from-seal",
-    // The packaged python3 pty smoke runs at P3 (DEC-262 a34), so P3 records the
-    // interpreter it actually ran, its path and version; P0 runs no python3.
+    // The packaged python3 pty smoke runs at P3 (DEC-262 a34), so P3 OWES the
+    // interpreter it actually ran, its path and version; nothing produces that
+    // row yet (part B builds it), so until then P3 fails closed. P0 runs no
+    // python3.
     "python3-recorded",
   ],
   clean: [

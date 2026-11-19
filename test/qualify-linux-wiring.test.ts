@@ -598,37 +598,48 @@ describe("a file named after the key", () => {
   test("a bad name or an unreadable directory present at the BEFORE listing fails the row though the after listing is clean", () => {
     // Each half is planted before the before listing and removed before the
     // after one, with a sound file read in a second root, so only the before
-    // clause can fail the row.
-    const roots = (dir: string, sound: string) => [dir, sound];
-    const verdictOf = (
+    // clause can fail the row. A control with nothing planted passes.
+    const judge = (
       before: ReturnType<typeof listWindowRoots>,
       after: ReturnType<typeof listWindowRoots>,
       rs: string[],
-    ) =>
-      windowRow(
-        before,
-        after,
-        scanWindow(changedFiles(before, after), () => forms, uid),
-        rs,
-      ).ok;
+    ) => {
+      const scan = scanWindow(changedFiles(before, after), () => forms, uid);
+      return { scan, row: windowRow(before, after, scan, rs) };
+    };
+    const control = (dir: string, sound: string) => {
+      const rs = [dir, sound];
+      const before = listWindowRoots(rs, uid);
+      writeFileSync(join(sound, "ordinary"), "x");
+      return judge(before, listWindowRoots(rs, uid), rs).row.ok;
+    };
     // A non-UTF-8 name (Linux only).
     {
       const dir = fresh("window");
       const sound = fresh("window");
-      const rs = roots(dir, sound);
+      const rs = [dir, sound];
+      expect(control(fresh("window"), fresh("window"))).toBe(true);
       if (makeBad(dir)) {
         const before = listWindowRoots(rs, uid);
         expect(before.nonUtf8Directories).toEqual([dir]);
         rmSync(badName(dir));
         writeFileSync(join(sound, "ordinary"), "x");
-        expect(verdictOf(before, listWindowRoots(rs, uid), rs)).toBe(false);
+        const after = listWindowRoots(rs, uid);
+        expect(after.nonUtf8Directories).toEqual([]);
+        expect(after.ownUnreadable).toEqual([]);
+        const { scan, row } = judge(before, after, rs);
+        expect(scan.filesRead).toBe(1);
+        expect(row.ok).toBe(false);
+        const detail = row.detail as Record<string, unknown>;
+        expect(detail.beforeNonUtf8NameDirectories).toBe(1);
+        expect(detail.nonUtf8NameDirectories).toBe(0);
       }
     }
     // An own directory that cannot be read (not as root: root ignores modes).
     if (uid !== 0) {
       const dir = fresh("window");
       const sound = fresh("window");
-      const rs = roots(dir, sound);
+      const rs = [dir, sound];
       const locked = join(dir, "locked");
       mkdirSync(locked);
       chmodSync(locked, 0o000);
@@ -637,10 +648,55 @@ describe("a file named after the key", () => {
         expect(before.ownUnreadable).toEqual([locked]);
         chmodSync(locked, 0o700);
         writeFileSync(join(sound, "ordinary"), "x");
-        expect(verdictOf(before, listWindowRoots(rs, uid), rs)).toBe(false);
+        const after = listWindowRoots(rs, uid);
+        expect(after.nonUtf8Directories).toEqual([]);
+        expect(after.ownUnreadable).toEqual([]);
+        const { scan, row } = judge(before, after, rs);
+        expect(scan.filesRead).toBe(1);
+        expect(row.ok).toBe(false);
+        const detail = row.detail as Record<string, unknown>;
+        expect(detail.beforeOwnUnreadableDirectories).toBe(1);
+        expect(detail.ownUnreadableDirectories).toBe(0);
       } finally {
         chmodSync(locked, 0o700);
       }
+    }
+  });
+
+  test("an own unreadable directory at the AFTER listing alone fails the row (the mirror of the before test)", () => {
+    if (uid === 0) return; // root ignores modes
+    const dir = fresh("window");
+    const sound = fresh("window");
+    const rs = [dir, sound];
+    const locked = join(dir, "locked");
+    mkdirSync(locked);
+    const before = listWindowRoots(rs, uid);
+    expect(before.ownUnreadable).toEqual([]);
+    chmodSync(locked, 0o000);
+    try {
+      writeFileSync(join(sound, "ordinary"), "x");
+      const after = listWindowRoots(rs, uid);
+      expect(after.ownUnreadable).toEqual([locked]);
+      const scan = scanWindow(changedFiles(before, after), () => forms, uid);
+      expect(scan.filesRead).toBe(1);
+      const row = windowRow(before, after, scan, rs);
+      expect(row.ok).toBe(false);
+      const detail = row.detail as Record<string, unknown>;
+      expect(detail.ownUnreadableDirectories).toBe(1);
+      expect(detail.beforeOwnUnreadableDirectories).toBe(0);
+      // Unlocked again, the same window passes, so it is the directory that fails.
+      chmodSync(locked, 0o700);
+      const clean = listWindowRoots(rs, uid);
+      expect(
+        windowRow(
+          before,
+          clean,
+          scanWindow(changedFiles(before, clean), () => forms, uid),
+          rs,
+        ).ok,
+      ).toBe(true);
+    } finally {
+      chmodSync(locked, 0o700);
     }
   });
 
@@ -765,6 +821,9 @@ describe("the adapter, through real interposers, over fake tools", () => {
 //   W30  qualify-linux-support.ts: facts requires python3-recorded again                              -> "facts passes on exactly the rows its four commands can produce" and "python3-recorded is owed by P3 (unseal), which runs the packaged python3 smoke, and by no other phase (DEC-262 a34)"
 //   W31  qualify-linux-support.ts: unseal drops python3-recorded                                      -> the second of those and "each phase's list holds the (a29) and T26 rows it owes, and the unseal phase holds all of the seal phase's"
 // OBSERVED, FOLLOW-UP 3 (Mac, bun 1.3.14, predictions above unchanged, a driver restoring the file after each mutant, on d324187; both are platform-independent so no Linux run is owed): W30 and W31 each went red on exactly the tests predicted. No divergence.
+// FOLLOW-UP 4 (opus #395 approval F1, F2, F4), predictions written and committed BEFORE any run:
+//   W32  qualify-linux-shim.ts: windowRow drops the after.ownUnreadable clause                         -> "an own unreadable directory at the AFTER listing alone fails the row (the mirror of the before test)" only (Mac, and Linux when not root); the existing shim.test.ts own-unreadable test passes the same listing as before and after, so it stays green
+//   W33  qualify-linux-shim.ts: windowRow's detail reports no before counts (beforeOwnUnreadableDirectories and beforeNonUtf8NameDirectories removed) -> "a bad name or an unreadable directory present at the BEFORE listing fails the row though the after listing is clean" and the AFTER mirror test (Mac for the own count; Linux for the non-UTF-8 count)
 // OBSERVED, ROUND 2 (bun 1.3.14 on a Mac, predictions above unchanged, a driver restoring each file after each mutant): W17, W18 and W19 each went red on exactly the one test predicted.
 // OBSERVED, ROUND 1 (bun 1.3.14 on a Mac, 2026-11-18, predictions above unchanged, a driver restoring each file after each mutant, on e24053f): W11, W12, W14 and W15 each went red on exactly the one test predicted. W13 and W16 were NOT run: the Mac cannot create a non-UTF-8 name, so they are unobservable here and the Linux arm runner is where they are measured. Bun returns plain Uint8Arrays from readdirSync with encoding buffer (not Buffers), which the first run of the fix exposed. STATED LIMIT: the name scan does not cover a key-named empty directory, symlink or FIFO, because the listing holds regular files only.
 // OBSERVED (slice 4a-2b-2 part A, bun 1.3.14 on a Mac with bash as sh, 2026-11-18; the predictions above unchanged, a driver restoring each file after each mutant, run on the tree at 03cdd71). No survivor. W2, W4-W7 and W10 each went red on exactly the one test predicted; W8 on its two; W9 on its two. Divergences from the predictions: W1 reddened ONE test, not two ("every phase that runs a tool requires the shim rows, and all but clean the window row"): the second test builds its all-ok list from requiredChecks itself, so a phase that stops requiring the shim rows is invisible to it, and only the first test (which names the rows) closes the mutant; W3 reddened a third test, the end-to-end one, which asserts that a seal log is not an unseal log because of the seal-only tools (so an unseal that ignores unexpected tools reads it as passing). The Linux target's /bin/sh is dash; none of this was measured there.
