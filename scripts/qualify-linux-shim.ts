@@ -313,7 +313,7 @@ export function listWindowRoots(
       big = lstatSync(path, { bigint: true });
       stats = lstatSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !top) return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw listingFailure(error, "lstat");
     }
     if (stats.isDirectory()) {
