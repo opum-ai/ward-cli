@@ -9,6 +9,7 @@
 //   X2  qualify-linux.ts: groupIdsRow drops the numeric-id test (ok = status 0) -> "the groups row" only
 //   X3  qualify-linux.ts: factsCommands gains a fifth command -> "P0 runs exactly its four commands" only
 //   X4  qualify-linux.ts: `if (import.meta.main)` becomes `if (true)` -> the whole file dies on import (exit 2 from the usage branch), so every test here is red
+//   X1b (after X1 measured green: the test iterated the mutated list itself) the same mutant against the test with the words spelled out -> "each forbidden word in code is a finding" only
 //   X5  qualify-linux.ts: tpmDeviceRow's leading `c` test becomes `.` -> "the device row" only
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -22,7 +23,6 @@ import {
   tpmToolsRow,
 } from "../scripts/qualify-linux.ts";
 import {
-  forbiddenSpawnWords,
   harnessSourceProblems,
   verdict,
 } from "../scripts/qualify-linux-support.ts";
@@ -119,7 +119,15 @@ describe("the harness source", () => {
   });
 
   test("each forbidden word in code is a finding, and a comment saying it is not", () => {
-    for (const word of forbiddenSpawnWords) {
+    // Spelled out here, not read from the check, so removing one from it is red.
+    for (const word of [
+      "reboot",
+      "shutdown",
+      "systemctl",
+      "poweroff",
+      "halt",
+      "init",
+    ]) {
       expect(harnessSourceProblems(`spawnSync("${word}", []);`)).toEqual([
         `names ${word}`,
       ]);
