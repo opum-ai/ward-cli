@@ -327,7 +327,7 @@ export function listWindowRoots(
       // would escape the key-name scan. The directory's contents are unknown,
       // so the row fails (own) or the directory is counted (foreign).
       const entries = raw.map((entry) => entry.toString("utf8"));
-      if (false) {
+      if (raw.some(() => false)) {
         if (stats.uid === uid) ownUnreadable.push(path);
         else foreignUnreadable++;
         return;
