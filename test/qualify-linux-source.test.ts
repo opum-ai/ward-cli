@@ -32,12 +32,30 @@
 // OBSERVED (Mac, bun 1.3.14, 2026-11-19; predictions unchanged, no divergence): the unmodified tree passes 9 of 9 (the positive control; it read 5 named bundled modules). Z1 red on exactly the spawn-anchor test. Z2 red on both golden tests. Z3 red on the no-findings test and the spawn-anchor test. Z4 red on exactly the N-5 test. Z5 red on exactly the spelled-out evasion test. Z6 red on the plain golden test and the one-allowed-exec test. rows.ts removeRunDirectoryUnder's /bin/rm spawn is a third allowed anchor (P4's delete by literal path), found by the first run of the scan. All Mac measurements; none depends on Linux.
 // OBSERVED, ROUND 2 (Mac, bun 1.3.14, 2026-11-19; predictions unchanged): the unmodified tree passes 11 of 11 (positive control; the closure over the four roots read 14 modules, src/adapters/tpm2-tools.ts and inherited-acl.ts among them). V1, V3, V4, V5, V6 each red on exactly their predicted test. V2 first aborted the suite because my planted spawn named /bin/true, which does not exist on a Mac (the golden describe calls interposerScript, so it threw there); re-run with /usr/bin/true it was red on exactly the spawn-anchor test, as predicted. Scanning src/ with the forbidden WORDS flagged ordinary messages (tpm2-tools.ts, contract/errors.ts), so the words rule applies to scripts/ only and every other rule runs over every bundled module; the settled spawn allowances for the product code are tpm2-tools.ts (Bun.spawn of the resolved tool path) and inherited-acl.ts (/bin/chmod -N).
 // OBSERVED, ROUND 3 (Mac, bun 1.3.14, 2026-11-19; unmodified tree 14 of 14, the positive control): U2, U3, U4, U5, U6, U7, U8 each red on exactly their predicted test. U1 DIVERGED: red on the spawn-anchor test as predicted, and ALSO on both golden tests, because my mutant put the element into the `head` array, whose empty result joins as an extra blank line in the generated text; the spawn-anchor red is the one that matters (the shim's spawn count rose from 0 to 1 through a `${}` expression). Anchors and calls now both match on the comment-stripped normalised text; the transpiler reprints `} // end` as a plain closing line, so the window-end guard against a trailing comment is covered by that, and the 'another export' throw is a defensive check no Bun-reprinted source reaches.
+// ROUND 4 (opus r3 REQUEST_CHANGES at 4bf8fb9; predictions committed before the run):
+//   T1  qualify-linux.ts: a busctl entry naming "Reboot" added to factsCommands -> "have no findings" only (the word rule is now case-insensitive)
+//   T2  qualify-linux-shim.ts: `const extra = tool === "tpm2_unseal" ? ["/sbin/reboot -f"] : [];` spread into the returned lines -> "no tool and no variant names a forbidden word" AND the source pin; the two golden tests stay green
+//   T3  qualify-linux-shim.ts: the same branch keyed on realTool (`realTool.endsWith("tpm2_unseal")`) -> the source pin only (no per-tool text changes, since the loop passes /usr/bin/<tool>... which DOES end with tpm2_unseal, so the per-tool test is red too: predicted red on the pin AND the per-tool test)
+//   T4  inherited-acl.ts: `export const sbin = "/usr/sbin"; export const p = `${sbin}/reboot`;` -> "have no findings" only
+//   T5  qualify-linux-shim.ts: `/'/.test(tool); Bun.spawnSync(["/usr/bin/true"]); /'/.test(tool);` in interposerScript -> "every spawn call is an allowed anchor" AND the source pin
+//   T6  harness-source.ts: the structural rules go back to the BLANKED code (normalise(source, file) for both) -> "inside interposerScript only literal text is blanked" only
+//   T7  harness-source.ts: the word regex loses its `i` flag -> "a spelled-out evasion is a finding" and "a whole quoted literal or its last path component is a finding" only
+//   T8  harness-source.ts: the \n \t whitespace conversion removed -> "a spelled-out evasion is a finding" only
+//   T9  harness-source.ts: the package.json directory throw removed -> "a directory import with a package.json throws" only
 import "./support/no-real-keychain.ts";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { interposerScript } from "../scripts/qualify-linux-shim.ts";
+import { diagnosticTool, requiredTools } from "../src/adapters/tpm2-tools.ts";
 import {
   allowedSpawns,
   closure,
@@ -94,7 +112,7 @@ describe("the bundled modules", () => {
     for (const file of scanned) {
       // Calls AND anchors are matched on the same comment-stripped text, so a
       // commented-out anchor cannot stand in for a swapped call.
-      const code = normalise(read(file), file);
+      const code = normalise(read(file), file, false);
       const calls = [...code.matchAll(spawnCall)].length;
       const allowed = allowedSpawns.filter((entry) => entry.file === file);
       const anchored = allowed.reduce(
@@ -148,6 +166,11 @@ describe("the scan", () => {
       ["const { $ } = Bun;", "a $ taken from bun"],
       ['import * as B from "bun"; B.$`id`;', "a $ member"],
       ["const go = $; go`id`;", "a $ alias"],
+      ['run("Reboot")', "names reboot"],
+      ['run("busctl call login1 Reboot")', "names reboot"],
+      ['run("\\nreboot")', "names reboot"],
+      ['run("\\tsh -c id")', "sh -c in one string"],
+      ['run("sh -e -c id")', "sh -c in one string"],
       ['run("x;sh -c id")', "sh -c in one string"],
       ['run("$(sh -c id)")', "sh -c in one string"],
       ['run("(sh -c id)")', "sh -c in one string"],
@@ -238,6 +261,53 @@ describe("the generated interposer shell", () => {
   });
 });
 
+describe("the generated interposer shell, for every tool", () => {
+  test("no tool and no variant names a forbidden word (any case), runs sh -c, or carries an exec other than the plain final line", () => {
+    let seen = 0;
+    for (const tool of [...requiredTools, diagnosticTool])
+      for (const recordStdout of [false, true]) {
+        const text = interposerScript(
+          tool,
+          `/usr/bin/${tool}`,
+          "/run/ward/tools.log",
+          recordStdout,
+        );
+        seen += 1;
+        const body = text.split("\n").slice(1).join("\n");
+        for (const word of forbiddenWords)
+          expect([
+            tool,
+            word,
+            new RegExp(`\\b${word}\\b`, "i").test(body),
+          ]).toEqual([tool, word, false]);
+        expect(/\bsh(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*c\b/.test(body)).toBe(false);
+        const lines = text.split("\n").filter((line) => line !== "");
+        const execs = lines.filter((line) => /\bexec\b/.test(line));
+        expect(execs).toEqual(
+          recordStdout ? [] : [lines[lines.length - 1] as string],
+        );
+      }
+    // A positive control: the loop did run over every tool and both variants.
+    expect(seen).toBe((requiredTools.length + 1) * 2);
+  });
+
+  test("interposerScript's own source is pinned (re-pin on purpose, like the golden files), so a branch on realTool or logPath goes red", () => {
+    const source = read("scripts/qualify-linux-shim.ts");
+    const start = source.indexOf("export function interposerScript(");
+    const end = source.indexOf("\n}\n", start) + 3;
+    expect(start).toBeGreaterThan(-1);
+    const digest = createHash("sha256")
+      .update(source.slice(start, end))
+      .digest("hex");
+    expect(`${digest}\n`).toBe(
+      readFileSync(
+        resolve(root, "test/fixtures/qualify-linux/interposer-source.sha256"),
+        "utf8",
+      ),
+    );
+  });
+});
+
 describe("N-5", () => {
   test("groupIdsRow stays in P0: every reference in every bundled module is its definition or the one call inside runFacts", () => {
     let references = 0;
@@ -268,6 +338,19 @@ describe("the closure and the interposer window", () => {
     }
   });
 
+  test("a directory import with a package.json throws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ward-closure-"));
+    try {
+      mkdirSync(join(dir, "lib"));
+      writeFileSync(join(dir, "lib", "index.ts"), "export const x = 1;\n");
+      writeFileSync(join(dir, "lib", "package.json"), '{"main":"other.ts"}');
+      writeFileSync(join(dir, "a.ts"), 'import { x } from "./lib";\n');
+      expect(() => closure(["a.ts"], dir)).toThrow(/package directory/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("two candidate files for one import throw", () => {
     const dir = mkdtempSync(join(tmpdir(), "ward-closure-"));
     try {
@@ -288,7 +371,7 @@ describe("the closure and the interposer window", () => {
 
   test("inside interposerScript only literal text is blanked: a spawn in the body or in a ${} expression is counted, a word in a string is not", () => {
     const count = (source: string) =>
-      [...normalise(source, shim).matchAll(spawnCall)].length;
+      [...normalise(source, shim, false).matchAll(spawnCall)].length;
     expect(count(window('  const x = "/sbin/reboot";'))).toBe(0);
     expect(
       sourceProblems(window('  const x = "/sbin/reboot";'), { file: shim }),
@@ -305,6 +388,22 @@ describe("the closure and the interposer window", () => {
     // Quotes in two comments cannot pair across the code between them.
     expect(
       count(window("  /* it's */ Bun.spawnSync([\"/bin/true\"]); /* ' */")),
+    ).toBe(1);
+    // A quote inside a regex literal pairs with the next one: the r3 route (a).
+    expect(
+      count(
+        window(
+          "  /'/.test(tool); Bun.spawnSync([\"/sbin/reboot\"]); /'/.test(tool);",
+        ),
+      ),
+    ).toBe(1);
+    // A brace inside a string desynchronises a `${}` depth counter: route (b).
+    expect(
+      count(
+        window(
+          '  return `${tool === "x" ? "}" + String(Bun.spawnSync(["/sbin/reboot"]).exitCode) : ""}`;',
+        ),
+      ),
     ).toBe(1);
     // Outside the window the same string is a finding.
     expect(sourceProblems('const x = "/sbin/reboot";')).toEqual(
@@ -326,12 +425,19 @@ describe("words in src/", () => {
     for (const literal of [
       "/usr/sbin/reboot",
       "reboot",
+      "Reboot",
       "systemctl",
       "/sbin/init",
+      "/sys/dev/char/1:1/../../../../../usr/sbin/reboot",
     ])
       expect(
         sourceProblems(`export const p = "${literal}";`, { words: "literal" }),
       ).toEqual(expect.arrayContaining([expect.stringMatching(/^names /)]));
+    expect(
+      sourceProblems("export const p = `${sbin}/reboot`;", {
+        words: "literal",
+      }),
+    ).toEqual(expect.arrayContaining(["names reboot"]));
     for (const prose of [
       'const m = "Run `ward init` again after a reboot";',
       "// reboot",

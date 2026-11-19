@@ -5,7 +5,7 @@
 // obvious ways of adding one loud. It lives in the test tree so the word list is
 // not itself part of the code it scans.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, normalize, relative, resolve } from "node:path";
+import { dirname, join, normalize, relative, resolve } from "node:path";
 
 export const root = resolve(import.meta.dir, "..", "..");
 
@@ -133,9 +133,10 @@ function blankInterposer(code: string): string {
 // Comments removed by the transpiler; the interposer window blanked for the
 // shim; then the spellings that join or hide a word are normalised: "re"+"boot",
 // template pieces, \u and \x escapes.
-export function normalise(source: string, file = ""): string {
+export function normalise(source: string, file = "", blank = true): string {
   let code = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
-  if (file.endsWith("qualify-linux-shim.ts")) code = blankInterposer(code);
+  if (blank && file.endsWith("qualify-linux-shim.ts"))
+    code = blankInterposer(code);
   code = code
     .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, h) =>
       String.fromCodePoint(Number.parseInt(h, 16)),
@@ -146,6 +147,7 @@ export function normalise(source: string, file = ""): string {
     .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) =>
       String.fromCharCode(Number.parseInt(h, 16)),
     )
+    .replace(/\\[ntrvf0]/g, " ")
     .replace(/\$\{\s*(["'])([^"'`$]*)\1\s*\}/g, "$2");
   for (;;) {
     const joined = code.replace(/["'`]\s*\+\s*["'`]/g, "");
@@ -163,25 +165,37 @@ export function sourceProblems(
   source: string,
   options: { file?: string; words?: Words } = {},
 ): string[] {
-  const code = normalise(source, options.file ?? "");
+  const file = options.file ?? "";
+  // Words and shell text are judged on the code with the interposer's literal text
+  // blanked; calls, exec, $ and dynamic loads on the UNBLANKED comment-stripped
+  // code, so no quote or brace in a regex or string can hide one from the scan.
+  const lexical = normalise(source, file);
+  const code = normalise(source, file, false);
   const words = options.words ?? "anywhere";
   const problems: string[] = forbiddenWords
     .filter((word) =>
       new RegExp(
         words === "anywhere"
           ? `\\b${word}\\b`
-          : `["'\`](?:[\\w.-]*\\/)*${word}["'\`]`,
-      ).test(code),
+          : `(?<=["'\`/])${word}(?=["'\`])`,
+        "i",
+      ).test(lexical),
     )
     .map((word) => `names ${word}`);
+  const lex = (name: string, pattern: RegExp): void => {
+    if (pattern.test(lexical)) problems.push(name);
+  };
   const found = (name: string, pattern: RegExp): void => {
     if (pattern.test(code)) problems.push(name);
   };
-  found("a shell as a command", /["'`](?:[\w.-]*\/)*(?:ba|z|da|k|c)?sh["'`]/);
-  found("sh -c in one string", /\b(?:ba|z|da)?sh\s+-[a-zA-Z]*c\b/);
-  found("a shell shorthand option", /[{,]\s*shell\s*[,}]/);
-  found("a shell option", /\bshell\s*:\s*(?!\s)(?!false\b|!1(?![\w.]))/);
-  found("a quoted shell option", /["'`]shell["'`]\s*:/);
+  lex("a shell as a command", /["'`](?:[\w.-]*\/)*(?:ba|z|da|k|c)?sh["'`]/);
+  lex(
+    "sh -c in one string",
+    /\b(?:ba|z|da)?sh(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*c\b/,
+  );
+  lex("a shell shorthand option", /[{,]\s*shell\s*[,}]/);
+  lex("a shell option", /\bshell\s*:\s*(?!\s)(?!false\b|!1(?![\w.]))/);
+  lex("a quoted shell option", /["'`]shell["'`]\s*:/);
   found("exec", /\bexecSync\b|\bexecFile\b|(?<![.\w])exec\s*\(/);
   found("a member exec on a process module", /\b(?:cp|child_process)\.exec/);
   found("Bun.$", /\bBun\.\$|(?<=[\s(=,:])\$`/);
@@ -206,7 +220,16 @@ export function sourceProblems(
 // harness bundles from this repository, so a module imported later is scanned at
 // once. A relative specifier that does not resolve THROWS (a scan that read fewer
 // inputs than it should must fail); every extension Bun may try is looked for.
-const extensions = ["", ".ts", ".tsx", ".js", ".mjs", "/index.ts", "/index.js"];
+const extensions = [
+  "",
+  ".ts",
+  ".tsx",
+  ".jsx",
+  ".js",
+  ".mjs",
+  "/index.ts",
+  "/index.js",
+];
 export function closure(
   entries: readonly string[],
   base: string = root,
@@ -235,6 +258,12 @@ export function closure(
         throw new Error(
           `${file} imports ${m[1]}, which resolves to ${found.length} files`,
         );
+      // A directory import with a package.json may be bundled through its "main".
+      if (
+        existsSync(join(target, "package.json")) &&
+        statSync(target).isDirectory()
+      )
+        throw new Error(`${file} imports ${m[1]}, a package directory`);
       queue.push(relative(base, found[0] as string));
     }
   }
