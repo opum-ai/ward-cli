@@ -5,7 +5,9 @@
 import "./support/no-real-keychain.ts";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   readdirSync,
   truncateSync,
@@ -879,13 +881,25 @@ describe("the window rows", () => {
     writeFileSync(join(outside, "target"), "t");
     writeFileSync(join(dir, "read"), "x");
     symlinkSync(join(outside, "target"), join(dir, "link"));
+    // Another user's file this user cannot read: the first of the two that exists
+    // here (master.passwd on a Mac, shadow on Linux), none when running as root.
+    const foreignUnreadable = asRoot
+      ? []
+      : ["/etc/master.passwd", "/etc/shadow"]
+          .filter((path) => {
+            try {
+              accessSync(path, constants.R_OK);
+              return false;
+            } catch {
+              return existsSync(path);
+            }
+          })
+          .slice(0, 1);
     const paths = [
       join(dir, "read"),
       join(dir, "link"),
       join(dir, "gone"),
-      ...(existsSync("/etc/master.passwd") && !asRoot
-        ? ["/etc/master.passwd"]
-        : []),
+      ...foreignUnreadable,
     ];
     const scan = scanWindow(paths, forAll, uid);
     expect([...scan.accounted].sort()).toEqual([...paths].sort());
@@ -1035,3 +1049,6 @@ describe("the report statement row", () => {
 //   S42 "a file larger than the cap ..." and "scan.accounted holds exactly the input paths ...", as predicted
 //   S43 the env-direct runtime pin only (it now loops every tool), as predicted
 // The Linux target's /bin/sh is dash, not bash: S25 and S27 style shell-name effects, and everything above, are Mac measurements; the jetson run measures the dash case.
+
+// CORRECTIONS AND PREDICTION, slice 4a-2b-2, first commit (the #367 round-4 APPROVE's non-blocking items; the register is append-only, so nothing above is edited). n1: the S32 line in the round-4 OBSERVED list explains the second red backwards. Without O_NOFOLLOW the link is followed and read, so in "scan.accounted holds exactly the input paths ..." filesRead is 2, not 1, and `unreadable` is [], not [the link]. n3: the S39 mutant of round 3 dropped the count identity; the variant that accounts a path at the top of the loop but KEEPS the count identity (call it S44) is predicted EQUIVALENT: the "accounted holds exactly the input paths" test and every other test stay green, because the count identity (filesRead + foreign + vanished + unreadable === changed) already forces a skipped file to show, so that test does not close it. n2: the foreign bucket of that test now uses the first of /etc/master.passwd and /etc/shadow that exists and cannot be read, so it runs on a Linux CI runner too. Written and committed BEFORE the run of S44.
+//   S44 scanWindow accounts a path at the top of the loop again (before disposal) and windowRow keeps the count identity  -> NOTHING goes red (equivalent mutant); expected to SURVIVE
