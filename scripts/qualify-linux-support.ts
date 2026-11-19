@@ -469,10 +469,12 @@ export function lastJsonLine(stdout: string): Record<string, unknown> {
 // UNMEASURED (a29 Q1), and the printout check says only what the printout shows.
 export type Phase = "facts" | "deliver" | "seal" | "unseal" | "clean";
 
-// The rows every phase that touches the host's TPM or the home directory owes
-// (DEC-262 a29 applies "never touched" and "compared before and after" to the
-// whole run): the facts phase takes the baseline, each later tool-running phase
-// compares against it, and the TPM is only ever reached through the ruled TCTI.
+// The rows every phase that runs a TPM tool owes (DEC-262 a29 and a33): the TPM
+// is only ever reached through the ruled TCTI, and each such phase (P2 seal, P3
+// unseal, P4 clean) takes its own before and after handle lists. The facts phase
+// (P0) takes no baseline and owes none of these. The ward-metadata row is owed
+// by P1 to P4 (deliver lists it itself), against a baseline taken at the start
+// of P1.
 const runWide = [
   "tcti-is-device-tpmrm0",
   "handle-lists-unchanged",
@@ -512,9 +514,11 @@ const keyHandling = [
 
 export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
   // P0 is read-only and runs no interposer (DEC-262 a32): it handles no key, so
-  // it owes neither the shim rows nor the window row.
+  // it owes neither the shim rows nor the window row. It owes only what its four
+  // (a29) Q2 commands (id -G, uname -a, tpm2_getcap --version, ls -l
+  // /dev/tpmrm0) can produce, so none of the run-wide rows either (a33): it runs
+  // no ward binary, reads no ward metadata, and takes no handle list or TCTI.
   facts: [
-    ...runWide,
     "effective-groups-recorded",
     "tpm-device-present",
     "tpm2-tools-present",

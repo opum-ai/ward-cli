@@ -762,12 +762,12 @@ describe("the verdict and the output line", () => {
 
   test("each phase's list holds the (a29) and T26 rows it owes, and the unseal phase holds all of the seal phase's", () => {
     const owed: Record<Phase, string[]> = {
+      // P0 owes only what its four commands can produce (DEC-262 a33).
       facts: [
         "effective-groups-recorded",
         "tpm-device-present",
-        "tcti-is-device-tpmrm0",
-        "handle-lists-unchanged",
-        "real-ward-metadata-unchanged",
+        "tpm2-tools-present",
+        "python3-recorded",
       ],
       deliver: [
         "run-directory-is-ruled-literal-path",

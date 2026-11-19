@@ -124,6 +124,31 @@ describe("the shim rows are required, so a run that never produced one cannot pa
   });
 });
 
+describe("the run-wide rows sit on the phases DEC-262 (a33) assigns", () => {
+  test("facts owes none of them, deliver owes the ward-metadata row only, and seal, unseal and clean owe all three", () => {
+    const tcti = "tcti-is-device-tpmrm0";
+    const handles = "handle-lists-unchanged";
+    const metadata = "real-ward-metadata-unchanged";
+    for (const name of [tcti, handles, metadata])
+      expect(requiredChecks.facts).not.toContain(name);
+    expect(requiredChecks.deliver).toContain(metadata);
+    expect(requiredChecks.deliver).not.toContain(tcti);
+    expect(requiredChecks.deliver).not.toContain(handles);
+    for (const phase of ["seal", "unseal", "clean"] as const)
+      for (const name of [tcti, handles, metadata])
+        expect(requiredChecks[phase]).toContain(name);
+  });
+
+  test("facts passes on exactly the rows its four commands can produce", () => {
+    expect([...requiredChecks.facts].sort()).toEqual([
+      "effective-groups-recorded",
+      "python3-recorded",
+      "tpm-device-present",
+      "tpm2-tools-present",
+    ]);
+  });
+});
+
 describe("the expected call set", () => {
   const call = (tool: string): ToolCall => ({
     tool,
@@ -413,58 +438,122 @@ describe("a file named after the key", () => {
     }
   });
 
-  test("an error on a key-named path is rethrown without that path", () => {
+  test("an error on a key-named path is rethrown without that path, from the scan and from each step of the listing", () => {
     const dir = fresh("window");
     const file = join(dir, `${keyHex}.file`);
     writeFileSync(file, "x");
     // A path through a regular file is ENOTDIR, which neither function absorbs.
     const through = join(file, "child");
-    let scanned = "";
-    try {
-      scanWindow([through], () => forms, uid);
-    } catch (error) {
-      scanned = String((error as Error).message);
-    }
+    const message = (run: () => unknown): string => {
+      try {
+        run();
+      } catch (error) {
+        return String((error as Error).message);
+      }
+      return "";
+    };
+    const scanned = message(() => scanWindow([through], () => forms, uid));
     expect(scanned).toContain("ENOTDIR");
     expect(scanned).not.toContain(keyHex);
-    let listed = "";
-    try {
-      listWindowRoots([through], uid);
-    } catch (error) {
-      listed = String((error as Error).message);
-    }
-    expect(listed).toContain("ENOTDIR");
-    expect(listed).not.toContain(keyHex);
+    // realpath: the same path as a root.
+    const realpathed = message(() => listWindowRoots([through], uid));
+    expect(realpathed).toContain("realpath: ENOTDIR");
+    expect(realpathed).not.toContain(keyHex);
   });
 
-  test("a directory holding a name that is not valid UTF-8 fails the row instead of dropping it, and a valid non-ASCII name lists", () => {
+  test("the listing's lstat and readdir failures are rethrown as the step and the code only", () => {
+    const message = (run: () => unknown): string => {
+      try {
+        run();
+      } catch (error) {
+        return String((error as Error).message);
+      }
+      return "";
+    };
+    // lstat: an owned directory with no search permission lists, and the child
+    // cannot be examined (EACCES). Root ignores modes, so it cannot make this.
+    if (uid !== 0) {
+      const locked = fresh("window");
+      const inner = join(locked, `${keyHex}.dir`);
+      mkdirSync(inner);
+      chmodSync(locked, 0o400);
+      try {
+        const lstatted = message(() => listWindowRoots([locked], uid));
+        expect(lstatted).toContain("lstat: EACCES");
+        expect(lstatted).not.toContain(keyHex);
+      } finally {
+        chmodSync(locked, 0o700);
+      }
+    }
+    // readdir: no file forces a failure that is not a permission one, so the
+    // seam throws one whose message names a key-named path.
+    const dir = fresh("window");
+    const readdirFailure = message(() =>
+      listWindowRoots([dir], uid, (() => {
+        throw Object.assign(new Error(`ENOTDIR: ${join(dir, keyHex)}`), {
+          code: "ENOTDIR",
+          path: join(dir, keyHex),
+        });
+      }) as never),
+    );
+    expect(readdirFailure).toContain("readdir: ENOTDIR");
+    expect(readdirFailure).not.toContain(keyHex);
+  });
+
+  // Names that are not valid UTF-8 can be made on Linux only (a Mac's APFS
+  // refuses them with EILSEQ); a Linux run may not take the early return.
+  const badName = (dir: string): Buffer =>
+    Buffer.concat([Buffer.from(`${dir}/`), Buffer.from([0xff, 0xfe])]);
+  const makeBad = (dir: string): boolean => {
+    try {
+      writeFileSync(badName(dir), "x");
+      return true;
+    } catch (error) {
+      expect((error as NodeJS.ErrnoException).code).toBe("EILSEQ");
+      expect(process.platform).not.toBe("linux");
+      return false;
+    }
+  };
+
+  test("a valid non-ASCII name lists", () => {
     const dir = fresh("window");
     const good = join(dir, "caf\u00e9");
     writeFileSync(good, "x");
     expect(Object.keys(listWindowRoots([dir], uid).files)).toEqual([good]);
-    const bad = Buffer.concat([
-      Buffer.from(`${dir}/`),
-      Buffer.from([0xff, 0xfe]),
-    ]);
+  });
+
+  test("a name that is not valid UTF-8 fails the row whoever owns the directory, with the window otherwise sound", () => {
+    // The directory is judged as its owner and as another user: /tmp and
+    // /dev/shm are directories of other users that this run writes into.
+    for (const judge of [uid, uid + 1]) {
+      const dir = fresh("window");
+      const before = listWindowRoots([dir], judge);
+      writeFileSync(join(dir, "ordinary"), "x");
+      if (!makeBad(dir)) return;
+      const after = listWindowRoots([dir], judge);
+      expect(after.ownUnreadable).toEqual([dir]);
+      const scan = scanWindow(changedFiles(before, after), () => forms, uid);
+      // Everything else in the window is sound, so the row's verdict measures
+      // the name alone.
+      expect(scan.filesRead).toBe(1);
+      expect(scan.nameMatches).toBe(0);
+      expect(windowRow(before, after, scan, [dir]).ok).toBe(false);
+    }
+  });
+
+  test("a root that resolves to a path the listing cannot find is an error, not a silent absence", () => {
+    const base = fresh("window");
+    const target = badName(base);
     try {
-      writeFileSync(bad, "x");
+      mkdirSync(target);
     } catch (error) {
-      // Some filesystems (a Mac's APFS) refuse such a name; Linux accepts it,
-      // and the Linux runner is where this half is measured.
       expect((error as NodeJS.ErrnoException).code).toBe("EILSEQ");
-      // Never an excuse on Linux: a green Linux run proves the name was made.
       expect(process.platform).not.toBe("linux");
       return;
     }
-    const listing = listWindowRoots([dir], uid);
-    expect(listing.ownUnreadable).toEqual([dir]);
-    const row = windowRow(
-      listWindowRoots([fresh("window")], uid),
-      listing,
-      scanWindow([], () => forms, uid),
-      [dir],
-    );
-    expect(row.ok).toBe(false);
+    const link = join(base, "root");
+    symlinkSync(target, link);
+    expect(() => listWindowRoots([link], uid)).toThrow(/lstat: ENOENT/);
   });
 
   test("an ordinary name passes and is judged once", () => {
@@ -547,6 +636,17 @@ describe("the adapter, through real interposers, over fake tools", () => {
 //   W17 qualify-linux-support.ts: facts requires the shim rows again                                  -> "seal, unseal and clean require the shim rows, seal and unseal the window row; facts and deliver owe none (DEC-262 a32)" only
 //   W18 qualify-linux-support.ts: facts requires the window row again                                 -> the same test only
 //   W19 qualify-linux-rows.ts: expectedTools regains a facts entry                                    -> "no calls, and an unknown phase, fail; the unseal phase creates nothing" only
+// ROUND 3 (round 2 review F1, N-a, N-b, N-e, DEC-262 a33), predictions written and committed BEFORE any run; W13 and W16 are re-stated against the new test names. "Linux" means measured on the ubuntu-24.04-arm Check job through a throwaway draft PR; a Mac cannot make a non-UTF-8 name, so those tests return early there.
+//   W11a qualify-linux-shim.ts: realpath failure rethrown raw                                        -> "an error on a key-named path is rethrown without that path, from the scan and from each step of the listing" only (Mac and Linux)
+//   W11b qualify-linux-shim.ts: lstat failure rethrown raw                                           -> "the listing's lstat and readdir failures are rethrown as the step and the code only" only (Mac and Linux)
+//   W11c qualify-linux-shim.ts: readdir failure rethrown raw                                         -> the same test as W11b only (Mac and Linux)
+//   W13  qualify-linux-shim.ts: the round-trip check dropped                                         -> "a name that is not valid UTF-8 fails the row whoever owns the directory, with the window otherwise sound" only (Linux)
+//   W16  qualify-linux-shim.ts: readdir back to utf8 names                                           -> the same test only (Linux)
+//   W23  qualify-linux-shim.ts: the non-round-tripping name counted foreign when the directory is not the judge's own (the round 2 F1 form) -> the same test only, on its uid + 1 pass (Linux)
+//   W24  qualify-linux-shim.ts: a top-level ENOENT swallowed again                                   -> "a root that resolves to a path the listing cannot find is an error, not a silent absence" only (Linux)
+//   W20  qualify-linux-support.ts: facts requires runWide again                                      -> "facts owes none of them, deliver owes the ward-metadata row only, and seal, unseal and clean owe all three" and "facts passes on exactly the rows its four commands can produce" (Mac and Linux)
+//   W21  qualify-linux-support.ts: deliver drops real-ward-metadata-unchanged                        -> the first of those two tests and "each phase's list holds the (a29) and T26 rows it owes, and the unseal phase holds all of the seal phase's"
+//   W22  qualify-linux-support.ts: clean drops runWide                                                -> the first of those two tests only
 // OBSERVED, ROUND 2 (bun 1.3.14 on a Mac, predictions above unchanged, a driver restoring each file after each mutant): W17, W18 and W19 each went red on exactly the one test predicted.
 // OBSERVED, ROUND 1 (bun 1.3.14 on a Mac, 2026-11-18, predictions above unchanged, a driver restoring each file after each mutant, on e24053f): W11, W12, W14 and W15 each went red on exactly the one test predicted. W13 and W16 were NOT run: the Mac cannot create a non-UTF-8 name, so they are unobservable here and the Linux arm runner is where they are measured. Bun returns plain Uint8Arrays from readdirSync with encoding buffer (not Buffers), which the first run of the fix exposed. STATED LIMIT: the name scan does not cover a key-named empty directory, symlink or FIFO, because the listing holds regular files only.
 // OBSERVED (slice 4a-2b-2 part A, bun 1.3.14 on a Mac with bash as sh, 2026-11-18; the predictions above unchanged, a driver restoring each file after each mutant, run on the tree at 03cdd71). No survivor. W2, W4-W7 and W10 each went red on exactly the one test predicted; W8 on its two; W9 on its two. Divergences from the predictions: W1 reddened ONE test, not two ("every phase that runs a tool requires the shim rows, and all but clean the window row"): the second test builds its all-ok list from requiredChecks itself, so a phase that stops requiring the shim rows is invisible to it, and only the first test (which names the rows) closes the mutant; W3 reddened a third test, the end-to-end one, which asserts that a seal log is not an unseal log because of the seal-only tools (so an unseal that ignores unexpected tools reads it as passing). The Linux target's /bin/sh is dash; none of this was measured there.

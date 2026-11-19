@@ -273,6 +273,9 @@ export interface WindowListing {
   // the row fails. A directory another user owns and this user cannot read could
   // not have been written by this run, and is only counted.
   readonly foreignUnreadable: number;
+  // Also every directory, whoever owns it, holding a name that is not valid
+  // UTF-8 (/tmp and /dev/shm are other users' directories this run writes into),
+  // so the row fails on it.
   readonly ownUnreadable: readonly string[];
 }
 
@@ -281,38 +284,43 @@ const unreadable = (error: unknown): boolean =>
 
 // A system error carries the path it failed on in .message and .path, and a path
 // can be named for the key. The listing therefore rethrows only the errno code.
-const listingFailure = (error: unknown, step: string): Error =>
-  new Error(
-    `window listing failed at ${step}: ${(error as NodeJS.ErrnoException).code ?? "unknown"}`,
-  );
+const listingFailure = (error: unknown, step: string): Error => {
+  const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+  return new Error(`window listing failed at ${step}: ${code}`);
+};
 
 // The regular files under each root, by lstat, without opening any. Symlinks
 // are neither followed nor listed, so a key-named empty directory, symlink or
-// FIFO is not covered by the name scan (a stated limit). A root that does not exist is recorded as
-// absent; one that exists but cannot be resolved is an error.
+// FIFO is not covered by the name scan (a stated limit), and a name that
+// vanishes between the directory read and its lstat is dropped uncounted, which
+// is within the row's "files present at the after-listing". A root that does not
+// exist is recorded as absent; one that exists but cannot be resolved, or that
+// resolves to a path lstat cannot find, is an error.
 export function listWindowRoots(
   roots: readonly string[],
   uid: number,
+  // A seam for the test of the readdir rethrow, which no file can force.
+  readdir: typeof readdirSync = readdirSync,
 ): WindowListing {
   const present: Record<string, boolean> = {};
   const files: Record<string, string> = {};
   const ownUnreadable: string[] = [];
   let foreignUnreadable = 0;
-  const walk = (path: string): void => {
+  const walk = (path: string, top = false): void => {
     let stats: Stats;
     let big: BigIntStats;
     try {
       big = lstatSync(path, { bigint: true });
       stats = lstatSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && !top) return;
       throw listingFailure(error, "lstat");
     }
     if (stats.isDirectory()) {
       let raw: Buffer[];
       try {
         // Bun hands back plain Uint8Arrays here, so wrap each in a Buffer.
-        raw = readdirSync(path, { encoding: "buffer" }).map((entry) =>
+        raw = readdir(path, { encoding: "buffer" }).map((entry) =>
           Buffer.from(entry),
         );
       } catch (error) {
@@ -324,14 +332,14 @@ export function listWindowRoots(
       // A name that is not valid UTF-8 cannot be held as a string without
       // becoming a different name (U+FFFD), which lstat then cannot find: the
       // entry and its subtree would be dropped without a trace, and the name
-      // would escape the key-name scan. The directory's contents are unknown,
-      // so the row fails (own) or the directory is counted (foreign).
+      // would escape the key-name scan. The directory's contents are unknown, so
+      // the row fails, whoever owns it: unlike an unreadable directory, this one
+      // WAS read, and may be one this run writes into (/tmp).
       const entries = raw.map((entry) => entry.toString("utf8"));
       if (
         raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
       ) {
-        if (stats.uid === uid) ownUnreadable.push(path);
-        else foreignUnreadable++;
+        ownUnreadable.push(path);
         return;
       }
       for (const entry of entries.sort()) walk(join(path, entry));
@@ -356,7 +364,7 @@ export function listWindowRoots(
       throw listingFailure(error, "realpath");
     }
     present[root] = true;
-    walk(real);
+    walk(real, true);
   }
   return { present, files, foreignUnreadable, ownUnreadable };
 }
