@@ -18,6 +18,7 @@
 //   Y3  qualify-linux.ts: makeRunner passes `env: process.env` -> "the runner's environment is only PATH and LC_ALL" only
 //   Y4  qualify-linux.ts: makeRunner drops its timeout -> "a probe past its timeout reads as failed" only
 // OBSERVED (Mac, bun 1.3.14, 2026-11-19): X1 GREEN, a divergence: the test iterated the mutated list, so it could not see the removal; fixed by spelling the words out (commit after the first), then X1b red on exactly "each forbidden word in code is a finding". X2, X3, X5 red on exactly their predicted test. X4 killed the test process on import (the usage branch printed and exited 2), so no test ran: red as predicted. Mac only; none of these are Linux-only.
+// B2: the source-tripwire tests (X1b and the shell/exec cases) moved to test/qualify-linux-source.test.ts with the check, which now lives in test/support/harness-source.ts; the X1-X5 observations below stay as recorded.
 import { describe, expect, test } from "bun:test";
 // OBSERVED, ROUND 2 (Mac, bun 1.3.14, 2026-11-19; predictions unchanged): Y1, Y2, Y3 and Y4 each red on exactly their predicted test (Y4 took the full 5s sleep). A new test, "a missing binary reads as failed", found a real defect before any mutant: under Bun a failed spawn (ENOENT) has status undefined, not null, so the runner now maps it to null. N-2 (review): the harness compiled natively (no --target, so no download) into the scratchpad and run with --phase facts on the Mac refused ("refusing: the Linux qualification runs on Linux", exit 2); a find for files newer than a marker taken before the build found nothing new under the repository or dist/ (dist/ward Sep 29 12:06 and dist/ward-qualify Oct 20 23:11, unchanged), only the built binary.
 import {
@@ -41,11 +42,7 @@ import {
   tpmDeviceRow,
   tpmToolsRow,
 } from "../scripts/qualify-linux.ts";
-import {
-  harnessSourceProblems,
-  sha256,
-  verdict,
-} from "../scripts/qualify-linux-support.ts";
+import { sha256, verdict } from "../scripts/qualify-linux-support.ts";
 
 const ok = (stdout: string): Probe => ({ status: 0, stdout });
 const device = "crw------- 1 root root 10, 125 Nov 19 05:00 /dev/tpmrm0\n";
@@ -126,50 +123,6 @@ test("arguments", () => {
     phase: "facts",
   });
   expect(parseArgs([])).toEqual({ kind: "usage" });
-});
-
-describe("the harness source", () => {
-  test("the real script has no reboot, shell or exec, and the check read it", () => {
-    const source = readFileSync(
-      new URL("../scripts/qualify-linux.ts", import.meta.url),
-      "utf8",
-    );
-    expect(source.length).toBeGreaterThan(1000);
-    expect(harnessSourceProblems(source)).toEqual([]);
-  });
-
-  test("each forbidden word in code is a finding, and a comment saying it is not", () => {
-    // Spelled out here, not read from the check, so removing one from it is red.
-    for (const word of [
-      "reboot",
-      "shutdown",
-      "systemctl",
-      "poweroff",
-      "halt",
-      "init",
-    ]) {
-      expect(harnessSourceProblems(`spawnSync("${word}", []);`)).toEqual([
-        `names ${word}`,
-      ]);
-      expect(harnessSourceProblems(`// never ${word}\nconst x = 1;`)).toEqual(
-        [],
-      );
-      expect(harnessSourceProblems(`/* ${word} */ const x = 1;`)).toEqual([]);
-    }
-  });
-
-  test("sh -c, a shell option and exec are findings; shell false is not", () => {
-    expect(harnessSourceProblems('spawnSync("sh", ["-c", "id"]);')).toContain(
-      "sh -c",
-    );
-    expect(
-      harnessSourceProblems('spawnSync("id", [], { shell: true });'),
-    ).toContain("shell option");
-    expect(
-      harnessSourceProblems('spawnSync("id", [], { shell: false });'),
-    ).toEqual([]);
-    expect(harnessSourceProblems('execSync("id");')).toContain("exec");
-  });
 });
 
 describe("the build directory", () => {
