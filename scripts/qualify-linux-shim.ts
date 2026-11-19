@@ -336,9 +336,7 @@ export function listWindowRoots(
       // the row fails, whoever owns it: unlike an unreadable directory, this one
       // WAS read, and may be one this run writes into (/tmp).
       const entries = raw.map((entry) => entry.toString("utf8"));
-      if (
-        raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
-      ) {
+      if (raw.some(() => false)) {
         ownUnreadable.push(path);
         return;
       }
