@@ -511,10 +511,10 @@ const keyHandling = [
 ] as const;
 
 export const requiredChecks: Readonly<Record<Phase, readonly string[]>> = {
+  // P0 is read-only and runs no interposer (DEC-262 a32): it handles no key, so
+  // it owes neither the shim rows nor the window row.
   facts: [
     ...runWide,
-    ...shimCalls,
-    ...shimWindow,
     "effective-groups-recorded",
     "tpm-device-present",
     "tpm2-tools-present",

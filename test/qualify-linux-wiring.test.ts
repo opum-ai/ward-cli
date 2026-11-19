@@ -85,17 +85,19 @@ describe("the shim rows are required, so a run that never produced one cannot pa
   const allOk = (phase: keyof typeof requiredChecks): Check[] =>
     requiredChecks[phase].map((name) => ({ name, ok: true }));
 
-  test("every phase that runs a tool requires the shim rows, and all but clean the window row", () => {
-    for (const phase of ["facts", "seal", "unseal", "clean"] as const) {
+  test("seal, unseal and clean require the shim rows, seal and unseal the window row; facts and deliver owe none (DEC-262 a32)", () => {
+    for (const phase of ["seal", "unseal", "clean"] as const) {
       for (const name of shimRows)
         expect(requiredChecks[phase]).toContain(name);
       expect(requiredChecks[phase].includes(windowName)).toBe(
         phase !== "clean",
       );
     }
-    // The delivery phase runs no tool, so it owes none of them.
-    for (const name of [...shimRows, windowName])
-      expect(requiredChecks.deliver).not.toContain(name);
+    // P0 is read-only with no interposer and handles no key; the delivery phase
+    // runs no tool. Neither owes a shim row or the window row.
+    for (const phase of ["facts", "deliver"] as const)
+      for (const name of [...shimRows, windowName])
+        expect(requiredChecks[phase]).not.toContain(name);
   });
 
   test("with every required row present and ok a phase passes, and dropping any one shim row fails it", () => {
@@ -130,7 +132,7 @@ describe("the expected call set", () => {
   });
 
   test("every tool a phase must run, and none outside its set, passes", () => {
-    for (const phase of ["facts", "seal", "unseal", "clean"] as const) {
+    for (const phase of ["seal", "unseal", "clean"] as const) {
       const set = expectedTools[phase];
       const calls = set.required.map(call);
       expect(expectedCallsRow(phase, calls).ok).toBe(true);
@@ -156,6 +158,8 @@ describe("the expected call set", () => {
 
   test("no calls, and an unknown phase, fail; the unseal phase creates nothing", () => {
     expect(expectedCallsRow("seal", []).ok).toBe(false);
+    // facts runs no interposer (a32), so it has no call set to satisfy.
+    expect(expectedCallsRow("facts", [call(diagnosticTool)]).ok).toBe(false);
     expect(expectedCallsRow("not-a-phase", [call(diagnosticTool)]).ok).toBe(
       false,
     );
@@ -537,5 +541,9 @@ describe("the adapter, through real interposers, over fake tools", () => {
 //   W14 qualify-linux-rows.ts: envControlRow drops the unique-names requirement                       -> "the same names with the same value digests pass; a missing, extra, changed or repeated name fails" only
 //   W15 qualify-linux-rows.ts: envControlRow hashes the printed value as utf8, not latin1             -> the same test only
 //   W16 qualify-linux-shim.ts: readdirSync back to the default utf8 names (the block as it was)       -> as W13 (Linux only)
+// ROUND 2 (DEC-262 a32, facts is read-only with no interposer), predictions written and committed BEFORE any run:
+//   W17 qualify-linux-support.ts: facts requires the shim rows again                                  -> "seal, unseal and clean require the shim rows, seal and unseal the window row; facts and deliver owe none (DEC-262 a32)" only
+//   W18 qualify-linux-support.ts: facts requires the window row again                                 -> the same test only
+//   W19 qualify-linux-rows.ts: expectedTools regains a facts entry                                    -> "no calls, and an unknown phase, fail; the unseal phase creates nothing" only
 // OBSERVED, ROUND 1 (bun 1.3.14 on a Mac, 2026-11-18, predictions above unchanged, a driver restoring each file after each mutant, on e24053f): W11, W12, W14 and W15 each went red on exactly the one test predicted. W13 and W16 were NOT run: the Mac cannot create a non-UTF-8 name, so they are unobservable here and the Linux arm runner is where they are measured. Bun returns plain Uint8Arrays from readdirSync with encoding buffer (not Buffers), which the first run of the fix exposed. STATED LIMIT: the name scan does not cover a key-named empty directory, symlink or FIFO, because the listing holds regular files only.
 // OBSERVED (slice 4a-2b-2 part A, bun 1.3.14 on a Mac with bash as sh, 2026-11-18; the predictions above unchanged, a driver restoring each file after each mutant, run on the tree at 03cdd71). No survivor. W2, W4-W7 and W10 each went red on exactly the one test predicted; W8 on its two; W9 on its two. Divergences from the predictions: W1 reddened ONE test, not two ("every phase that runs a tool requires the shim rows, and all but clean the window row"): the second test builds its all-ok list from requiredChecks itself, so a phase that stops requiring the shim rows is invisible to it, and only the first test (which names the rows) closes the mutant; W3 reddened a third test, the end-to-end one, which asserts that a seal log is not an unseal log because of the seal-only tools (so an unseal that ignores unexpected tools reads it as passing). The Linux target's /bin/sh is dash; none of this was measured there.

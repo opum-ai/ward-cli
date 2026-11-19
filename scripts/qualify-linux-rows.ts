@@ -576,17 +576,17 @@ export function reportStatementRow(statement: string): Check {
 // with a call missing would otherwise still pass every row that reads it). The
 // seal phase runs the whole adapter flow and the independent session probe;
 // the unseal phase after the reboot loads the sealed key and unseals it, and
-// creates nothing; facts and clean only read the handle lists.
+// creates nothing; clean only reads the handle lists. The facts phase has no
+// entry: it runs no interposer (DEC-262 a32), so there is no call log to check.
 export const expectedTools: Readonly<
   Record<
-    "facts" | "seal" | "unseal" | "clean",
+    "seal" | "unseal" | "clean",
     {
       readonly required: readonly string[];
       readonly allowed: readonly string[];
     }
   >
 > = {
-  facts: { required: [diagnosticTool], allowed: [diagnosticTool] },
   seal: {
     required: [...requiredTools, diagnosticTool],
     allowed: [...requiredTools, diagnosticTool],
