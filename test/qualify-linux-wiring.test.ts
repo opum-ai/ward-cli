@@ -452,6 +452,8 @@ describe("a file named after the key", () => {
       // Some filesystems (a Mac's APFS) refuse such a name; Linux accepts it,
       // and the Linux runner is where this half is measured.
       expect((error as NodeJS.ErrnoException).code).toBe("EILSEQ");
+      // Never an excuse on Linux: a green Linux run proves the name was made.
+      expect(process.platform).not.toBe("linux");
       return;
     }
     const listing = listWindowRoots([dir], uid);

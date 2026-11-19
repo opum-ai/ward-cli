@@ -390,6 +390,8 @@ export interface WindowScan {
   readonly nameMatches: number;
   // Every path the scan accounted for, whichever way: read, foreign, vanished or
   // unreadable. The row compares this list with the changed files by path.
+  // STATED LIMIT: these are raw paths, key-named ones included (shown() guards
+  // only what is printed), so the scan object itself is not safe to print.
   readonly accounted: readonly string[];
 }
 
