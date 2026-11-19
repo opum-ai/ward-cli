@@ -552,7 +552,6 @@ export function windowRow(
     sameRoots &&
     before.ownUnreadable.length === 0 &&
     after.ownUnreadable.length === 0 &&
-    before.nonUtf8Directories.length === 0 &&
     after.nonUtf8Directories.length === 0 &&
     scan.unreadable.length === 0 &&
     scan.filesRead > 0 &&
