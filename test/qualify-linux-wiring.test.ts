@@ -527,17 +527,31 @@ describe("a file named after the key", () => {
     // /dev/shm are directories of other users that this run writes into.
     for (const judge of [uid, uid + 1]) {
       const dir = fresh("window");
-      const before = listWindowRoots([dir], judge);
-      writeFileSync(join(dir, "ordinary"), "x");
+      // A directory holding such a name is unlisted as a whole, so a sound file
+      // is put in a second root: the scan reads it, and the row's verdict then
+      // rests on the name alone.
+      const sound = fresh("window");
+      const roots = [dir, sound];
+      const before = listWindowRoots(roots, judge);
+      writeFileSync(join(sound, "ordinary"), "x");
       if (!makeBad(dir)) return;
-      const after = listWindowRoots([dir], judge);
+      const after = listWindowRoots(roots, judge);
       expect(after.ownUnreadable).toEqual([dir]);
       const scan = scanWindow(changedFiles(before, after), () => forms, uid);
-      // Everything else in the window is sound, so the row's verdict measures
-      // the name alone.
       expect(scan.filesRead).toBe(1);
       expect(scan.nameMatches).toBe(0);
-      expect(windowRow(before, after, scan, [dir]).ok).toBe(false);
+      expect(windowRow(before, after, scan, roots).ok).toBe(false);
+      // The same window without the bad name passes, so it is the name that fails.
+      rmSync(badName(dir));
+      const clean = listWindowRoots(roots, judge);
+      expect(
+        windowRow(
+          before,
+          clean,
+          scanWindow(changedFiles(before, clean), () => forms, uid),
+          roots,
+        ).ok,
+      ).toBe(true);
     }
   });
 
