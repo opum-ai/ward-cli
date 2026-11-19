@@ -55,6 +55,7 @@ import {
   Tpm2Error,
   type Tpm2Host,
   type Tpm2Presence,
+  type Tpm2Tool,
   type Tpm2Reason,
   tpm2StateFor,
   keyUnloadableHint,
@@ -899,7 +900,7 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     process.env.PWD = "/somewhere";
     try {
       // Every tool Ward runs, so a name added for one tool only is still seen.
-      const all = [...requiredTools, diagnosticTool];
+      const all: Tpm2Tool[] = [...requiredTools, diagnosticTool];
       const presence = {
         device: DEVICE,
         tools: Object.fromEntries(all.map((tool) => [tool, "/usr/bin/env"])),
