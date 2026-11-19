@@ -581,3 +581,28 @@ export function verdict(
     ? "PASSED"
     : "FAILED";
 }
+
+// The harness never reboots, powers off or reaches for a shell (DEC-262: the
+// operator reboots, Ward never does). This reads the harness source as code, with
+// comments removed, so a comment saying "never reboot" is not a finding.
+export const forbiddenSpawnWords = [
+  "reboot",
+  "shutdown",
+  "systemctl",
+  "poweroff",
+  "halt",
+  "init",
+] as const;
+
+export function harnessSourceProblems(source: string): string[] {
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  const problems: string[] = forbiddenSpawnWords
+    .filter((word) => new RegExp(`\\b${word}\\b`).test(code))
+    .map((word) => `names ${word}`);
+  if (/\bsh\b[^\n]*["'`]-c["'`]|["'`]sh -c/.test(code)) problems.push("sh -c");
+  if (/\bshell\s*:\s*(?!\s)(?!false\b|!1(?![\w.]))/.test(code))
+    problems.push("shell option");
+  if (/\bexecSync\b|(?<![.\w])exec\(|\bexecFile/.test(code))
+    problems.push("exec");
+  return problems;
+}
