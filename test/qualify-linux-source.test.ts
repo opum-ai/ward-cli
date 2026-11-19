@@ -20,6 +20,15 @@
 //   V4  qualify-linux.ts: `const weaker = groupIdsRow;` after runFacts (a reference, not a call) -> "groupIdsRow stays in P0" only
 //   V5  harness-source.ts: the default/namespace child_process import rule removed -> "a spelled-out evasion is a finding" only
 //   V6  harness-source.ts: withoutInterposerText blanks the whole body again (the r1 window) -> "inside interposerScript only string contents are blanked" only
+// ROUND 3 (opus r2 REQUEST_CHANGES at fa1b20a; predictions committed before the run):
+//   U1  qualify-linux-shim.ts: a `${tool === "tpm2_unseal" ? String(Bun.spawnSync(["/usr/bin/true"]).exitCode) : ""}` element added to the interposer head -> "every spawn call is an allowed anchor" only (the golden text is unchanged)
+//   U2  qualify-linux-shim.ts: `/* it's */ Bun.spawnSync(["/usr/bin/true"]); /* ' */` as a statement in interposerScript -> "every spawn call is an allowed anchor" only
+//   U3  inherited-acl.ts (src/): `export const planted = "/usr/sbin/reboot";` -> "have no findings" only
+//   U4  inherited-acl.ts: the chmod call swapped for spawnSync("/usr/bin/true", []) with the old call kept as a comment -> "every spawn call is an allowed anchor" only
+//   U5  harness-source.ts: the "a $ taken from bun" rule loses its `{ $ }` branch -> "a spelled-out evasion is a finding" only
+//   U6  harness-source.ts: closure() no longer throws on two candidates -> "two candidate files for one import throw" only
+//   U7  harness-source.ts: the sh -c left boundary goes back to the r2 class -> "a spelled-out evasion is a finding" only
+//   U8  harness-source.ts: an allowance for a file that is not scanned is added -> "have no findings, and the scan read what it should" only
 // OBSERVED (Mac, bun 1.3.14, 2026-11-19; predictions unchanged, no divergence): the unmodified tree passes 9 of 9 (the positive control; it read 5 named bundled modules). Z1 red on exactly the spawn-anchor test. Z2 red on both golden tests. Z3 red on the no-findings test and the spawn-anchor test. Z4 red on exactly the N-5 test. Z5 red on exactly the spelled-out evasion test. Z6 red on the plain golden test and the one-allowed-exec test. rows.ts removeRunDirectoryUnder's /bin/rm spawn is a third allowed anchor (P4's delete by literal path), found by the first run of the scan. All Mac measurements; none depends on Linux.
 // OBSERVED, ROUND 2 (Mac, bun 1.3.14, 2026-11-19; predictions unchanged): the unmodified tree passes 11 of 11 (positive control; the closure over the four roots read 14 modules, src/adapters/tpm2-tools.ts and inherited-acl.ts among them). V1, V3, V4, V5, V6 each red on exactly their predicted test. V2 first aborted the suite because my planted spawn named /bin/true, which does not exist on a Mac (the golden describe calls interposerScript, so it threw there); re-run with /usr/bin/true it was red on exactly the spawn-anchor test, as predicted. Scanning src/ with the forbidden WORDS flagged ordinary messages (tpm2-tools.ts, contract/errors.ts), so the words rule applies to scripts/ only and every other rule runs over every bundled module; the settled spawn allowances for the product code are tpm2-tools.ts (Bun.spawn of the resolved tool path) and inherited-acl.ts (/bin/chmod -N).
 import "./support/no-real-keychain.ts";
@@ -36,7 +45,6 @@ import {
   root,
   sourceProblems,
   spawnCall,
-  withoutInterposerText,
 } from "./support/harness-source.ts";
 
 const entry = "scripts/qualify-linux.ts";
@@ -50,6 +58,8 @@ const roots = [
   "scripts/qualify-linux-support.ts",
 ];
 const scanned = closure(roots);
+const wordsFor = (file: string): "anywhere" | "literal" =>
+  file.startsWith("scripts/") ? "anywhere" : "literal";
 const read = (file: string): string =>
   readFileSync(resolve(root, file), "utf8");
 
@@ -63,25 +73,31 @@ describe("the bundled modules", () => {
         "scripts/qualify-linux-shim.ts",
         "scripts/qualify-linux-support.ts",
         "src/adapters/tpm2-tools.ts",
+        "src/adapters/inherited-acl.ts",
       ]),
     );
+    // Every file an allowance names is one the scan read, or it is dead.
+    for (const allowance of allowedSpawns)
+      expect([allowance.file, scanned.includes(allowance.file)]).toEqual([
+        allowance.file,
+        true,
+      ]);
     for (const file of scanned)
       expect([
         file,
-        sourceProblems(
-          withoutInterposerText(file, read(file)),
-          file.startsWith("scripts/"),
-        ),
+        sourceProblems(read(file), { file, words: wordsFor(file) }),
       ]).toEqual([file, []]);
   });
 
   test("every spawn call is an allowed anchor, by file and by call site", () => {
     for (const file of scanned) {
-      const code = normalise(withoutInterposerText(file, read(file)));
+      // Calls AND anchors are matched on the same comment-stripped text, so a
+      // commented-out anchor cannot stand in for a swapped call.
+      const code = normalise(read(file), file);
       const calls = [...code.matchAll(spawnCall)].length;
       const allowed = allowedSpawns.filter((entry) => entry.file === file);
       const anchored = allowed.reduce(
-        (sum, entry) => sum + [...read(file).matchAll(entry.anchor)].length,
+        (sum, entry) => sum + [...code.matchAll(entry.anchor)].length,
         0,
       );
       expect([file, calls]).toEqual([
@@ -128,6 +144,13 @@ describe("the scan", () => {
       ],
       ['import { $ as run } from "bun";', "a $ taken from bun"],
       ["const { $: run } = Bun;", "a $ taken from bun"],
+      ["const { $ } = Bun;", "a $ taken from bun"],
+      ['import * as B from "bun"; B.$`id`;', "a $ member"],
+      ["const go = $; go`id`;", "a $ alias"],
+      ['run("x;sh -c id")', "sh -c in one string"],
+      ['run("$(sh -c id)")', "sh -c in one string"],
+      ['run("(sh -c id)")', "sh -c in one string"],
+      ['run("a|sh -c id")', "sh -c in one string"],
       ['run("bash", ["-lc", "id"])', "a shell as a command"],
       ['run("dash", ["-ec", "id"])', "a shell as a command"],
       ['run("zsh -c id")', "sh -c in one string"],
@@ -244,21 +267,75 @@ describe("the closure and the interposer window", () => {
     }
   });
 
-  test("inside interposerScript only string contents are blanked: a spawn in its body is still counted, a word in a string is not", () => {
-    const source =
-      'export function interposerScript() {\n  const x = "/sbin/reboot";\n  return Bun.spawnSync(["/bin/true"]);\n}\nexport function other() {\n  return 1;\n}\n';
-    const code = normalise(
-      withoutInterposerText("scripts/qualify-linux-shim.ts", source),
-    );
-    expect([...code.matchAll(spawnCall)].length).toBe(1);
+  test("two candidate files for one import throw", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ward-closure-"));
+    try {
+      writeFileSync(join(dir, "a.ts"), 'import { b } from "./b";\n');
+      writeFileSync(join(dir, "b.ts"), "export const b = 1;\n");
+      writeFileSync(join(dir, "b.tsx"), "export const b = 2;\n");
+      expect(() => closure(["a.ts"], dir)).toThrow(/resolves to 2 files/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const shim = "scripts/qualify-linux-shim.ts";
+  const window = (
+    body: string,
+    after = "export function other() {\n  return 1;\n}\n",
+  ) => `export function interposerScript() {\n${body}\n}\n${after}`;
+
+  test("inside interposerScript only literal text is blanked: a spawn in the body or in a ${} expression is counted, a word in a string is not", () => {
+    const count = (source: string) =>
+      [...normalise(source, shim).matchAll(spawnCall)].length;
+    expect(count(window('  const x = "/sbin/reboot";'))).toBe(0);
     expect(
-      sourceProblems(
-        withoutInterposerText("scripts/qualify-linux-shim.ts", source),
-      ),
+      sourceProblems(window('  const x = "/sbin/reboot";'), { file: shim }),
     ).toEqual([]);
+    expect(count(window('  return Bun.spawnSync(["/bin/true"]);'))).toBe(1);
+    // A template element is code: the r2 bypass.
+    expect(
+      count(
+        window(
+          '  return `x${tool === "tpm2_unseal" ? String(Bun.spawnSync(["/sbin/reboot"]).exitCode) : ""}`;',
+        ),
+      ),
+    ).toBe(1);
+    // Quotes in two comments cannot pair across the code between them.
+    expect(
+      count(window("  /* it's */ Bun.spawnSync([\"/bin/true\"]); /* ' */")),
+    ).toBe(1);
     // Outside the window the same string is a finding.
     expect(sourceProblems('const x = "/sbin/reboot";')).toEqual(
       expect.arrayContaining(["names reboot"]),
     );
+  });
+
+  test("the window is one function: after a closing line with a trailing comment, the next function's strings are still scanned", () => {
+    const source =
+      'export function interposerScript() {\n  return `a`;\n} // end\nexport function other() {\n  return "/sbin/reboot";\n}\n';
+    expect(sourceProblems(source, { file: shim })).toEqual(
+      expect.arrayContaining(["names reboot"]),
+    );
+  });
+});
+
+describe("words in src/", () => {
+  test("a whole quoted literal or its last path component is a finding; prose is not", () => {
+    for (const literal of [
+      "/usr/sbin/reboot",
+      "reboot",
+      "systemctl",
+      "/sbin/init",
+    ])
+      expect(
+        sourceProblems(`export const p = "${literal}";`, { words: "literal" }),
+      ).toEqual(expect.arrayContaining([expect.stringMatching(/^names /)]));
+    for (const prose of [
+      'const m = "Run `ward init` again after a reboot";',
+      "// reboot",
+      'const n = "reinit";',
+    ])
+      expect(sourceProblems(prose, { words: "literal" })).toEqual([]);
   });
 });

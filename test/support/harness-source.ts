@@ -72,27 +72,70 @@ export const allowedSpawns: readonly {
 ];
 
 // The generated interposer text is shell by design (a30): inside interposerScript
-// only the CONTENTS of string and template literals are blanked, so it is pinned
-// by the golden test instead, while the TypeScript around them is still scanned
-// (a spawn, exec, dynamic load or Bun.$ inside the function is a finding). The
-// window ends at the function's own closing brace, not at the next export.
-export function withoutInterposerText(file: string, source: string): string {
-  if (!file.endsWith("qualify-linux-shim.ts")) return source;
-  const start = source.indexOf("export function interposerScript(");
-  const close = source.indexOf("\n}\n", start);
+// the literal text of strings and templates is blanked and pinned by the golden
+// test instead, while every `${...}` expression and all the TypeScript around the
+// literals stays visible (a spawn, exec, dynamic load or Bun.$ there is a
+// finding). It runs on the comment-stripped code, so a quote inside a comment
+// cannot pair with another. The window is exactly one function: it ends at the
+// function's own closing line and must not contain another export.
+function blankLiterals(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i] as string;
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;
+      out += c + c;
+      i = j + 1;
+    } else if (c === "`") {
+      out += c;
+      i += 1;
+      while (i < text.length && text[i] !== "`") {
+        if (text[i] === "\\") i += 2;
+        else if (text[i] === "$" && text[i + 1] === "{") {
+          let depth = 1;
+          let j = i + 2;
+          while (j < text.length && depth > 0) {
+            if (text[j] === "{") depth += 1;
+            if (text[j] === "}") depth -= 1;
+            j += 1;
+          }
+          out += text.slice(i, j);
+          i = j;
+        } else i += 1;
+      }
+      out += "`";
+      i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+function blankInterposer(code: string): string {
+  const start = code.indexOf("export function interposerScript(");
+  const close = start === -1 ? -1 : code.indexOf("\n}\n", start);
   if (start === -1 || close === -1)
     throw new Error("interposerScript anchor not found");
   const end = close + 3;
-  const body = source
-    .slice(start, end)
-    .replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g, "$1$1");
-  return source.slice(0, start) + body + source.slice(end);
+  if (code.slice(start + 1, end).includes("\nexport function"))
+    throw new Error("the interposerScript window contains another export");
+  return (
+    code.slice(0, start) +
+    blankLiterals(code.slice(start, end)) +
+    code.slice(end)
+  );
 }
 
-// Comments removed by the transpiler; then the spellings that join or hide a
-// word are normalised: "re"+"boot", template pieces, \u and \x escapes.
-export function normalise(source: string): string {
+// Comments removed by the transpiler; the interposer window blanked for the
+// shim; then the spellings that join or hide a word are normalised: "re"+"boot",
+// template pieces, \u and \x escapes.
+export function normalise(source: string, file = ""): string {
   let code = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  if (file.endsWith("qualify-linux-shim.ts")) code = blankInterposer(code);
   code = code
     .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, h) =>
       String.fromCodePoint(Number.parseInt(h, 16)),
@@ -111,28 +154,42 @@ export function normalise(source: string): string {
   }
 }
 
-// The forbidden WORDS are checked on the harness's own scripts only: a message or
-// a comment-like string in product code under src/ may say "reboot" or "init".
-// Every other rule runs over every bundled module.
-export function sourceProblems(source: string, words = true): string[] {
-  const code = normalise(source);
-  const problems: string[] = (words ? forbiddenWords : [])
-    .filter((word) => new RegExp(`\\b${word}\\b`).test(code))
+// Words in the harness's own scripts are findings anywhere in the code. In the
+// product code under src/ they are findings only as a whole quoted literal or its
+// final path component ("/usr/sbin/reboot"), so a message that says "reboot" or
+// "init" in prose passes (leader ruling, #410 round 2 finding 2).
+export type Words = "anywhere" | "literal";
+export function sourceProblems(
+  source: string,
+  options: { file?: string; words?: Words } = {},
+): string[] {
+  const code = normalise(source, options.file ?? "");
+  const words = options.words ?? "anywhere";
+  const problems: string[] = forbiddenWords
+    .filter((word) =>
+      new RegExp(
+        words === "anywhere"
+          ? `\\b${word}\\b`
+          : `["'\`](?:[\\w.-]*\\/)*${word}["'\`]`,
+      ).test(code),
+    )
     .map((word) => `names ${word}`);
   const found = (name: string, pattern: RegExp): void => {
     if (pattern.test(code)) problems.push(name);
   };
   found("a shell as a command", /["'`](?:[\w.-]*\/)*(?:ba|z|da|k|c)?sh["'`]/);
-  found("sh -c in one string", /(?:^|[\s"'`/])(?:ba|z|da)?sh\s+-[a-zA-Z]*c\b/);
+  found("sh -c in one string", /\b(?:ba|z|da)?sh\s+-[a-zA-Z]*c\b/);
   found("a shell shorthand option", /[{,]\s*shell\s*[,}]/);
   found("a shell option", /\bshell\s*:\s*(?!\s)(?!false\b|!1(?![\w.]))/);
   found("a quoted shell option", /["'`]shell["'`]\s*:/);
   found("exec", /\bexecSync\b|\bexecFile\b|(?<![.\w])exec\s*\(/);
   found("a member exec on a process module", /\b(?:cp|child_process)\.exec/);
   found("Bun.$", /\bBun\.\$|(?<=[\s(=,:])\$`/);
+  found("a $ member", /\w\s*\.\s*\$\s*[`(]/);
+  found("a $ alias", /[=(,]\s*\$\s*[;,)]/);
   found(
     "a $ taken from bun",
-    /import\s*\{[^}]*\$[^}]*\}\s*from\s*["']bun["']|\{\s*\$\s*:/,
+    /import\s*\{[^}]*\$[^}]*\}\s*from\s*["']bun["']|\{\s*\$\s*[,}:]/,
   );
   found(
     "a default or namespace child_process import",
@@ -148,7 +205,7 @@ export function sourceProblems(source: string, words = true): string[] {
 // The relative-import closure of the given roots: every module the compiled
 // harness bundles from this repository, so a module imported later is scanned at
 // once. A relative specifier that does not resolve THROWS (a scan that read fewer
-// inputs than it should must fail); Bun's own extension order is tried first.
+// inputs than it should must fail); every extension Bun may try is looked for.
 const extensions = ["", ".ts", ".tsx", ".js", ".mjs", "/index.ts", "/index.js"];
 export function closure(
   entries: readonly string[],
@@ -169,10 +226,16 @@ export function closure(
       );
       const found = extensions
         .map((extension) => target + extension)
-        .find((path) => existsSync(path) && statSync(path).isFile());
-      if (found === undefined)
+        .filter((path) => existsSync(path) && statSync(path).isFile());
+      if (found.length === 0)
         throw new Error(`${file} imports ${m[1]}, which does not resolve`);
-      queue.push(relative(base, found));
+      // Which one Bun bundles depends on its extension order, so a second
+      // candidate is refused rather than guessed at.
+      if (found.length > 1)
+        throw new Error(
+          `${file} imports ${m[1]}, which resolves to ${found.length} files`,
+        );
+      queue.push(relative(base, found[0] as string));
     }
   }
   return [...seen].sort();
