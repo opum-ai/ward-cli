@@ -12,8 +12,10 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -196,6 +198,21 @@ describe("the control call: what the interposer logged is what a tool received",
     expect(envControlRow(logged, "garbage line\n").ok).toBe(false);
     expect(envControlRow(undefined, `${printed}\n`).ok).toBe(false);
     expect(envControlRow([], "").ok).toBe(false);
+    // A logged name repeated passes a one-directional comparison when the count
+    // matches (round 1, N2): the names must be the same set.
+    const dup = [logged[0], logged[0]] as typeof logged;
+    expect(envControlRow(dup, `${printed}\n`).ok).toBe(false);
+    // A printed byte above 0x7f is hashed as the single byte the log's latin1
+    // read holds, not as its two-byte utf8 form.
+    const high = [
+      {
+        name: "X",
+        digest: createHash("sha256")
+          .update(Buffer.from([0xe9]))
+          .digest("hex"),
+      },
+    ];
+    expect(envControlRow(high, "X=\u00e9\n").ok).toBe(true);
   });
 
   test("a value is never kept in the row", () => {
@@ -362,13 +379,86 @@ describe("a file named after the key", () => {
     // The same name on a file nobody can read this user's way.
     const other = fresh("window");
     const b2 = listWindowRoots([other], uid);
-    writeFileSync(join(other, `${keyHex}.bin`), "x");
-    symlinkAs(join(other, `${keyHex}.bin`));
+    // A symlink is never listed, so it reaches the scan only when named to it;
+    // a link to itself opens with ELOOP and is set aside as unreadable.
+    const link = join(other, `${keyHex}.bin`);
+    symlinkSync(link, link);
     const a2 = listWindowRoots([other], uid);
-    const s2 = scanWindow(changedFiles(b2, a2), () => forms, uid);
+    const s2 = scanWindow([link], () => forms, uid);
+    expect(s2.unreadable).toEqual([withheldPath]);
+    expect(s2.nameMatches).toBe(1);
     expect(JSON.stringify(windowRow(b2, a2, s2, [other]))).not.toContain(
       keyHex,
     );
+  });
+
+  test("a key-named path that vanished, and one that is foreign, is counted and never printed", () => {
+    const dir = fresh("window");
+    const gone = join(dir, `${keyHex}.gone`);
+    const vanished = scanWindow([gone], () => forms, uid);
+    expect(vanished.vanished).toBe(1);
+    expect(vanished.nameMatches).toBe(1);
+    // Foreign: a file this user cannot read, judged against another uid.
+    if (uid !== 0) {
+      const mine = join(dir, `${keyHex}.locked`);
+      writeFileSync(mine, "x", { mode: 0o000 });
+      const foreign = scanWindow([mine], () => forms, uid + 1);
+      expect(foreign.foreign).toBe(1);
+      expect(foreign.nameMatches).toBe(1);
+      chmodSync(mine, 0o600);
+    }
+  });
+
+  test("an error on a key-named path is rethrown without that path", () => {
+    const dir = fresh("window");
+    const file = join(dir, `${keyHex}.file`);
+    writeFileSync(file, "x");
+    // A path through a regular file is ENOTDIR, which neither function absorbs.
+    const through = join(file, "child");
+    let scanned = "";
+    try {
+      scanWindow([through], () => forms, uid);
+    } catch (error) {
+      scanned = String((error as Error).message);
+    }
+    expect(scanned).toContain("ENOTDIR");
+    expect(scanned).not.toContain(keyHex);
+    let listed = "";
+    try {
+      listWindowRoots([through], uid);
+    } catch (error) {
+      listed = String((error as Error).message);
+    }
+    expect(listed).toContain("ENOTDIR");
+    expect(listed).not.toContain(keyHex);
+  });
+
+  test("a directory holding a name that is not valid UTF-8 fails the row instead of dropping it, and a valid non-ASCII name lists", () => {
+    const dir = fresh("window");
+    const good = join(dir, "caf\u00e9");
+    writeFileSync(good, "x");
+    expect(Object.keys(listWindowRoots([dir], uid).files)).toEqual([good]);
+    const bad = Buffer.concat([
+      Buffer.from(`${dir}/`),
+      Buffer.from([0xff, 0xfe]),
+    ]);
+    try {
+      writeFileSync(bad, "x");
+    } catch (error) {
+      // Some filesystems (a Mac's APFS) refuse such a name; Linux accepts it,
+      // and the Linux runner is where this half is measured.
+      expect((error as NodeJS.ErrnoException).code).toBe("EILSEQ");
+      return;
+    }
+    const listing = listWindowRoots([dir], uid);
+    expect(listing.ownUnreadable).toEqual([dir]);
+    const row = windowRow(
+      listWindowRoots([fresh("window")], uid),
+      listing,
+      scanWindow([], () => forms, uid),
+      [dir],
+    );
+    expect(row.ok).toBe(false);
   });
 
   test("an ordinary name passes and is judged once", () => {
@@ -381,13 +471,6 @@ describe("a file named after the key", () => {
     expect(windowRow(before, after, scan, [dir]).ok).toBe(true);
   });
 });
-
-// Replaces a file with a link to itself, which the scan sets aside as unreadable
-// (ELOOP) while its name still goes through the name check.
-function symlinkAs(path: string): void {
-  rmSync(path);
-  Bun.spawnSync(["ln", "-s", path, path]);
-}
 
 describe("the adapter, through real interposers, over fake tools", () => {
   test("a seal and an unseal produce a log that every shim row accepts, with the ruled device and the adapter's own environment", async () => {
@@ -413,6 +496,7 @@ describe("the adapter, through real interposers, over fake tools", () => {
     const key = deriveKey(nonce);
     const sealedAt = join(run, "tpm");
     await sealKey(presence, key, sealedAt);
+    const sealed = readToolLog(log).length;
     await runTool(presence, diagnosticTool, ["handles-saved-session"]);
     const unsealed = await unsealKey(presence, sealedAt);
     expect(unsealed.length).toBe(32);
@@ -424,6 +508,11 @@ describe("the adapter, through real interposers, over fake tools", () => {
     expect(expectedCallsRow("seal", calls).ok).toBe(true);
     // The seal-only tool is not part of the unseal phase's set.
     expect(expectedCallsRow("unseal", calls).ok).toBe(false);
+    // The log of the unseal alone (cut after the seal) is what that phase
+    // accepts, from real calls rather than hand-built ones, and not the seal's.
+    const unsealOnly = calls.slice(sealed);
+    expect(expectedCallsRow("unseal", unsealOnly).ok).toBe(true);
+    expect(expectedCallsRow("seal", unsealOnly).ok).toBe(false);
     expect(JSON.stringify(calls)).not.toContain(
       Buffer.from(key).toString("hex"),
     );
@@ -441,4 +530,11 @@ describe("the adapter, through real interposers, over fake tools", () => {
 //   W8  qualify-linux-shim.ts: withDiagnosticTool never calls the trust walk                         -> "it is resolved on the search path, trusted by the walk it is given, and added beside the required tools" and the refusal test above
 //   W9  qualify-linux-shim.ts: scanWindow never judges a path's name (no count, nothing withheld)    -> "fails the row, and its name is never printed" and "a leaking name on a file that also holds the key is withheld in `matches`, and an unreadable one in `unreadable`"
 //   W10 qualify-linux-shim.ts: windowRow drops the name-match requirement (the count is still kept)  -> "fails the row, and its name is never printed" only
+// ROUND 1 (opus review of c1f8dbe), predictions written and committed BEFORE any run of the new mutants, bun 1.3.14 on a Mac:
+//   W11 qualify-linux-shim.ts: listWindowRoots rethrows the raw error from realpath/lstat/readdir    -> "an error on a key-named path is rethrown without that path" only
+//   W12 qualify-linux-shim.ts: scanWindow rethrows the raw error                                      -> "an error on a key-named path is rethrown without that path" only
+//   W13 qualify-linux-shim.ts: listWindowRoots drops the non-round-tripping-name check                -> NO red on a Mac (APFS refuses the name, the test returns at EILSEQ); red on the Linux arm runner on "a directory holding a name that is not valid UTF-8 fails the row instead of dropping it..." only
+//   W14 qualify-linux-rows.ts: envControlRow drops the unique-names requirement                       -> "the same names with the same value digests pass; a missing, extra, changed or repeated name fails" only
+//   W15 qualify-linux-rows.ts: envControlRow hashes the printed value as utf8, not latin1             -> the same test only
+//   W16 qualify-linux-shim.ts: readdirSync back to the default utf8 names (the block as it was)       -> as W13 (Linux only)
 // OBSERVED (slice 4a-2b-2 part A, bun 1.3.14 on a Mac with bash as sh, 2026-11-18; the predictions above unchanged, a driver restoring each file after each mutant, run on the tree at 03cdd71). No survivor. W2, W4-W7 and W10 each went red on exactly the one test predicted; W8 on its two; W9 on its two. Divergences from the predictions: W1 reddened ONE test, not two ("every phase that runs a tool requires the shim rows, and all but clean the window row"): the second test builds its all-ok list from requiredChecks itself, so a phase that stops requiring the shim rows is invisible to it, and only the first test (which names the rows) closes the mutant; W3 reddened a third test, the end-to-end one, which asserts that a seal log is not an unseal log because of the seal-only tools (so an unseal that ignores unexpected tools reads it as passing). The Linux target's /bin/sh is dash; none of this was measured there.

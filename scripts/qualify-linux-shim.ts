@@ -52,12 +52,13 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 // test/tpm2-tools.test.ts, red on any other name. The T26 report and ADR 0028
 // must name the four and the pin (both are owed; neither exists yet). It
 // records the call (the name, the TCTI the environment carried, the NAME of
-// every environment variable with the sha256 of its value, each argument), then runs the real tool by the absolute path detection
-// resolved. Stdin is untouched and is never logged. Stdout is never logged
-// either, except for the one printout tool: that one is written to a private
-// file, copied to the caller byte for byte, and logged with its exit code. An
-// argument holding a newline would forge a log line, so it stops the call before
-// anything runs or is logged.
+// every environment variable with the sha256 of its value, each argument), then
+// runs the real tool by the absolute path detection resolved. Stdin is untouched
+// and is never logged. Stdout is never logged either, except for the one
+// printout tool: that one is written to a private file, copied to the caller
+// byte for byte, and logged with its exit code. An argument holding a newline
+// would forge a log line, so it stops the call before anything runs or is
+// logged.
 export function interposerScript(
   tool: string,
   realTool: string,
@@ -278,6 +279,13 @@ export interface WindowListing {
 const unreadable = (error: unknown): boolean =>
   ["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "");
 
+// A system error carries the path it failed on in .message and .path, and a path
+// can be named for the key. The listing therefore rethrows only the errno code.
+const listingFailure = (error: unknown, step: string): Error =>
+  new Error(
+    `window listing failed at ${step}: ${(error as NodeJS.ErrnoException).code ?? "unknown"}`,
+  );
+
 // The regular files under each root, by lstat, without opening any. Symlinks
 // are neither followed nor listed. A root that does not exist is recorded as
 // absent; one that exists but cannot be resolved is an error.
@@ -297,14 +305,30 @@ export function listWindowRoots(
       stats = lstatSync(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
+      throw listingFailure(error, "lstat");
     }
     if (stats.isDirectory()) {
-      let entries: string[];
+      let raw: Buffer[];
       try {
-        entries = readdirSync(path);
+        // Bun hands back plain Uint8Arrays here, so wrap each in a Buffer.
+        raw = readdirSync(path, { encoding: "buffer" }).map((entry) =>
+          Buffer.from(entry),
+        );
       } catch (error) {
-        if (!unreadable(error)) throw error;
+        if (!unreadable(error)) throw listingFailure(error, "readdir");
+        if (stats.uid === uid) ownUnreadable.push(path);
+        else foreignUnreadable++;
+        return;
+      }
+      // A name that is not valid UTF-8 cannot be held as a string without
+      // becoming a different name (U+FFFD), which lstat then cannot find: the
+      // entry and its subtree would be dropped without a trace, and the name
+      // would escape the key-name scan. The directory's contents are unknown,
+      // so the row fails (own) or the directory is counted (foreign).
+      const entries = raw.map((entry) => entry.toString("utf8"));
+      if (
+        raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
+      ) {
         if (stats.uid === uid) ownUnreadable.push(path);
         else foreignUnreadable++;
         return;
@@ -328,7 +352,7 @@ export function listWindowRoots(
         present[root] = false;
         continue;
       }
-      throw error;
+      throw listingFailure(error, "realpath");
     }
     present[root] = true;
     walk(real);
@@ -454,7 +478,10 @@ export function scanWindow(
           owner = undefined;
         }
         dispose(path, owner !== undefined && owner !== uid ? "foreign" : "bad");
-      } else throw error;
+      } else
+        throw new Error(
+          `window scan failed on ${shown(path)}: ${code ?? "unknown"}`,
+        );
     } finally {
       if (fd !== undefined) closeSync(fd);
     }

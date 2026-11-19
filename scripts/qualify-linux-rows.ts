@@ -665,7 +665,7 @@ export function envControlRow(logged: ToolCall["env"], printed: string): Check {
     received.set(
       name,
       createHash("sha256")
-        .update(Buffer.from(line.slice(at + 1)))
+        .update(Buffer.from(line.slice(at + 1), "latin1"))
         .digest("hex"),
     );
   }
@@ -674,6 +674,7 @@ export function envControlRow(logged: ToolCall["env"], printed: string): Check {
     wellFormed &&
     seen.length > 0 &&
     seen.length === received.size &&
+    new Set(seen.map((entry) => entry.name)).size === seen.length &&
     seen.every((entry) => received.get(entry.name) === entry.digest);
   return {
     name: "interposer-env-matches-tool-env",

@@ -489,9 +489,9 @@ const shimCalls = [
   "expected-tool-calls-made",
   "interposer-env-matches-tool-env",
 ] as const;
-// The listing of the places a key could be left. The clean phase takes none: the
-// run directory it works in is deleted by the end of it, so a window over it has
-// nothing to compare.
+// The listing of the places a key could be left. The clean phase takes none: it
+// handles no key and runs only tpm2_getcap, and the run directory it works in is
+// deleted by the end of it, so a window over it has nothing to compare.
 const shimWindow = ["key-not-in-files-present-at-the-after-listing"] as const;
 const stored = [
   "run-directory-is-ruled-literal-path",
