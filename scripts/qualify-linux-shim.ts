@@ -39,8 +39,8 @@ export const recordedStdoutTool = "tpm2_sessionconfig";
 // accepted as a stated limit of (a30). The compensating control is the exact
 // toolEnvironment key-set pin (LANG, LC_ALL, PATH, TPM2TOOLS_TCTI) in
 // test/tpm2-tools.test.ts, red on any other name. The T26 report and ADR 0028
-// must name the four and the pin (both are owed; neither exists yet). It records the call (the name, the TCTI the environment
-// carried, the NAME of every environment variable with the sha256 of its value,
+// must name the four and the pin (both are owed; neither exists yet). It
+// records the call (the name, the TCTI the environment carried, the NAME of every environment variable with the sha256 of its value,
 // each argument), then runs the real tool by the absolute path detection
 // resolved. Stdin is untouched and is never logged. Stdout is never logged
 // either, except for the one printout tool: that one is written to a private

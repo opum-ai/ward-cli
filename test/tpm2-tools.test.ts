@@ -38,6 +38,7 @@ import {
   diagnoseTpm2ForTest,
   maxToolOutputBytes,
   preparePrivateDirectory,
+  diagnosticTool,
   requiredTools,
   requirePrivateFile,
   runTool,
@@ -874,9 +875,9 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     expect(env.TPM2TOOLS_TCTI).toBe(`device:${DEVICE}`);
     expect(env.LANG).toBe("C");
     expect(env.LC_ALL).toBe("C");
-    // The fake tool's shell adds PWD, SHLVL and _ of its own, so the exact key set
-    // is pinned in the next test, from a tool that is env itself; here the names
-    // are pinned modulo the four a shell can add.
+    // The fake tool's shell adds PWD, SHLVL, _ and possibly OLDPWD of its own, so
+    // the exact key set is pinned in the next test, from a tool that is env
+    // itself; here the names are pinned modulo those four.
     expect(
       Object.keys(env)
         .filter((name) => !["_", "SHLVL", "PWD", "OLDPWD"].includes(name))
@@ -897,22 +898,26 @@ describe("a tool runs bounded, by absolute path, in a minimal environment", () =
     process.env.SHLVL = "3";
     process.env.PWD = "/somewhere";
     try {
+      // Every tool Ward runs, so a name added for one tool only is still seen.
+      const all = [...requiredTools, diagnosticTool];
       const presence = {
         device: DEVICE,
-        tools: { tpm2_create: "/usr/bin/env" },
+        tools: Object.fromEntries(all.map((tool) => [tool, "/usr/bin/env"])),
       } as unknown as Tpm2Presence;
-      const run = await runTool(presence, "tpm2_create", []);
-      const names = Buffer.from(run.stdout)
-        .toString("latin1")
-        .split("\n")
-        .filter((line) => line !== "")
-        .map((line) => line.split("=")[0]);
-      expect(names.sort()).toEqual([
-        "LANG",
-        "LC_ALL",
-        "PATH",
-        "TPM2TOOLS_TCTI",
-      ]);
+      for (const tool of all) {
+        const run = await runTool(presence, tool, []);
+        const names = Buffer.from(run.stdout)
+          .toString("latin1")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split("=")[0]);
+        expect(names.sort()).toEqual([
+          "LANG",
+          "LC_ALL",
+          "PATH",
+          "TPM2TOOLS_TCTI",
+        ]);
+      }
     } finally {
       for (const [name, value] of Object.entries(saved))
         if (value === undefined) delete process.env[name];

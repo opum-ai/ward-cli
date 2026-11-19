@@ -873,6 +873,33 @@ describe("the window rows", () => {
     expect(windowRow(ew.before, ew.after, ew.scan, [edge]).ok).toBe(true);
   });
 
+  test("scan.accounted holds exactly the input paths, whichever way each was disposed of: read, vanished, set aside", () => {
+    const dir = fresh("window");
+    const outside = fresh("outside");
+    writeFileSync(join(outside, "target"), "t");
+    writeFileSync(join(dir, "read"), "x");
+    symlinkSync(join(outside, "target"), join(dir, "link"));
+    const paths = [
+      join(dir, "read"),
+      join(dir, "link"),
+      join(dir, "gone"),
+      ...(existsSync("/etc/master.passwd") && !asRoot
+        ? ["/etc/master.passwd"]
+        : []),
+    ];
+    const scan = scanWindow(paths, forAll, uid);
+    expect([...scan.accounted].sort()).toEqual([...paths].sort());
+    expect(scan.filesRead).toBe(1);
+    expect(scan.vanished).toBe(1);
+    // The link is set aside as unreadable (never followed), and another user's
+    // unreadable file, where this host has one, is foreign.
+    expect(scan.unreadable).toEqual([join(dir, "link")]);
+    expect(scan.foreign).toBe(paths.length - 3);
+    expect(
+      scan.filesRead + scan.foreign + scan.vanished + scan.unreadable.length,
+    ).toBe(paths.length);
+  });
+
   test("a link or a FIFO swapped in after the listing is neither followed nor blocked on, and fails the row", () => {
     const outside = fresh("outside");
     writeFileSync(join(outside, "secret"), keyHex);
@@ -986,3 +1013,7 @@ describe("the report statement row", () => {
 //   S40 scanWindow does not push a read file into `accounted`                              -> every test whose row must pass: "a file new in the window that holds the key, in any form, fails the row; a clean one passes", "state.json is searched for the key forms only, because it holds the nonce by design", "a window that read no file, a missing required root, and a file nobody accounted for all fail", "a root that does not exist is recorded as absent, not an error, and may stay absent", "a file larger than the cap is not scanned and fails the row, and a vanished file is accounted for"
 //   S41 interposerScript drops the OUT-block `|| { rm -f "$capture"; exit 98; }`            -> "a printout call whose log cannot be written after the tool ran exits 98 and leaves no capture file" only (a non-root user)
 // OBSERVED (round 3, bun 1.3.14 on a Mac, 2026-11-18; the predictions above and the round-2 predictions are unchanged, a driver restoring each file after each mutant, run on the tree at a658b76). S28-S41 were all run and each went red on exactly the test(s) predicted and no other, across the four test files; no survivor. S28 is now measured on both the plain and the recording interposer (the test loops both), S36 reddened both of its predicted tests in test/tpm2-tools.test.ts, S37 only the env-direct runtime pin (the shell-based child test stayed green, as predicted), S40 reddened exactly the five predicted window tests. These are the round-2 observations that were not recorded in this file at 4c4e3f5.
+
+// CORRECTION AND ROUND-4 PREDICTIONS (the #367 round-3 REQUEST_CHANGES at 39c42c1, B1: the round-3 OBSERVED line above is wrong for S36). The register is append-only, so the two lines above stay. S36's round-2 prediction named "the adapter builds exactly four environment variables, by the names in its source", a test deleted in a658b76 (the X1 fix); and with toolEnvironment gaining FOO the runtime pin "the adapter's tool environment is exactly LANG, LC_ALL, PATH and TPM2TOOLS_TCTI, read from a tool that is env itself, no shell in between" must go red too, because catching a fifth name is its whole purpose, and the prediction did not name it. So "exactly the predicted and no other" was false for S36. Corrected prediction for S36 on the current tree: in test/tpm2-tools.test.ts, the runtime pin above and "the child sees the search path and the device and nothing else", and no other. The pin now runs every tool Ward runs (requiredTools and the diagnostic tool), and scan.accounted has an isolating test. Written and committed BEFORE the run of S42-S43 and the full re-run of S28-S41 on this tree, which records each mutant by the test names that went red. Bun 1.3.14, a Mac (bash as sh); the Linux target's /bin/sh is dash, so none of this was measured there.
+//   S42 scanWindow's dispose helper does not push into `accounted` (the read path still does)  -> "scan.accounted holds exactly the input paths, whichever way each was disposed of: read, vanished, set aside", and "a file larger than the cap is not scanned and fails the row, and a vanished file is accounted for" (a vanished file stops being accounted for, so its row fails)
+//   S43 src/adapters/tpm2-tools.ts toolEnvironment adds FOO only for tpm2_unseal                -> the runtime pin only (it now loops every tool); the child test runs tpm2_create, so it stays green; reverted after
