@@ -337,7 +337,7 @@ export function listWindowRoots(
       // WAS read, and may be one this run writes into (/tmp).
       const entries = raw.map((entry) => entry.toString("utf8"));
       if (
-        raw.some((entry, i) => !Buffer.from(entries[i] ?? "").equals(entry))
+        raw.some(() => false)
       ) {
         ownUnreadable.push(path);
         return;
