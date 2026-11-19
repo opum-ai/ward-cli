@@ -581,3 +581,29 @@ export function verdict(
     ? "PASSED"
     : "FAILED";
 }
+
+// A lexical tripwire over qualify-linux.ts, not a guarantee (DEC-262: the
+// operator reboots, Ward never does). It reads that one file as code, with
+// comments removed, so a comment saying "never reboot" is not a finding; it does
+// not see the other modules the harness bundles or an evasion it does not list.
+export const forbiddenSpawnWords = [
+  "reboot",
+  "shutdown",
+  "systemctl",
+  "poweroff",
+  "halt",
+  "init",
+] as const;
+
+export function harnessSourceProblems(source: string): string[] {
+  const code = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  const problems: string[] = forbiddenSpawnWords
+    .filter((word) => new RegExp(`\\b${word}\\b`).test(code))
+    .map((word) => `names ${word}`);
+  if (/\bsh\b[^\n]*["'`]-c["'`]|["'`]sh -c/.test(code)) problems.push("sh -c");
+  if (/\bshell\s*:\s*(?!\s)(?!false\b|!1(?![\w.]))/.test(code))
+    problems.push("shell option");
+  if (/\bexecSync\b|(?<![.\w])exec\(|\bexecFile/.test(code))
+    problems.push("exec");
+  return problems;
+}
