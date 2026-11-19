@@ -574,6 +574,10 @@ export function windowRow(
       ownUnreadableDirectories: after.ownUnreadable.length,
       // Counts only, never the directory names: one holding a non-UTF-8 name.
       nonUtf8NameDirectories: after.nonUtf8Directories.length,
+      // The same two counts at the BEFORE listing, so a row failing on a before
+      // clause alone does not show zero for both causes.
+      beforeOwnUnreadableDirectories: before.ownUnreadable.length,
+      beforeNonUtf8NameDirectories: before.nonUtf8Directories.length,
       unreadable: scan.unreadable,
       nameMatches: scan.nameMatches,
       matches: scan.matches,
