@@ -49,6 +49,7 @@
 //   R3  harness-source.ts: the attributes-clause throw removed -> the same test only (its .txt and index parts stay as they are, the attributes part goes red)
 //   R4  harness-source.ts: "/index.tsx" removed from the extension list -> the same test only (the two-index part goes red)
 //   (wordsFor now puts only src/ in literal mode; no mutant, it is a test-side selector and the positive control exercises it)
+// OBSERVED, ROUND 5 (Mac, bun 1.3.14, 2026-11-19; unmodified tree 18 of 18, the positive control): R2, R3 and R4 each red on exactly their predicted test. R1 DIVERGED on its first run: GREEN, because my edit adding the two template-tail cases to the src-literal test silently did not apply (the formatter had reflowed the block it matched), so nothing exercised the `}` branch; after adding the cases for real (`${d}` + "reboot" and `${d}reboot`) R1 is red on exactly the src-literal test. The test-side selector wordsFor (src/ only in literal mode) has no mutant; the unmodified tree, with scripts/ and every other module in anywhere mode, is the positive control for it.
 import "./support/no-real-keychain.ts";
 import { describe, expect, test } from "bun:test";
 import {
@@ -470,11 +471,15 @@ describe("words in src/", () => {
       expect(
         sourceProblems(`export const p = "${literal}";`, { words: "literal" }),
       ).toEqual(expect.arrayContaining([expect.stringMatching(/^names /)]));
-    expect(
-      sourceProblems("export const p = `${sbin}/reboot`;", {
-        words: "literal",
-      }),
-    ).toEqual(expect.arrayContaining(["names reboot"]));
+    for (const source of [
+      "export const p = `${sbin}/reboot`;",
+      'export const p = `${d}` + "reboot";',
+      "export const p = `${d}reboot`;",
+    ])
+      expect([source, sourceProblems(source, { words: "literal" })]).toEqual([
+        source,
+        expect.arrayContaining(["names reboot"]),
+      ]);
     for (const prose of [
       'const m = "Run `ward init` again after a reboot";',
       "// reboot",
