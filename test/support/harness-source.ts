@@ -177,7 +177,7 @@ export function sourceProblems(
       new RegExp(
         words === "anywhere"
           ? `\\b${word}\\b`
-          : `(?<=["'\`/])${word}(?=["'\`])`,
+          : `(?<=["'\`/}])${word}(?=["'\`]|\\$\\{)`,
         "i",
       ).test(lexical),
     )
@@ -228,8 +228,14 @@ const extensions = [
   ".js",
   ".mjs",
   "/index.ts",
+  "/index.tsx",
+  "/index.jsx",
   "/index.js",
+  "/index.mjs",
 ];
+// Only these are parsed as code by the scan; any other extension would be
+// loaded by Bun as text or data, and read here as TypeScript.
+const codeExtensions = [".ts", ".tsx", ".js", ".jsx", ".mjs"];
 export function closure(
   entries: readonly string[],
   base: string = root,
@@ -242,8 +248,10 @@ export function closure(
     seen.add(file);
     const text = readFileSync(resolve(base, file), "utf8");
     for (const m of text.matchAll(
-      /(?:from|import)\s*\(?\s*["'](\.[^"']+)["']/g,
+      /(?:from|import)\s*\(?\s*["'](\.[^"']+)["']\s*(with|assert)?/g,
     )) {
+      if (m[2] !== undefined)
+        throw new Error(`${file} imports ${m[1]} with an attributes clause`);
       const target = normalize(
         resolve(dirname(resolve(base, file)), m[1] as string),
       );
@@ -264,6 +272,9 @@ export function closure(
         statSync(target).isDirectory()
       )
         throw new Error(`${file} imports ${m[1]}, a package directory`);
+      const extension = /\.[^./]+$/.exec(found[0] as string)?.[0] ?? "";
+      if (!codeExtensions.includes(extension))
+        throw new Error(`${file} imports ${m[1]}, which is not a code file`);
       queue.push(relative(base, found[0] as string));
     }
   }

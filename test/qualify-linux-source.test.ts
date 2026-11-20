@@ -43,6 +43,12 @@
 //   T8  harness-source.ts: the \n \t whitespace conversion removed -> "a spelled-out evasion is a finding" only
 //   T9  harness-source.ts: the package.json directory throw removed -> "a directory import with a package.json throws" only
 // OBSERVED, ROUND 4 (Mac, bun 1.3.14, 2026-11-19; unmodified tree 17 of 17, the positive control, which also read every tool and both variants: 14 generated texts): T1, T4, T7, T8, T9 red on exactly their predicted tests (T7 on both the evasion and the src-literal test). T2 and T3 red on the per-tool test AND the source pin, as predicted. T5 red on the spawn-anchor test AND the source pin, as predicted. T6 DIVERGED: GREEN, because the window test counted spawns through normalise() directly and never exercised sourceProblems' own structural rules; a case was added (execSync through the regex-quote route and the `${}`-brace route, read by sourceProblems) and T6 re-run is then red on exactly that test. Pin: test/fixtures/qualify-linux/interposer-source.sha256.
+// ROUND 5 (opus r4 REQUEST_CHANGES at 409a68c; predictions committed before the run):
+//   R1  harness-source.ts: the literal-mode lookbehind loses `}` (and the `${` lookahead) -> "a whole quoted literal or its last path component is a finding" only
+//   R2  harness-source.ts: the code-extension allow-list check removed -> "a non-code file, an attributes clause and two index candidates throw" only
+//   R3  harness-source.ts: the attributes-clause throw removed -> the same test only (its .txt and index parts stay as they are, the attributes part goes red)
+//   R4  harness-source.ts: "/index.tsx" removed from the extension list -> the same test only (the two-index part goes red)
+//   (wordsFor now puts only src/ in literal mode; no mutant, it is a test-side selector and the positive control exercises it)
 import "./support/no-real-keychain.ts";
 import { describe, expect, test } from "bun:test";
 import {
@@ -79,7 +85,7 @@ const roots = [
 ];
 const scanned = closure(roots);
 const wordsFor = (file: string): "anywhere" | "literal" =>
-  file.startsWith("scripts/") ? "anywhere" : "literal";
+  file.startsWith("src/") ? "literal" : "anywhere";
 const read = (file: string): string =>
   readFileSync(resolve(root, file), "utf8");
 
@@ -347,6 +353,28 @@ describe("the closure and the interposer window", () => {
       writeFileSync(join(dir, "lib", "package.json"), '{"main":"other.ts"}');
       writeFileSync(join(dir, "a.ts"), 'import { x } from "./lib";\n');
       expect(() => closure(["a.ts"], dir)).toThrow(/package directory/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a non-code file, an attributes clause and two index candidates throw", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ward-closure-"));
+    try {
+      writeFileSync(join(dir, "x.txt"), "reboot\n");
+      writeFileSync(join(dir, "a.ts"), 'import x from "./x.txt";\n');
+      expect(() => closure(["a.ts"], dir)).toThrow(/not a code file/);
+      writeFileSync(join(dir, "y.ts"), "export default 1;\n");
+      writeFileSync(
+        join(dir, "a.ts"),
+        'import y from "./y.ts" with { type: "text" };\n',
+      );
+      expect(() => closure(["a.ts"], dir)).toThrow(/attributes clause/);
+      mkdirSync(join(dir, "lib"));
+      writeFileSync(join(dir, "lib", "index.ts"), "export const x = 1;\n");
+      writeFileSync(join(dir, "lib", "index.tsx"), "export const x = 2;\n");
+      writeFileSync(join(dir, "a.ts"), 'import { x } from "./lib";\n');
+      expect(() => closure(["a.ts"], dir)).toThrow(/resolves to 2 files/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
