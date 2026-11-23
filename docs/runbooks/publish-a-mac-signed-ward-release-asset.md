@@ -68,3 +68,13 @@ TAG is the release tag and DIR an empty scratch directory.
 
 Steps 1 to 3 change nothing on GitHub. After a failed step 4 or 5, fix the cause
 and rerun from step 1: `--clobber` converges on the signed file's bytes.
+
+**Immutable releases remove this route (WCLI-103).** If the operator enables them
+([protect the release path](protect-the-release-path.md), step 4), a published
+release's assets and tag are locked, so step 4's `gh release upload --clobber`
+is refused and a wrong asset cannot be repaired in place: supersede it with a new
+version instead. GitHub's documentation says the title and notes stay editable
+after publish, so `gh release edit --notes-file` (steps 4 and 6) should still
+work. That was read from GitHub's documentation, not measured on this
+repository's release; confirm it on the first immutable release before relying
+on it.

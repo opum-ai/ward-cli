@@ -41,10 +41,15 @@ jobs:
     name: Build darwin-arm64
     runs-on: macos-15
     timeout-minutes: 15
+    # checks: read is for the dev-gate step below, which reads the tagged
+    # commit's check runs; nothing here can write.
+    permissions:
+      contents: read
+      checks: read
     steps:
-      # Full history, so a tag push can be checked against main below. The
-      # checkout already carries origin/main and the tags; this job never
-      # fetches or pushes.
+      # Full history, so a tag push can be checked against main and dev below.
+      # The checkout already carries origin/main, origin/dev and the tags; this
+      # job never fetches or pushes.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
@@ -72,6 +77,28 @@ jobs:
             echo "::error::${TAG} does not point at main's tip: AC1 requires main == dev, so a tag behind the tip is not this release"
             exit 1
           fi
+      # WCLI-103 (W-8): a guard against a mistaken tag, NOT a control against a
+      # writer. A tag push runs this file as it exists at the tagged commit, so
+      # whoever can push a commit and a tag can delete this step in that same
+      # commit. The control is the main and tag rulesets the operator applies
+      # (docs/runbooks/protect-the-release-path.md). What this step does is
+      # refuse a tag whose commit is not on dev, which is reachable only through
+      # a pull request, or has not got a green run of each check the dev
+      # ruleset requires.
+      - name: The tagged commit is on gated dev and passed its required checks
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/dev; then
+            echo "::error::${TAG} is not on dev: only a commit that reached the gated dev can be released"
+            exit 1
+          fi
+          SHA="$tag_commit" node scripts/check-release-gated.mjs
       # Annotated-ness is read from the stored ref, not from the checkout: what
       # actions/checkout leaves at refs/tags/<tag> is what the old
       # `git cat-file -t` was trusting, and for an annotated tag that object
@@ -238,6 +265,14 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    # The operator can attach a deployment-tag policy limited to v* and a
+    # required reviewer to this environment
+    # (docs/runbooks/protect-the-release-path.md). It binds only a job that
+    # names it, and this file is the tagged commit's own, so it is a second
+    # lock for the operator's click, not a defence against a writer. The job
+    # still runs without one, because GitHub creates an unprotected
+    # environment on first use.
+    environment: release
     # The only write permission in this workflow: it creates the Release.
     permissions:
       contents: write
