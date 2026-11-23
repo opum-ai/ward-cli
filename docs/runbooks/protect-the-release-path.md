@@ -19,8 +19,8 @@ Closes the W-8 finding (WCLI-103): protection exists only on `dev`, so a token w
 could push a `main` commit and a matching tag and publish a release, and the release is mutable:
 a `contents: write` token can call the Releases API directly (upload with `--clobber`, or delete a
 release and recreate it on an existing tag, then edit the notes' sha256 and cdhash to match)
-without moving any tag, so no tag ruleset sees it. Only immutable releases (step 4) address that
-half.
+without moving any tag, so no tag ruleset sees it. Only immutable releases (step 4) should address that
+half, if they refuse deleting and recreating a release on an existing tag, which is unmeasured.
 
 **The control is the settings below, which only the operator applies.** Ward's sessions prepare them
 and never run the write commands. `release.yml` also checks the tagged commit (it must be on `dev`
@@ -31,7 +31,7 @@ W-8 closes when the rulesets are applied AND the operator records the step 4 dec
 decision is not to enable immutable releases, the release-replacement path stays open and that is
 an accepted risk, not a closed one. Enabling immutability probably does not protect releases
 published before it was enabled, so v0.1.0 and v0.1.1 stay replaceable whatever is chosen; confirm
-that on the first immutable release, it is not measured.
+that on v0.1.0 and v0.1.1 themselves after enabling; it is not measured.
 
 ## Prerequisites
 
@@ -84,8 +84,14 @@ that on the first immutable release, it is not measured.
      the operator's machine (measured 2026-11-23: `gh api repos/opum-ai/ward-cli --jq
      .permissions` shows `admin: true`, and fleet sessions run with it) is an admin. So A
      protects against a non-admin token only, not against a session on that host, and any admin
-     can disable or delete a ruleset. B has the same limit, since an admin can switch a ruleset
-     off, so A stays the recommendation for the lower release-time effort.
+     can disable or delete a ruleset. The two options differ on exactly that host: under A a fleet
+     session holding the admin credential cuts a `v*` tag with a plain `git push`, with no settings
+     change and nothing visible beyond a bypass record; under B it must first disable a ruleset,
+     which is a security-posture change reserved for the operator and leaves a ruleset-history
+     entry. B is therefore the only option that puts the operator in front of tag creation for
+     sessions on this machine, and its release-time cost is that protection. A stays the
+     recommendation on effort alone. What closes A's gap is fleet sessions not holding an admin
+     credential.
    - **B: no bypass anywhere.** Nobody can create a `v*` tag while the ruleset is active, so each
      release needs the creation ruleset switched to disabled for the tag push and back, which is
      itself a settings change at release time.
@@ -174,8 +180,17 @@ environment with `gh api repos/opum-ai/ward-cli/environments/release --method DE
 immutable releases off with `--method DELETE` on its endpoint. Immutability cannot be undone for a
 release already published under it.
 
-If the dev-gate step in `release.yml` blocks a legitimate release, the tag is not on `dev` or a
-check is missing or red on that commit. The check-runs read returns the latest run per check, and
-a `dev` run cancelled by `ci.yml`'s cancel-in-progress leaves a cancelled run on that SHA, which the
-gate refuses: re-run that job and wait for green rather than only cutting a new tag. Promote `dev` to `main` through the normal path, wait for
-the push runs on both `dev` and `main` to go green, and cut a new tag. Do not weaken the step.
+If the dev-gate step in `release.yml` blocks a legitimate release, either the tag is not on `dev` or
+a check is missing or red on that commit.
+
+- **The tag is not on `dev`:** promote `dev` to `main` through the normal path, wait for the push
+  runs on both `dev` and `main` to go green, and cut a new tag.
+- **A check is cancelled or red on the tagged commit:** the check-runs read returns the latest run
+  per check, and a `dev` run cancelled by `ci.yml`'s cancel-in-progress leaves a cancelled run on
+  that SHA, which the gate refuses. Re-run the `dev` job, wait for green, then re-run the failed
+  Release run for the same tag. A new tag means a version bump, because the tag must equal
+  `package.json`'s version, and once "freeze release tags" is applied a tag can never be deleted and
+  re-pushed. Unmeasured: re-running an old `dev` run joins the `dev` concurrency group, so with
+  cancel-in-progress it may cancel the current dev tip's in-flight run.
+
+Do not weaken the step.
