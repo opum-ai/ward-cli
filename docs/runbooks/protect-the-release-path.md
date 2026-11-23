@@ -16,14 +16,22 @@ generated:
 ## Purpose
 
 Closes the W-8 finding (WCLI-103): protection exists only on `dev`, so a token with write access
-could push a `main` commit and a matching tag and publish a release.
+could push a `main` commit and a matching tag and publish a release, and the release is mutable:
+a `contents: write` token can call the Releases API directly (upload with `--clobber`, or delete a
+release and recreate it on an existing tag, then edit the notes' sha256 and cdhash to match)
+without moving any tag, so no tag ruleset sees it. Only immutable releases (step 4) address that
+half.
 
 **The control is the settings below, which only the operator applies.** Ward's sessions prepare them
 and never run the write commands. `release.yml` also checks the tagged commit (it must be on `dev`
 and carry green Check, Docs and Tracker integrity runs from GitHub Actions), but that is a guard
 against a mistaken tag, not a defence against a writer: a tag push runs the workflow file as it
 exists at the tagged commit, so someone who can push both can delete the check in the same commit.
-Until the rulesets are applied, W-8 is not closed.
+W-8 closes when the rulesets are applied AND the operator records the step 4 decision. If the
+decision is not to enable immutable releases, the release-replacement path stays open and that is
+an accepted risk, not a closed one. Enabling immutability probably does not protect releases
+published before it was enabled, so v0.1.0 and v0.1.1 stay replaceable whatever is chosen; confirm
+that on the first immutable release, it is not measured.
 
 ## Prerequisites
 
@@ -70,8 +78,14 @@ Until the rulesets are applied, W-8 is not closed.
 
    Operator choice (A/B), recommendation first:
    - **A (recommended): no bypass for update and deletion, and an admin bypass for creation only.**
-     An existing `v*` tag can never be moved or deleted by anyone; only a repository admin, the
-     operator, can create one.
+     While the rulesets stand, an existing `v*` tag cannot be moved or deleted, and only a
+     repository admin can create one. Read that honestly: no ruleset constrains which commit a `v*`
+     tag points at, branches other than `main` and `dev` are unprotected, and the `gh` account on
+     the operator's machine (measured 2026-11-23: `gh api repos/opum-ai/ward-cli --jq
+     .permissions` shows `admin: true`, and fleet sessions run with it) is an admin. So A
+     protects against a non-admin token only, not against a session on that host, and any admin
+     can disable or delete a ruleset. B has the same limit, since an admin can switch a ruleset
+     off, so A stays the recommendation for the lower release-time effort.
    - **B: no bypass anywhere.** Nobody can create a `v*` tag while the ruleset is active, so each
      release needs the creation ruleset switched to disabled for the tag push and back, which is
      itself a settings change at release time.
@@ -161,5 +175,7 @@ immutable releases off with `--method DELETE` on its endpoint. Immutability cann
 release already published under it.
 
 If the dev-gate step in `release.yml` blocks a legitimate release, the tag is not on `dev` or a
-check is missing or red on that commit. Promote `dev` to `main` through the normal path, wait for
+check is missing or red on that commit. The check-runs read returns the latest run per check, and
+a `dev` run cancelled by `ci.yml`'s cancel-in-progress leaves a cancelled run on that SHA, which the
+gate refuses: re-run that job and wait for green rather than only cutting a new tag. Promote `dev` to `main` through the normal path, wait for
 the push runs on both `dev` and `main` to go green, and cut a new tag. Do not weaken the step.
