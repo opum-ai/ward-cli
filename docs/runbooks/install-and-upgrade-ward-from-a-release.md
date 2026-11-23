@@ -50,6 +50,13 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
    ward-darwin-arm64 2>&1 | grep '^CDHash='`. The notes are on the Release page
    (`https://github.com/opum-ai/ward-cli/releases/tag/v0.1.1`). On a mismatch,
    do not install it.
+   Then verify the build provenance: `gh attestation verify ward-darwin-arm64
+   -R opum-ai/ward-cli` must exit 0 and name this repository's `release.yml` at
+   the tag's commit (WCLI-109). It proves the file came from the release
+   workflow, which the checksum beside the file cannot. Stop on any other exit.
+   v0.1.1 and earlier carry no attestation, so it fails on those; a release
+   that should carry one and fails is not to be installed. `gh` may ask you to
+   sign in.
 4. Install it as a regular file, not a link:
    `install -m 0755 ward-darwin-arm64 ~/.local/bin/ward`. If that path is a
    symlink into a checkout, remove the link first (`rm ~/.local/bin/ward`), then

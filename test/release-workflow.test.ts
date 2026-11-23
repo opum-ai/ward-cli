@@ -48,7 +48,7 @@ test("every action is pinned to a full commit SHA", () => {
   // Positive control: a parse that read nothing must fail here, not pass.
   expect(steps.length).toBeGreaterThan(0);
   const withUses = steps.filter((step) => "uses" in step);
-  expect(withUses).toHaveLength(6);
+  expect(withUses).toHaveLength(8);
   for (const step of withUses) {
     expect(typeof step.uses).toBe("string");
     expect(step.uses as string).toMatch(/@[0-9a-f]{40}$/);
@@ -60,13 +60,24 @@ test("the checkout does not persist its credential", () => {
   expect(workflow.match(/persist-credentials: false/g)?.length).toBe(2);
 });
 
-test("contents: write sits on the release job only, with no id-token", () => {
+test("contents: write sits on the release job only, and id-token on the attest job only", () => {
   const writes = [...workflow.matchAll(/^\s+contents: write$/gm)];
   expect(writes.length).toBe(1);
   const at = workflow.search(/^\s+contents: write$/m);
   expect(workflow.indexOf("  release:")).toBeLessThan(at);
   expect(workflow).toMatch(/^permissions:\n {2}contents: read$/m);
-  expect(workflow).not.toContain("id-token");
+  // WCLI-109: the one job that can mint an attestation is not the one that
+  // can write the Release, and neither permission is anywhere else.
+  expect(workflow.match(/^\s+id-token: write$/gm)?.length).toBe(1);
+  const attest = parseWorkflow().jobs.attest ?? {};
+  expect(attest.permissions).toEqual({
+    contents: "read",
+    "id-token": "write",
+    attestations: "write",
+  });
+  expect(parseWorkflow().jobs.release?.permissions).toEqual({
+    contents: "write",
+  });
 });
 
 test("it triggers on a v* tag and a manual dry run, and nothing else", () => {
@@ -446,6 +457,7 @@ test("the parsed verify job is exactly the known job, with the real codesign com
   const parsed = parseWorkflow();
   expect(parsed.name).toBe("Release");
   expect(Object.keys(parsed.jobs).sort()).toEqual([
+    "attest",
     "build",
     "release",
     "verify",
@@ -585,7 +597,40 @@ test("the verify job still never holds a write permission", () => {
 });
 
 test("the release job needs the verify job, so an unverified artifact cannot publish", () => {
-  expect(jobText("release")).toMatch(/^\s+needs: \[build, verify\]$/m);
+  expect(jobText("release")).toMatch(/^\s+needs: \[build, verify, attest\]$/m);
+});
+
+// WCLI-109 (W-15, W-36): build provenance for exactly the published artifact.
+test("the attest job attests the verified artifact, on a tag only, and the release needs it", () => {
+  const attest = parseWorkflow().jobs.attest ?? {};
+  expect(attest.needs).toEqual(["build", "verify"]);
+  expect(attest.if).toBe(
+    "github.event_name == 'push' && github.ref_type == 'tag'",
+  );
+  const uses = (attest.steps ?? []).map((step) => String(step.uses ?? ""));
+  expect(uses[0]).toMatch(/^actions\/download-artifact@[0-9a-f]{40}$/);
+  expect(uses[1]).toMatch(/^actions\/attest-build-provenance@[0-9a-f]{40}$/);
+  expect(attest.steps?.[0]?.with).toEqual({
+    name: "ward-darwin-arm64",
+    path: "out",
+  });
+  expect(attest.steps?.[1]?.with).toEqual({
+    "subject-path": "out/ward-darwin-arm64",
+  });
+  expect((attest.steps ?? []).length).toBe(2);
+  expect(JSON.stringify(attest)).not.toContain("continue-on-error");
+});
+
+test("the install docs tell the reader to run gh attestation verify, and say which releases carry one", () => {
+  const command = "gh attestation verify ward-darwin-arm64 -R opum-ai/ward-cli";
+  for (const file of [
+    ["README.md"],
+    ["docs", "runbooks", "install-and-upgrade-ward-from-a-release.md"],
+  ]) {
+    const text = readFileSync(join(root, ...file), "utf8").replace(/\s+/g, " ");
+    expect(text).toContain(command);
+    expect(text).toContain("v0.1.1 and earlier carry no attestation");
+  }
 });
 
 test("a failed verify cannot be waved through: no continue-on-error, and release's condition has no status function", () => {
@@ -859,14 +904,18 @@ test("verify still re-downloads the artifact and release needs build and verify"
   expect(uses.some((u) => u.startsWith("actions/download-artifact@"))).toBe(
     true,
   );
-  expect(parseWorkflow().jobs.release?.needs).toEqual(["build", "verify"]);
+  expect(parseWorkflow().jobs.release?.needs).toEqual([
+    "build",
+    "verify",
+    "attest",
+  ]);
 });
 
 test("no job names a self-hosted label except verify's own keyed expression", () => {
   const runsOns = [...workflow.matchAll(/^ {4}runs-on: (.+)$/gm)].map((m) =>
     (m[1] ?? "").trim(),
   );
-  expect(runsOns).toHaveLength(3);
+  expect(runsOns).toHaveLength(4);
   const selfHosted = runsOns.filter((r) => r.includes("self-hosted"));
   expect(selfHosted).toHaveLength(1);
   // The one occurrence is verify's, and only through the visibility-keyed
@@ -880,6 +929,7 @@ test("the release workflow job names are unchanged", () => {
   expect(names).toEqual([
     "Build darwin-arm64",
     "Verify the code signature on macOS",
+    "Attest the build provenance",
     "Create the GitHub Release",
   ]);
 });
