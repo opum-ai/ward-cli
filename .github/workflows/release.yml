@@ -41,6 +41,11 @@ jobs:
     name: Build darwin-arm64
     runs-on: macos-15
     timeout-minutes: 15
+    # checks: read is for the dev-gate step below, which reads the tagged
+    # commit's check runs; nothing here can write.
+    permissions:
+      contents: read
+      checks: read
     steps:
       # Full history, so a tag push can be checked against main below. The
       # checkout already carries origin/main and the tags; this job never
@@ -72,6 +77,27 @@ jobs:
             echo "::error::${TAG} does not point at main's tip: AC1 requires main == dev, so a tag behind the tip is not this release"
             exit 1
           fi
+      # WCLI-103 (W-8): main and tags are not protected by anything GitHub
+      # enforces until the operator applies the rulesets in
+      # docs/runbooks/protect-the-release-path.md, so the release path asks for
+      # the gate itself. The tagged commit must be on dev, which is reachable
+      # only through a pull request, and must carry a green run of each check
+      # the dev ruleset requires. A commit pushed straight to main with a
+      # matching tag is on neither.
+      - name: The tagged commit is on gated dev and passed its required checks
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/dev; then
+            echo "::error::${TAG} is not on dev: only a commit that reached the gated dev can be released"
+            exit 1
+          fi
+          SHA="$tag_commit" node scripts/check-release-gated.mjs
       # Annotated-ness is read from the stored ref, not from the checkout: what
       # actions/checkout leaves at refs/tags/<tag> is what the old
       # `git cat-file -t` was trusting, and for an annotated tag that object
@@ -238,6 +264,11 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
+    # The release environment is where the operator's protection lives: a
+    # deployment-tag policy limited to v* and, optionally, a required reviewer
+    # (docs/runbooks/protect-the-release-path.md). The job still runs without
+    # one, because GitHub creates an unprotected environment on first use.
+    environment: release
     # The only write permission in this workflow: it creates the Release.
     permissions:
       contents: write

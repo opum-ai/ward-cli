@@ -533,6 +533,7 @@ test("the workflow, the verify job and each verify step carry exactly the keys t
   for (const job of Object.values(parsed.jobs))
     for (const key of Object.keys(job))
       expect([
+        "environment",
         "if",
         "name",
         "needs",
@@ -799,7 +800,7 @@ test("the cdhash agreement between codesign and macho-cdhash.mjs fails the job",
 test("the build job and each build step carry exactly the keys they are known to need", () => {
   const build = parseWorkflow().jobs.build ?? {};
   expect(Object.keys(build).sort()).toEqual(
-    ["name", "runs-on", "steps", "timeout-minutes"].sort(),
+    ["name", "permissions", "runs-on", "steps", "timeout-minutes"].sort(),
   );
   const sign = buildSteps()[signIndex()] ?? {};
   expect(Object.keys(sign).sort()).toEqual(["name", "run"]);
@@ -881,4 +882,120 @@ test("the release workflow job names are unchanged", () => {
     "Verify the code signature on macOS",
     "Create the GitHub Release",
   ]);
+});
+
+// WCLI-103 (W-8): the release path asks for the gate itself, because the
+// rulesets that protect main and the tags are the operator's to apply.
+const gatedCheck = join(root, "scripts", "check-release-gated.mjs");
+
+async function runGatedCheck(
+  runs: { name: string; conclusion: string | null; app?: number }[],
+  total = runs.length,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (request.headers.get("authorization") !== "Bearer test-token")
+        return new Response("bad credentials", { status: 401 });
+      return Response.json({
+        total_count: total,
+        check_runs: runs.map((r) => ({
+          name: r.name,
+          conclusion: r.conclusion,
+          status: r.conclusion ? "completed" : "in_progress",
+          app: { id: r.app ?? 15368 },
+        })),
+      });
+    },
+  });
+  const proc = Bun.spawn(["node", gatedCheck], {
+    env: {
+      ...process.env,
+      GH_TOKEN: "test-token",
+      REPO: "opum-ai/ward-cli",
+      SHA: "a".repeat(40),
+      GITHUB_API_URL: `http://127.0.0.1:${server.port}`,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  server.stop(true);
+  return { code, stdout, stderr };
+}
+
+const green = ["Check", "Docs", "Tracker integrity"].map((name) => ({
+  name,
+  conclusion: "success",
+}));
+
+test("the dev-gate check accepts three green required checks and refuses each way they can fail", async () => {
+  const ok = await runGatedCheck(green);
+  expect(ok.code).toBe(0);
+  expect(ok.stdout).toContain("read 3 check runs");
+
+  // Each required check missing, one at a time.
+  for (const missing of green) {
+    const result = await runGatedCheck(green.filter((r) => r !== missing));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `${missing.name}: no run from GitHub Actions`,
+    );
+  }
+  // Not green: failed, and still running.
+  const failed = await runGatedCheck([
+    { name: "Check", conclusion: "failure" },
+    ...green.slice(1),
+  ]);
+  expect(failed.code).toBe(1);
+  expect(failed.stderr).toContain("Check: failure");
+  const running = await runGatedCheck([
+    { name: "Check", conclusion: null },
+    ...green.slice(1),
+  ]);
+  expect(running.code).toBe(1);
+  expect(running.stderr).toContain("Check: in_progress");
+  // A check of the right name from another app is not the required check.
+  const forged = await runGatedCheck([
+    { name: "Check", conclusion: "success", app: 1 },
+    ...green.slice(1),
+  ]);
+  expect(forged.code).toBe(1);
+  expect(forged.stderr).toContain("Check: no run from GitHub Actions");
+  // A partial page cannot be read as the whole history.
+  const partial = await runGatedCheck(green, 150);
+  expect(partial.code).toBe(1);
+  expect(partial.stderr).toContain("only 3 were read");
+});
+
+test("the dev-gate step requires the tag on dev, runs on tags only, and precedes the build", () => {
+  const steps = buildSteps();
+  const at = steps.findIndex((s) =>
+    runOf(s).includes("node scripts/check-release-gated.mjs"),
+  );
+  expect(at).toBeGreaterThan(-1);
+  const step = steps[at] ?? {};
+  expect(step.if).toBe("github.ref_type == 'tag'");
+  expect(runOf(step)).toContain(
+    'git merge-base --is-ancestor "$tag_commit" origin/dev',
+  );
+  expect(at).toBeLessThan(buildIndex());
+  const build = parseWorkflow().jobs.build ?? {};
+  expect(build.permissions).toEqual({ contents: "read", checks: "read" });
+});
+
+test("the required checks the gate script names match the CI jobs", () => {
+  const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  for (const name of ["Check", "Docs", "Tracker integrity"])
+    expect(ci).toMatch(new RegExp(`^\\s+name: ${name}$`, "m"));
+});
+
+test("the release job runs in the release environment and still holds the only write", () => {
+  const release = parseWorkflow().jobs.release ?? {};
+  expect(release.environment).toBe("release");
+  expect(release.permissions).toEqual({ contents: "write" });
 });

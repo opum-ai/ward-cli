@@ -26,6 +26,8 @@ const excluded = new Map(
       ? JSON.parse(readFileSync(process.env.LORE_EXCLUSIONS, "utf8"))
       : {
           // "adr/0009-example": "why no specialist profile needs it",
+          "runbooks/protect-the-release-path":
+            "operator-only settings steps (WCLI-103); no specialist applies them, and every profile is at its budget",
         },
   ),
 );
