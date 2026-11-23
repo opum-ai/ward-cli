@@ -14,7 +14,7 @@ sources = [
   "adr/0007-status-and-doctor-reporting",
   "adr/0008-agent-profile-source-coverage",
   "adr/0009-hand-rolled-status-only-https-transport",
-  "adr/0010-refuse-a-vault-state-document-from-another-format",
+  "adr/0010-refuse-a-vault-state-document-from-another-format#decision",
   "adr/0011-the-skill-ships-from-the-plugin-and-init-selects-the-instruction-files",
   "adr/0012-t24-s-codex-half-is-qualified-by-the-artifacts-plus-a-documented-manual-smoke#decision",
   "adr/0013-stale-test-roots-are-reclaimed-by-an-explicit-command-never-a-sweep#decision",
@@ -29,4 +29,5 @@ sources = [
   "runbooks/release-smoke-t24-s-manual-half",
   "runbooks/restoring-a-ward-vault-from-a-backup",
   "runbooks/install-and-upgrade-ward-from-a-release",
+  "runbooks/protect-the-release-path#purpose",
 ]

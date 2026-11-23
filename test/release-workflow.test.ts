@@ -891,12 +891,14 @@ const gatedCheck = join(root, "scripts", "check-release-gated.mjs");
 async function runGatedCheck(
   runs: { name: string; conclusion: string | null; app?: number }[],
   total = runs.length,
+  raw?: () => Response,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const server = Bun.serve({
     port: 0,
     fetch(request) {
       if (request.headers.get("authorization") !== "Bearer test-token")
         return new Response("bad credentials", { status: 401 });
+      if (raw) return raw();
       return Response.json({
         total_count: total,
         check_runs: runs.map((r) => ({
@@ -966,6 +968,42 @@ test("the dev-gate check accepts three green required checks and refuses each wa
   ]);
   expect(forged.code).toBe(1);
   expect(forged.stderr).toContain("Check: no run from GitHub Actions");
+  // Other conclusions are not success, and one failed run among two of the same
+  // name is not a pass.
+  for (const conclusion of ["skipped", "neutral", "cancelled"]) {
+    const other = await runGatedCheck([
+      { name: "Docs", conclusion },
+      ...green.filter((r) => r.name !== "Docs"),
+    ]);
+    expect(other.code).toBe(1);
+    expect(other.stderr).toContain(`Docs: ${conclusion}`);
+  }
+  const rerun = await runGatedCheck([
+    ...green,
+    { name: "Docs", conclusion: "failure" },
+  ]);
+  expect(rerun.code).toBe(1);
+  expect(rerun.stderr).toContain("Docs: success, failure");
+  // A non-2xx answer and a body without the lists are refusals, not passes.
+  for (const status of [403, 429, 500]) {
+    const refused = await runGatedCheck(
+      [],
+      0,
+      () => new Response("{}", { status }),
+    );
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(`HTTP ${status}`);
+  }
+  const noList = await runGatedCheck([], 0, () =>
+    Response.json({ total_count: 3 }),
+  );
+  expect(noList.code).toBe(1);
+  expect(noList.stderr).toContain("no check_runs list");
+  const noTotal = await runGatedCheck([], 0, () =>
+    Response.json({ check_runs: [] }),
+  );
+  expect(noTotal.code).toBe(1);
+  expect(noTotal.stderr).toContain("only 0 were read");
   // A partial page cannot be read as the whole history.
   const partial = await runGatedCheck(green, 150);
   expect(partial.code).toBe(1);
@@ -990,7 +1028,12 @@ test("the dev-gate step requires the tag on dev, runs on tags only, and precedes
 
 test("the required checks the gate script names match the CI jobs", () => {
   const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
-  for (const name of ["Check", "Docs", "Tracker integrity"])
+  const script = readFileSync(gatedCheck, "utf8");
+  const listed = /requiredChecks = \[([^\]]*)\]/.exec(script)?.[1] ?? "";
+  const names = [...listed.matchAll(/"([^"]+)"/g)].map((m) => m[1] ?? "");
+  // Positive control: reading no names must fail, not pass.
+  expect(names.length).toBeGreaterThan(0);
+  for (const name of names)
     expect(ci).toMatch(new RegExp(`^\\s+name: ${name}$`, "m"));
 });
 

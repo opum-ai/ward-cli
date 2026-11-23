@@ -16,11 +16,14 @@ generated:
 ## Purpose
 
 Closes the W-8 finding (WCLI-103): protection exists only on `dev`, so a token with write access
-could push a `main` commit and a matching tag and publish a release. Two layers close it. The
-release workflow now asks for the gate itself (already in `release.yml`: the tagged commit must be
-on `dev` and carry green Check, Docs and Tracker integrity runs from GitHub Actions, and the release
-job runs in the `release` environment). The settings below are GitHub security posture, which only
-the operator applies. Ward's sessions prepare them and never run the write commands.
+could push a `main` commit and a matching tag and publish a release.
+
+**The control is the settings below, which only the operator applies.** Ward's sessions prepare them
+and never run the write commands. `release.yml` also checks the tagged commit (it must be on `dev`
+and carry green Check, Docs and Tracker integrity runs from GitHub Actions), but that is a guard
+against a mistaken tag, not a defence against a writer: a tag push runs the workflow file as it
+exists at the tagged commit, so someone who can push both can delete the check in the same commit.
+Until the rulesets are applied, W-8 is not closed.
 
 ## Prerequisites
 
@@ -63,36 +66,53 @@ the operator applies. Ward's sessions prepare them and never run the write comma
    JSON
    ```
 
-2. **Protect the release tags.** Nobody but a repository admin creates a `v*` tag, and no one moves
-   or deletes one. This adds one bypass actor (the Admin repository role, id 5), which is the
-   operator who cuts the tag; if you would rather have none, drop `bypass_actors` and lift the
-   ruleset for the one tag push. The workflow gate holds either way: an admin-made tag still has to
-   be on `dev` with green checks.
+2. **Protect the release tags.** Two rulesets, so the bypass question is explicit.
+
+   Operator choice (A/B), recommendation first:
+   - **A (recommended): no bypass for update and deletion, and an admin bypass for creation only.**
+     An existing `v*` tag can never be moved or deleted by anyone; only a repository admin, the
+     operator, can create one.
+   - **B: no bypass anywhere.** Nobody can create a `v*` tag while the ruleset is active, so each
+     release needs the creation ruleset switched to disabled for the tag push and back, which is
+     itself a settings change at release time.
+
+   The commands below are A. For B drop the `bypass_actors` entry of the first.
 
    ```sh
    gh api repos/opum-ai/ward-cli/rulesets --method POST --input - <<'JSON'
    {
-     "name": "protect release tags",
+     "name": "restrict release tag creation",
      "target": "tag",
      "enforcement": "active",
      "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
      "bypass_actors": [
        { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
      ],
-     "rules": [
-       { "type": "creation" },
-       { "type": "update" },
-       { "type": "deletion" },
-       { "type": "non_fast_forward" }
-     ]
+     "rules": [ { "type": "creation" } ]
+   }
+   JSON
+   gh api repos/opum-ai/ward-cli/rulesets --method POST --input - <<'JSON'
+   {
+     "name": "freeze release tags",
+     "target": "tag",
+     "enforcement": "active",
+     "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+     "bypass_actors": [],
+     "rules": [ { "type": "update" }, { "type": "deletion" } ]
    }
    JSON
    ```
 
+   `update` already refuses moving a tag, so no `non_fast_forward` rule is added: it is a branch
+   rule, and a tag ruleset carrying it may be refused with HTTP 422.
+
 3. **Create the `release` environment limited to `v*` tags.** The release job names it. Without this
    step GitHub creates it unprotected on first use, so do this before the next release.
-   Add `"reviewers": [{ "type": "User", "id": <your numeric id> }]` (from
-   `gh api users/<login> --jq .id`) to the first command if you want an approval click per release.
+   **Add a required reviewer (recommended).** It is the one environment setting that puts a person
+   in front of a release: add `"reviewers": [{ "type": "User", "id": <your numeric id> }]` (from
+   `gh api users/<login> --jq .id`) to the first command's body. The environment binds only a job
+   that names it, which the workflow at the tagged commit decides, so it adds a click for the
+   operator and is not a defence against someone who can edit the workflow.
 
    ```sh
    gh api repos/opum-ai/ward-cli/environments/release --method PUT --input - <<'JSON'
@@ -106,8 +126,14 @@ the operator applies. Ward's sessions prepare them and never run the write comma
    draft, uploads every asset and only then publishes (`scripts/publish-release.mjs`), which is the
    order immutable releases need, so nothing in the workflow changes. The cost is that a published
    release's tag and assets can never change: a bad release is superseded by a new version, never
-   repaired in place. That matches how this repository already treats a release. Enable it before
-   the first release that carries build provenance.
+   repaired in place.
+
+   **It removes an existing route.** [Publish a Mac-signed Ward release asset](publish-a-mac-signed-ward-release-asset.md)
+   steps 4 and 5 and its Rollback repair a published release with `gh release upload --clobber`.
+   Enabling immutability makes that upload fail, so a wrong asset means a new version. GitHub's
+   documentation says a published immutable release keeps its title and notes editable, so the
+   `gh release edit --notes-file` parts should still work; that is read from the documentation, not
+   measured here. Enable it before the first release that carries build provenance.
 
    ```sh
    gh api repos/opum-ai/ward-cli/immutable-releases --method PUT
@@ -123,7 +149,9 @@ the operator applies. Ward's sessions prepare them and never run the write comma
    ```
 
    The next `git push origin origin/dev:main` must still succeed, because the dev tip already has
-   the three checks; a push of any unchecked commit to `main` must be refused.
+   the three checks; a push of any unchecked commit to `main` must be refused. That push also runs
+   `ci.yml` on `main`, which starts a second Check, Docs and Tracker integrity set on the same SHA:
+   wait for the runs on both `dev` and `main` before cutting the tag.
 
 ## Rollback
 
@@ -134,4 +162,4 @@ release already published under it.
 
 If the dev-gate step in `release.yml` blocks a legitimate release, the tag is not on `dev` or a
 check is missing or red on that commit. Promote `dev` to `main` through the normal path, wait for
-the push run on `dev` to go green, and cut a new tag. Do not weaken the step.
+the push runs on both `dev` and `main` to go green, and cut a new tag. Do not weaken the step.

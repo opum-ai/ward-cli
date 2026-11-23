@@ -47,9 +47,9 @@ jobs:
       contents: read
       checks: read
     steps:
-      # Full history, so a tag push can be checked against main below. The
-      # checkout already carries origin/main and the tags; this job never
-      # fetches or pushes.
+      # Full history, so a tag push can be checked against main and dev below.
+      # The checkout already carries origin/main, origin/dev and the tags; this
+      # job never fetches or pushes.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
@@ -77,13 +77,14 @@ jobs:
             echo "::error::${TAG} does not point at main's tip: AC1 requires main == dev, so a tag behind the tip is not this release"
             exit 1
           fi
-      # WCLI-103 (W-8): main and tags are not protected by anything GitHub
-      # enforces until the operator applies the rulesets in
-      # docs/runbooks/protect-the-release-path.md, so the release path asks for
-      # the gate itself. The tagged commit must be on dev, which is reachable
-      # only through a pull request, and must carry a green run of each check
-      # the dev ruleset requires. A commit pushed straight to main with a
-      # matching tag is on neither.
+      # WCLI-103 (W-8): a guard against a mistaken tag, NOT a control against a
+      # writer. A tag push runs this file as it exists at the tagged commit, so
+      # whoever can push a commit and a tag can delete this step in that same
+      # commit. The control is the main and tag rulesets the operator applies
+      # (docs/runbooks/protect-the-release-path.md). What this step does is
+      # refuse a tag whose commit is not on dev, which is reachable only through
+      # a pull request, or has not got a green run of each check the dev
+      # ruleset requires.
       - name: The tagged commit is on gated dev and passed its required checks
         if: github.ref_type == 'tag'
         env:
@@ -264,10 +265,13 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
-    # The release environment is where the operator's protection lives: a
-    # deployment-tag policy limited to v* and, optionally, a required reviewer
-    # (docs/runbooks/protect-the-release-path.md). The job still runs without
-    # one, because GitHub creates an unprotected environment on first use.
+    # The operator can attach a deployment-tag policy limited to v* and a
+    # required reviewer to this environment
+    # (docs/runbooks/protect-the-release-path.md). It binds only a job that
+    # names it, and this file is the tagged commit's own, so it is a second
+    # lock for the operator's click, not a defence against a writer. The job
+    # still runs without one, because GitHub creates an unprotected
+    # environment on first use.
     environment: release
     # The only write permission in this workflow: it creates the Release.
     permissions:

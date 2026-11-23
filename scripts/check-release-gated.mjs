@@ -1,15 +1,14 @@
 // Asserts that the commit a release tag names has passed the three checks the
 // `dev` ruleset requires, as reported by GitHub Actions (WCLI-103, W-8).
 //
-// `main` and the tag are not gated by anything GitHub enforces until the
-// operator applies the rulesets in docs/runbooks/protect-the-release-path.md,
-// and even then the release path should not trust a ref's protection alone: a
-// token that can push a commit and a matching tag must not be able to publish.
-// The workflow therefore requires the tagged commit to be on `dev` (the gated
-// ref, reachable only through a pull request) and this script requires that
-// commit to carry a successful run of each required check from the GitHub
-// Actions app. A commit pushed straight to `main` has no such history on `dev`,
-// and the ancestry step in the workflow refuses it before this runs.
+// This is a guard against a mistaken tag, not a control against a writer. A
+// tag push runs the workflow as it exists at the tagged commit, so whoever can
+// push a commit and a matching tag can remove the step that calls this script in
+// that same commit. The control is the `main` and tag rulesets the operator
+// applies (docs/runbooks/protect-the-release-path.md). What this refuses is a
+// tag whose commit is not on `dev` (the gated ref, reachable only through a pull
+// request; the workflow checks ancestry before it runs this) or that lacks a
+// successful run of each required check from the GitHub Actions app.
 //
 // The names and the app id below are the ones ruleset 24097150 pins
 // ("require CI on dev") and the job names in .github/workflows/ci.yml. Renaming
