@@ -27,7 +27,7 @@ and never run the write commands. `release.yml` also checks the tagged commit (i
 and carry green Check, Docs and Tracker integrity runs from GitHub Actions), but that is a guard
 against a mistaken tag, not a defence against a writer: a tag push runs the workflow file as it
 exists at the tagged commit, so someone who can push both can delete the check in the same commit.
-W-8 closes when the rulesets are applied AND the operator records the step 4 decision. If the
+W-8 closes when the rulesets and the `release` environment (step 3) are applied AND the operator records the step 4 decision. If the
 decision is not to enable immutable releases, the release-replacement path stays open and that is
 an accepted risk, not a closed one. Enabling immutability probably does not protect releases
 published before it was enabled, so v0.1.0 and v0.1.1 stay replaceable whatever is chosen; confirm
@@ -89,9 +89,10 @@ that on v0.1.0 and v0.1.1 themselves after enabling; it is not measured.
      change and nothing visible beyond a bypass record; under B it must first disable a ruleset,
      which is a security-posture change reserved for the operator and leaves a ruleset-history
      entry. B is therefore the only option that puts the operator in front of tag creation for
-     sessions on this machine, and its release-time cost is that protection. A stays the
+     sessions on this machine, by fleet rule and audit trail rather than by a technical block, and
+     the price of that protection is a settings change at each release (below). A stays the
      recommendation on effort alone. What closes A's gap is fleet sessions not holding an admin
-     credential.
+     credential (filed as WCLI-182, not started; a credential change is the operator's).
    - **B: no bypass anywhere.** Nobody can create a `v*` tag while the ruleset is active, so each
      release needs the creation ruleset switched to disabled for the tag push and back, which is
      itself a settings change at release time.
@@ -150,7 +151,8 @@ that on v0.1.0 and v0.1.1 themselves after enabling; it is not measured.
 
    **It removes an existing route.** [Publish a Mac-signed Ward release asset](publish-a-mac-signed-ward-release-asset.md)
    steps 4 and 5 and its Rollback repair a published release with `gh release upload --clobber`.
-   Enabling immutability makes that upload fail, so a wrong asset means a new version. GitHub's
+   Enabling immutability should make that upload fail (unmeasured), so a wrong asset would mean a
+   new version. GitHub's
    documentation says a published immutable release keeps its title and notes editable, so the
    `gh release edit --notes-file` parts should still work; that is read from the documentation, not
    measured here. Enable it before the first release that carries build provenance.
@@ -184,13 +186,17 @@ If the dev-gate step in `release.yml` blocks a legitimate release, either the ta
 a check is missing or red on that commit.
 
 - **The tag is not on `dev`:** promote `dev` to `main` through the normal path, wait for the push
-  runs on both `dev` and `main` to go green, and cut a new tag.
+  runs on both `dev` and `main` to go green, and cut a new tag. The bad tag stays frozen, so this
+  needs a version bump: the tag must equal `package.json`'s version.
 - **A check is cancelled or red on the tagged commit:** the check-runs read returns the latest run
-  per check, and a `dev` run cancelled by `ci.yml`'s cancel-in-progress leaves a cancelled run on
+  per check (whether that is one run per name or per check suite is unmeasured), a cancelled or
+  red `main` run on the same SHA can block the gate the same way, and a `dev` run cancelled by `ci.yml`'s cancel-in-progress leaves a cancelled run on
   that SHA, which the gate refuses. Re-run the `dev` job, wait for green, then re-run the failed
   Release run for the same tag. A new tag means a version bump, because the tag must equal
   `package.json`'s version, and once "freeze release tags" is applied a tag can never be deleted and
-  re-pushed. Unmeasured: re-running an old `dev` run joins the `dev` concurrency group, so with
+  re-pushed. Unmeasured: re-running the Release run re-runs the "tag points at main's tip" step
+  against the current `origin/main`, so it fails there if `main` has been promoted since. Also
+  unmeasured: re-running an old `dev` run joins the `dev` concurrency group, so with
   cancel-in-progress it may cancel the current dev tip's in-flight run.
 
 Do not weaken the step.

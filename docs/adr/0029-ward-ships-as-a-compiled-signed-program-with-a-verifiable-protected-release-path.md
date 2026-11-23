@@ -48,10 +48,12 @@ The distribution practice, in priority order:
    decided, nothing here assumes it.
 2. **A verifiable, protected release path.** GitHub artifact attestations so
    `gh attestation verify` proves a download came from this repository's CI at a given commit
-   (WCLI-109, W-15), and only reviewed `main` can be tagged and released (WCLI-103, W-8). That is the aim, delivered
-   in full only when the operator applies the rulesets in the
-   [protect-the-release-path runbook](../runbooks/protect-the-release-path.md); its option A leaves
-   an admin credential able to tag an unreviewed commit. Neither
+   (WCLI-109, W-15), and only reviewed `main` can be tagged and released (WCLI-103, W-8). That is the aim. Applying the rulesets is
+   necessary but not sufficient: the `release` environment and the operator's immutable-releases
+   decision are also required, all in the
+   [protect-the-release-path runbook](../runbooks/protect-the-release-path.md). Its option A leaves
+   an admin credential able to tag an unreviewed commit; whether tag creation keeps an admin bypass
+   is the operator's decision at apply time (DEC-301 (a1)). Neither
    waits on the Apple account.
 3. **A Homebrew tap**, `opum-ai/homebrew-tap`, pointing at the signed release and pinning its
    checksum; saws installs fleet hosts through it. This follows item 1 and is not started.
