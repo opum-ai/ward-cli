@@ -81,6 +81,7 @@
 - 2026-11-17T10:32:21-06:00 2254091bdcce7425244333554e1129cb906a2105 docs(WCLI-21): ADR 0007 and 0028 state the saved-session attention check; lore budgets raised to hold them (slice 3d-2b ii-b)
 - 2026-11-17T10:46:08-06:00 58c52693d328f695fad45a04a738519cd4be6bb1 fix(WCLI-21): doctor says what clears a saved-session count; the TPM host guard fails the test that trips it (#355 round 1 B1, N1-N3, N5, N6)
 - 2026-11-17T10:59:39-06:00 86fcecd16f9941125fb7b9f2094eacb73ccc59c7 feat(WCLI-21): tpm2 consults key_provider's host-state refusal in the same doctor run (DEC-262 a28, #355 N4)
+- 2026-11-17T11:10:47-06:00 0bb9427defebccf45c923e2fd473fd5df3355712 feat(WCLI-21): doctor's tpm2 saved-session count and untrusted-getcap attention case (DEC-262 a26/a27, slice 3d-2b ii-b) (#355)
 
 ## docs/runbooks
 
