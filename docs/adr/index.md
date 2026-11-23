@@ -29,4 +29,5 @@
 - [A checkout is identified by its directory identity and a nonce in its git directory](0026-a-checkout-is-identified-by-its-directory-identity-and-a-nonce-in-its-git-directory.md)
 - [An Ed25519 sign operation: sign keys are a kind of secret record, never exported](0027-an-ed25519-sign-operation-sign-keys-are-a-kind-of-secret-record-never-exported.md)
 - [TPM2 key custody on Linux: tool trust, the leaked session slot and the stored-format template](0028-tpm2-key-custody-on-linux-tool-trust-the-leaked-session-slot-and-the-stored-format-template.md)
+- [Ward ships as a compiled signed program with a verifiable protected release path](0029-ward-ships-as-a-compiled-signed-program-with-a-verifiable-protected-release-path.md)
 <!-- lore:index:end -->
