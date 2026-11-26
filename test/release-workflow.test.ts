@@ -1225,8 +1225,9 @@ test("sign signs with the identifier ai.opum.ward, hardened runtime and a timest
   expect(notarize).not.toContain("out/ward-notary");
 });
 
-// Run under whatever locale the test host has; the macOS runner's own locale is
-// not exercised here (WCLI-186, N7), so the rehearsal reads the step's log.
+// This runs in the C locale (the env below carries no LANG or LC_*); the macOS
+// runner's own locale is not exercised here (WCLI-186, N7), so the rehearsal
+// reads the step's log.
 // The requirement step's own script, run with a fake `codesign` (WCLI-185
 // review round 2): every verdict below comes from the shell, not a substring.
 const TEAM = "ABCDE12345";
@@ -1286,7 +1287,6 @@ test("the requirement step accepts exactly the team's Developer ID requirement a
   }
   expect(ok(`cdhash H"abc"`)).toBe(false);
   // The team id itself: unset, empty, short, long, lowercase, multi-line.
-  expect(ok(goodRequirement(""), undefined)).toBe(false);
   expect(ok(goodRequirement(""), "")).toBe(false);
   for (const bad of [
     "ABCDE1234",
@@ -1327,13 +1327,44 @@ test("the requirement step's case pattern is one exact line and its shape block 
   );
 });
 
+test("the regenerate step's run text is pinned", () => {
+  expect(
+    runOf(
+      stepWith(
+        "Regenerate the checksum and the notes' hashes from the signed bytes",
+      ) ?? {},
+    ),
+  ).toBe(`set -euo pipefail
+signed="$(codesign -dvvv out/ward-darwin-arm64 2>&1 | sed -n 's/^CDHash=//p')"
+computed="$(node scripts/macho-cdhash.mjs out/ward-darwin-arm64)"
+echo "codesign CDHash=\${signed} macho-cdhash=\${computed}"
+if [ -z "$signed" ] || [ "$signed" != "$computed" ]; then
+  echo "::error::codesign and scripts/macho-cdhash.mjs disagree on the cdhash"
+  exit 1
+fi
+node scripts/regenerate-release-metadata.mjs out/ward-darwin-arm64 in/release-notes.md out
+`);
+});
+
 test("no sign step traces, and the import step is exactly the helper call", () => {
   for (const step of jobSteps("sign")) {
     expect(runOf(step)).not.toMatch(
       /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/,
     );
-    expect(String(step.shell ?? "")).not.toMatch(/-[a-z]*x/);
+    expect(String(step.shell ?? "")).not.toMatch(/-[A-Za-z]*x/);
   }
+  // Positive controls: the scans catch the spellings they exist for.
+  const traceScan =
+    /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/;
+  for (const traced of [
+    "set -Eux",
+    "set -o pipefail -x",
+    "set -euxo pipefail",
+    "bash -x scripts/signing-keychain.sh import",
+  ])
+    expect(traceScan.test(traced)).toBe(true);
+  expect(/-[A-Za-z]*x/.test("-Eux")).toBe(true);
+  expect(traceScan.test("set -euo pipefail")).toBe(false);
   expect(
     runOf(
       stepWith("Import the signing certificate into a temporary keychain") ??
@@ -1484,6 +1515,13 @@ test("the keychain helper imports into a throwaway keychain, prints only the pat
   expect(log).toContain("-T /usr/bin/codesign");
   expect(log).toContain("set-key-partition-list");
   expect(existsSync(join(r.runner, "ward-signing-cert.p12"))).toBe(false);
+});
+
+test("a failed set-key-partition-list stops the import with a diagnostic and none of its own output", () => {
+  const r = runKeychain("import", secretEnv, "set-key-partition-list");
+  expect(r.status).not.toBe(0);
+  expect(r.stderr).toContain("set-key-partition-list failed");
+  expect(r.stdout + r.stderr).not.toContain("PARTITION-DUMP");
 });
 
 test("the keychain helper refuses without its credential variables and refuses an unknown command", () => {

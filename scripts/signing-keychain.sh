@@ -37,8 +37,10 @@ case "${1:-}" in
     security set-keychain-settings -lut 3600 "$keychain"
     security unlock-keychain -p "$password" "$keychain"
     security import "$p12" -k "$keychain" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
-    # Its key-attribute dump would reach the public log through stderr.
-    security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null 2>&1
+    # Its key-attribute dump would reach the public log through stderr, so its
+    # own output is silenced and a failure says only that it failed.
+    command security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null 2>&1 ||
+      { echo "signing-keychain: set-key-partition-list failed" >&2; exit 1; }
     # codesign finds the identity through the search list.
     security list-keychains -d user -s "$keychain" login.keychain-db
     rm -f "$p12"

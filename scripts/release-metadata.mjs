@@ -45,7 +45,7 @@ function cdhashLine(signature, cdhash) {
 // Fails when the notes' signing wording disagrees with the signature: a
 // Developer ID binary must never be described as ad hoc, nor the reverse.
 export function assertNotesMatchSignature(notes, signature) {
-  const adhoc = /ad[- ]hoc/i.test(notes);
+  const adhoc = /ad[- ]?hoc/i.test(notes);
   const developerId = /Developer ID/.test(notes);
   if (signature.kind === "developer-id" && (adhoc || !developerId))
     throw new Error(

@@ -252,6 +252,17 @@ test("a Developer ID signature rewrites the cdhash line and the ad-hoc closing s
   expect(adhoc).not.toContain("Developer ID");
 });
 
+test("rewriting Developer ID notes again changes nothing, and wording that names neither signature fails", () => {
+  const once = rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH, DEVID);
+  expect(rewriteNotes(once, NEW_SHA, NEW_CDHASH, DEVID)).toBe(once);
+  expect(() => assertNotesMatchSignature("plain notes", DEVID)).toThrow(
+    "disagree",
+  );
+  expect(() => assertNotesMatchSignature("signed adhoc", DEVID)).toThrow(
+    "disagree",
+  );
+});
+
 test("the guard fails on a notes and signature disagreement, both ways", () => {
   expect(() => assertNotesMatchSignature(fullNotes, DEVID)).toThrow("disagree");
   expect(() =>
