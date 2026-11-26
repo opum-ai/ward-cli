@@ -49,15 +49,22 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
    its CDHash with the `cdhash` line in the release notes: `codesign -dvvv
    ward-darwin-arm64 2>&1 | grep '^CDHash='`. The notes are on the Release page
    (`https://github.com/opum-ai/ward-cli/releases/tag/v0.1.1`). On a mismatch,
-   do not install it.
+   do not install it. Until the first Developer ID release (WCLI-185) the
+   signature is ad hoc and its designated requirement is a bare cdhash. From
+   that release on, expect `codesign -d -r- ward-darwin-arm64` to name
+   identifier `ai.opum.ward` and the team id instead (unmeasured until then).
    Then verify the build provenance: `gh attestation verify ward-darwin-arm64
    -R opum-ai/ward-cli --signer-workflow
    opum-ai/ward-cli/.github/workflows/release.yml --deny-self-hosted-runners`
    must exit 0 and name this repository's `release.yml` at the tag's commit
-   (WCLI-109; add `--source-ref refs/tags/TAG` to pin the tag). Keep the
+   (WCLI-109; add `--source-ref refs/tags/<tag>` to pin the tag, which is worth doing once the
+   tag rulesets in the protect runbook are applied). Keep the
    `--signer-workflow` flag: with `-R` alone, `gh` accepts an attestation made by
    any workflow in the repository, and gh's own help says to validate the workflow
-   path as well. It proves the file came from the release
+   path as well. `--deny-self-hosted-runners` checks the runner of the job that
+   made the attestation, not the runner that built the file, so it does not
+   prove a hosted build. Not yet run against a real attestation: the first real
+   release must run it and record the exit code and output (WCLI-109). It proves the file came from the release
    workflow, which the checksum beside the file cannot. Stop on any other exit.
    v0.1.1 and earlier carry no attestation, so it fails on those; a release
    that should carry one and fails is not to be installed. `gh` may ask you to

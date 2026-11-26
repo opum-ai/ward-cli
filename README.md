@@ -24,11 +24,12 @@ Or fetch the same two files with the GitHub CLI:
 
 To check where the download came from, run
 `gh attestation verify ward-darwin-arm64 -R opum-ai/ward-cli --signer-workflow opum-ai/ward-cli/.github/workflows/release.yml --deny-self-hosted-runners`.
-It proves the file was built by this repository's `release.yml` workflow at the
-commit it prints. The `--signer-workflow` flag matters: with `-R` alone, `gh`
+It proves the file was built by this repository's `release.yml` workflow; the
+commit is the one in the attestation it reports. The `--signer-workflow` flag matters: with `-R` alone, `gh`
 checks only that some workflow in the repository made the attestation, and gh's
 own help says the workflow path should also be validated. To pin the release
-too, add `--source-ref refs/tags/<tag>`. The
+too, add `--source-ref refs/tags/<tag>`. The command has not yet been run against
+a real attestation; the first release that carries one is its first test. The
 attestation is separate from the checksum, which sits beside the file; a release
 that has one passes, and v0.1.1 and earlier carry no attestation, so the command
 fails on those. It needs the GitHub CLI, which may ask you to sign in.

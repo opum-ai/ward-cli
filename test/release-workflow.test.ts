@@ -6,7 +6,7 @@
 // check that had quietly become always-green fails here.
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCommand } from "../scripts/build.ts";
 import { createTempRoot } from "./support/temp-root.ts";
@@ -48,7 +48,7 @@ test("every action is pinned to a full commit SHA", () => {
   // Positive control: a parse that read nothing must fail here, not pass.
   expect(steps.length).toBeGreaterThan(0);
   const withUses = steps.filter((step) => "uses" in step);
-  expect(withUses).toHaveLength(8);
+  expect(withUses).toHaveLength(11);
   for (const step of withUses) {
     expect(typeof step.uses).toBe("string");
     expect(step.uses as string).toMatch(/@[0-9a-f]{40}$/);
@@ -56,8 +56,8 @@ test("every action is pinned to a full commit SHA", () => {
 });
 
 test("the checkout does not persist its credential", () => {
-  expect(workflow.match(/actions\/checkout@/g)?.length).toBe(2);
-  expect(workflow.match(/persist-credentials: false/g)?.length).toBe(2);
+  expect(workflow.match(/actions\/checkout@/g)?.length).toBe(3);
+  expect(workflow.match(/persist-credentials: false/g)?.length).toBe(3);
 });
 
 test("contents: write sits on the release job only, and id-token on the attest job only", () => {
@@ -330,12 +330,12 @@ function jobText(name: string): string {
 
 test("a verify job runs codesign --verify --strict on the artifact the release would publish", () => {
   const verify = jobText("verify");
-  expect(verify).toMatch(/^\s+needs: build$/m);
+  expect(verify).toMatch(/^\s+needs: \[build, sign\]$/m);
   expect(verify).toMatch(
     /^\s+if: github\.event_name == 'workflow_dispatch' \|\| \(github\.event_name == 'push' && github\.ref_type == 'tag'\)$/m,
   );
   expect(verify).toContain("actions/download-artifact@");
-  expect(verify).toMatch(/^\s+name: ward-darwin-arm64$/m);
+  expect(verify).toMatch(/^\s+name: ward-darwin-arm64-signed$/m);
   expect(verify).toMatch(
     /^\s+run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64$/m,
   );
@@ -431,9 +431,9 @@ test("a repository payload without its visibility fails closed to the verifying 
   expect(evaluate(runsOn, { private: null })).toBe("macos-15");
 });
 
-test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
+test("the verify job has exactly the notice, the download, the codesign step and the smoke test, in that order", () => {
   const steps = verifySteps();
-  expect(steps).toHaveLength(3);
+  expect(steps).toHaveLength(4);
   // Each step is one full shape anchored at both ends, so a key inserted
   // between its own lines (a `shell:` between the name and the if, say) is red,
   // and so is a tab after the dash that merges it into a neighbour.
@@ -441,15 +441,24 @@ test("the verify job has exactly the notice, the download and the codesign step,
     /^ {6}- name: The hosted macOS check is skipped while the repository is private\n {8}if: github\.event\.repository\.private == true\n {8}run: \|\n {10}echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n*$/,
   );
   expect(steps[1]).toMatch(
-    /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64\n {10}path: out\n*$/,
+    /^ {6}- uses: actions\/download-artifact@[0-9a-f]{40} # v8\.0\.2\n {8}if: github\.event\.repository\.private != true\n {8}with:\n {10}name: ward-darwin-arm64-signed\n {10}path: out\n*$/,
   );
   // The job has exactly one action, whatever its indent or list form.
   expect(jobText("verify").match(/^\s+(?:- )?uses:/gm)).toHaveLength(1);
   expect(steps[2]).toMatch(
     /^ {6}- name: codesign verifies the signature strictly\n {8}if: github\.event\.repository\.private != true\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
   );
-  // One command per step: nothing re-signs or rewrites the artifact before the check.
-  expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
+  // The smoke test of the signed binary (WCLI-185) runs here, in the job with no
+  // environment and no secrets, and only after the strict signature check.
+  expect(steps[3]).toContain(
+    "- name: The signed binary starts and reports a version",
+  );
+  expect(steps[3]).toContain("if: github.event.repository.private != true");
+  expect(steps[3]).toContain('version="$(out/ward-darwin-arm64 --version)"');
+  expect(steps[3]).not.toMatch(/codesign|--force|secrets\./);
+  // One command per step: nothing re-signs or rewrites the artifact before the
+  // check, and only the smoke step runs the binary.
+  expect(steps.join("").match(/\brun:/g)).toHaveLength(3);
 });
 
 // The text helpers above (jobText) take the first `verify:` they find, so a
@@ -464,16 +473,20 @@ test("the parsed verify job is exactly the known job, with the real codesign com
     "attest",
     "build",
     "release",
+    "sign",
     "verify",
   ]);
   const verify = parsed.jobs.verify as ParsedJob;
   const steps = verify.steps as Record<string, unknown>[];
-  expect(steps).toHaveLength(3);
-  const [notice, download, codesign] = steps as [
+  expect(steps).toHaveLength(4);
+  const [notice, download, codesign, smoke] = steps as [
+    Record<string, unknown>,
     Record<string, unknown>,
     Record<string, unknown>,
     Record<string, unknown>,
   ];
+  expect(Object.keys(smoke ?? {}).sort()).toEqual(["if", "name", "run"]);
+  expect(smoke?.if).toBe("github.event.repository.private != true");
   expect(notice?.run as string).toMatch(
     /^echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n$/,
   );
@@ -487,7 +500,7 @@ test("the parsed verify job is exactly the known job, with the real codesign com
   );
   expect({ ...verifyRest, "runs-on": "" } as Record<string, unknown>).toEqual({
     name: "Verify the code signature on macOS",
-    needs: "build",
+    needs: ["build", "sign"],
     if: "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')",
     "runs-on": "",
     "timeout-minutes": 10,
@@ -501,7 +514,7 @@ test("the parsed verify job is exactly the known job, with the real codesign com
   const { uses: _uses, ...downloadRest } = download;
   expect(downloadRest).toEqual({
     if: "github.event.repository.private != true",
-    with: { name: "ward-darwin-arm64", path: "out" },
+    with: { name: "ward-darwin-arm64-signed", path: "out" },
   });
   expect(codesign).toEqual({
     name: "codesign verifies the signature strictly",
@@ -538,6 +551,7 @@ test("the workflow, the verify job and each verify step carry exactly the keys t
   expect(steps.map((step) => Object.keys(step).sort())).toEqual([
     ["if", "name", "run"],
     ["if", "uses", "with"],
+    ["if", "name", "run"],
     ["if", "name", "run"],
   ]);
   expect(Object.keys(steps[1]?.with as object).sort()).toEqual([
@@ -576,8 +590,9 @@ test("the verifying steps are skipped while private, run once public, and the sk
     "github.event.repository.private == true",
     "github.event.repository.private != true",
     "github.event.repository.private != true",
+    "github.event.repository.private != true",
   ]);
-  const [notice, download, codesign] = ifs;
+  const [notice, download, codesign, smoke] = ifs;
   for (const [repository, notices, verifies] of [
     [{ private: true }, true, false],
     [{ private: false }, false, true],
@@ -586,6 +601,7 @@ test("the verifying steps are skipped while private, run once public, and the sk
     expect(evaluate(notice ?? "", repository)).toBe(notices);
     expect(evaluate(download ?? "", repository)).toBe(verifies);
     expect(evaluate(codesign ?? "", repository)).toBe(verifies);
+    expect(evaluate(smoke ?? "", repository)).toBe(verifies);
   }
   expect(verify).toMatch(
     /::notice::codesign --verify --strict is skipped here/,
@@ -601,13 +617,15 @@ test("the verify job still never holds a write permission", () => {
 });
 
 test("the release job needs the verify job, so an unverified artifact cannot publish", () => {
-  expect(jobText("release")).toMatch(/^\s+needs: \[build, verify, attest\]$/m);
+  expect(jobText("release")).toMatch(
+    /^\s+needs: \[build, sign, verify, attest\]$/m,
+  );
 });
 
 // WCLI-109 (W-15, W-36): build provenance for exactly the published artifact.
 test("the attest job attests the verified artifact, on a tag only, and the release needs it", () => {
   const attest = parseWorkflow().jobs.attest ?? {};
-  expect(attest.needs).toEqual(["build", "verify"]);
+  expect(attest.needs).toEqual(["build", "sign", "verify"]);
   expect(attest.if).toBe(
     "github.event_name == 'push' && github.ref_type == 'tag'",
   );
@@ -615,7 +633,7 @@ test("the attest job attests the verified artifact, on a tag only, and the relea
   expect(uses[0]).toMatch(/^actions\/download-artifact@[0-9a-f]{40}$/);
   expect(uses[1]).toMatch(/^actions\/attest-build-provenance@[0-9a-f]{40}$/);
   expect(attest.steps?.[0]?.with).toEqual({
-    name: "ward-darwin-arm64",
+    name: "ward-darwin-arm64-signed",
     path: "out",
   });
   expect(attest.steps?.[1]?.with).toEqual({
@@ -660,7 +678,7 @@ test("the verify job takes no token permissions and the header states the gate",
     .slice(0, workflow.indexOf("\nname: Release"))
     .replace(/\n# ?/g, " ");
   expect(header).toContain(
-    "The verify job below re-downloads the uploaded artifact and runs codesign --verify --strict again, and the release job needs it",
+    "The verify job below re-downloads the signed artifact and runs codesign --verify --strict again, and the release job needs it",
   );
   expect(header).toContain(
     "the release runbook reads /actions/runs/<id>/timing and MACOS billable must be 0",
@@ -917,6 +935,7 @@ test("verify still re-downloads the artifact and release needs build and verify"
   );
   expect(parseWorkflow().jobs.release?.needs).toEqual([
     "build",
+    "sign",
     "verify",
     "attest",
   ]);
@@ -926,7 +945,7 @@ test("no job names a self-hosted label except verify's own keyed expression", ()
   const runsOns = [...workflow.matchAll(/^ {4}runs-on: (.+)$/gm)].map((m) =>
     (m[1] ?? "").trim(),
   );
-  expect(runsOns).toHaveLength(4);
+  expect(runsOns).toHaveLength(5);
   const selfHosted = runsOns.filter((r) => r.includes("self-hosted"));
   expect(selfHosted).toHaveLength(1);
   // The one occurrence is verify's, and only through the visibility-keyed
@@ -939,6 +958,7 @@ test("the release workflow job names are unchanged", () => {
   const names = [...workflow.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1]);
   expect(names).toEqual([
     "Build darwin-arm64",
+    "Sign and notarize on macOS",
     "Verify the code signature on macOS",
     "Attest the build provenance",
     "Create the GitHub Release",
@@ -1102,4 +1122,359 @@ test("the release job runs in the release environment and still holds the only w
   const release = parseWorkflow().jobs.release ?? {};
   expect(release.environment).toBe("release");
   expect(release.permissions).toEqual({ contents: "write" });
+});
+
+// WCLI-185 (DEC-301 item 1): the sign job and the keychain helper it runs.
+function jobSteps(name: string): Record<string, unknown>[] {
+  return parseWorkflow().jobs[name]?.steps ?? [];
+}
+const signJob = () => parseWorkflow().jobs.sign as ParsedJob;
+const stepWith = (needle: string) =>
+  jobSteps("sign").find((s) => runOf(s).includes(needle) || s.name === needle);
+
+test("sign is the only job that references the signing secrets, each in the one step that needs it", () => {
+  for (const [name, job] of Object.entries(parseWorkflow().jobs)) {
+    if (name === "sign") continue;
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.(APPLE_|ASC_)/);
+  }
+  expect(workflow.match(/secrets\.[A-Z_]+/g)?.length).toBe(5);
+  const reference = (step: Record<string, unknown> | undefined) =>
+    Object.keys((step?.env as Record<string, unknown>) ?? {}).sort();
+  expect(
+    reference(
+      stepWith("Import the signing certificate into a temporary keychain"),
+    ),
+  ).toEqual(["APPLE_CERT_P12_BASE64", "APPLE_CERT_PASSWORD"]);
+  expect(reference(stepWith("Notarize and require Accepted"))).toEqual([
+    "ASC_API_KEY_P8",
+    "ASC_ISSUER_ID",
+    "ASC_KEY_ID",
+  ]);
+  // The build job has no environment and no secret at all.
+  const build = parseWorkflow().jobs.build ?? {};
+  expect("environment" in build).toBe(false);
+  expect(JSON.stringify(build)).not.toContain("secrets.");
+});
+
+test("sign runs in the release environment, with job-level contents: read, on a tag or a manual run from main", () => {
+  const sign = signJob();
+  expect(sign.environment).toBe("release");
+  expect(sign.permissions).toEqual({ contents: "read" });
+  expect(sign.needs).toBe("build");
+  expect(sign["runs-on"]).toBe("macos-15");
+  expect(sign.if).toBe(
+    "(github.event_name == 'push' && github.ref_type == 'tag') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')",
+  );
+  expect(JSON.stringify(sign)).not.toContain("continue-on-error");
+});
+
+test("sign runs no package manager and only the pinned actions it names", () => {
+  const steps = jobSteps("sign");
+  expect(steps.length).toBeGreaterThan(0);
+  const text = steps.map(runOf).join("\n");
+  expect(text).not.toMatch(
+    /\b(bun|bunx|npm|npx|pnpm|yarn|corepack|brew|pip)\b/,
+  );
+  expect(text).not.toMatch(/\bset -x\b|--entitlements/);
+  expect(
+    steps
+      .filter((s) => "uses" in s)
+      .map((s) => String(s.uses).replace(/@.*/, "")),
+  ).toEqual([
+    "actions/checkout",
+    "actions/download-artifact",
+    "actions/upload-artifact",
+  ]);
+});
+
+test("sign signs with the identifier ai.opum.ward, hardened runtime and a timestamp, then checks the requirement and notarization", () => {
+  const sign = runOf(
+    stepWith(
+      "Re-sign with the Developer ID identity, hardened runtime and a timestamp",
+    ) ?? {},
+  );
+  expect(sign).toContain(
+    'codesign --force --options runtime --timestamp --identifier ai.opum.ward --keychain "$KEYCHAIN_PATH" --sign "$APPLE_SIGNING_IDENTITY" out/ward-darwin-arm64',
+  );
+  expect(sign).toContain("codesign --verify --strict --verbose=2");
+  const requirement = runOf(
+    stepWith("The designated requirement names the team and the identifier") ??
+      {},
+  );
+  expect(requirement).toContain('identifier "ai.opum.ward"');
+  expect(requirement).toContain("certificate leaf[subject.OU]");
+  // The team id is required, shaped, and matched whole as the last clause
+  // (WCLI-185 review R1): an unset variable must not pass any team.
+  expect(requirement).toContain('"${APPLE_TEAM_ID:?');
+  expect(requirement).toContain("[[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]");
+  expect(requirement).toContain("'anchor apple generic'");
+  expect(requirement).toContain(
+    '"certificate leaf[subject.OU] = ${APPLE_TEAM_ID}" |',
+  );
+  expect(requirement).toContain(
+    '"certificate leaf[subject.OU] = \\"${APPLE_TEAM_ID}\\""',
+  );
+  expect(requirement).not.toMatch(/\[subject\.OU\] = \$\{APPLE_TEAM_ID\}"\*/);
+  expect(requirement).toContain("*cdhash*");
+  const notarize = runOf(stepWith("Notarize and require Accepted") ?? {});
+  expect(notarize).toContain("--wait");
+  expect(notarize).toContain('[ "$status" != "Accepted" ]');
+  expect(notarize).toContain("exit 1");
+  // The credential files live under RUNNER_TEMP, never in the upload path.
+  expect(notarize).toContain("${RUNNER_TEMP}/ward-notary-key.p8");
+  expect(notarize).not.toContain("out/ward-notary");
+});
+
+// The requirement step's own script, run with a fake `codesign` (WCLI-185
+// review round 2): every verdict below comes from the shell, not a substring.
+const TEAM = "ABCDE12345";
+const idClause = 'identifier "ai.opum.ward"';
+const goodRequirement = (ou: string) =>
+  `${idClause} and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = ${ou}`;
+function runRequirementStep(requirement: string, team: string | undefined) {
+  const temp = createTempRoot("ward-requirement-");
+  const bin = join(temp, "bin");
+  spawnSync("mkdir", ["-p", bin, join(temp, "out")]);
+  writeFileSync(
+    join(bin, "codesign"),
+    `#!/bin/bash\necho 'designated => ${requirement.replace(/'/g, "'\\''")}' >&2\n`,
+    { mode: 0o755 },
+  );
+  const script = runOf(
+    stepWith("The designated requirement names the team and the identifier") ??
+      {},
+  );
+  const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}` };
+  if (team !== undefined) env.APPLE_TEAM_ID = team;
+  return spawnSync("bash", ["-c", script], {
+    encoding: "utf8",
+    env,
+    cwd: temp,
+  });
+}
+
+test("the requirement step accepts exactly the team's Developer ID requirement and nothing looser", () => {
+  const ok = (req: string, team: string | undefined = TEAM) =>
+    runRequirementStep(req, team).status === 0;
+  // Positive controls: bare and quoted forms of the right team pass.
+  expect(ok(goodRequirement(TEAM))).toBe(true);
+  expect(ok(goodRequirement(`"${TEAM}"`))).toBe(true);
+  // Rejections.
+  expect(ok(goodRequirement("ZZZZZ99999"))).toBe(false);
+  expect(ok(goodRequirement(`${TEAM}XX`))).toBe(false);
+  expect(ok(goodRequirement(`"${TEAM}"*`))).toBe(false);
+  expect(ok(goodRequirement(`${TEAM} and anchor apple`))).toBe(false);
+  expect(
+    ok(goodRequirement(TEAM).replace(" and anchor apple generic", "")),
+  ).toBe(false);
+  expect(
+    ok(goodRequirement(TEAM).replace(idClause, 'identifier "other"')),
+  ).toBe(false);
+  expect(ok(`cdhash H"abc"`)).toBe(false);
+  expect(ok(`${goodRequirement(TEAM)} and cdhash H"abc"`)).toBe(false);
+  // The team id itself: unset, empty, short, long, lowercase, multi-line.
+  expect(ok(goodRequirement(""), undefined)).toBe(false);
+  expect(ok(goodRequirement(""), "")).toBe(false);
+  for (const bad of ["ABCDE1234", "ABCDE123456", "abcde12345", `${TEAM}\n::x`])
+    expect(ok(goodRequirement(bad), bad)).toBe(false);
+});
+
+test("the requirement step's case pattern and shape check are pinned verbatim", () => {
+  const script = runOf(
+    stepWith("The designated requirement names the team and the identifier") ??
+      {},
+  );
+  expect(script).toContain(
+    `*'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \${APPLE_TEAM_ID}" | *'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \\"\${APPLE_TEAM_ID}\\"") ;;`,
+  );
+  expect(script).toContain(
+    'if ! [[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]; then\n  echo "::error::APPLE_TEAM_ID is not a 10-character team id"\n  exit 1\nfi',
+  );
+});
+
+test("no sign step traces, and the import step is exactly the helper call", () => {
+  for (const step of jobSteps("sign")) {
+    expect(runOf(step)).not.toMatch(/set -[a-z]*x|xtrace|bash -[a-z]*x/);
+    expect(String(step.shell ?? "")).not.toMatch(/-[a-z]*x/);
+  }
+  expect(
+    runOf(
+      stepWith("Import the signing certificate into a temporary keychain") ??
+        {},
+    ).trim(),
+  ).toBe('bash scripts/signing-keychain.sh import >> "$GITHUB_ENV"');
+});
+
+test("sign's job key set, step names and each step's key set are exact", () => {
+  expect(Object.keys(signJob()).sort()).toEqual([
+    "environment",
+    "if",
+    "name",
+    "needs",
+    "permissions",
+    "runs-on",
+    "steps",
+    "timeout-minutes",
+  ]);
+  const steps = jobSteps("sign");
+  expect(steps.map((s) => String(s.name ?? s.uses).replace(/@.*/, ""))).toEqual(
+    [
+      "actions/checkout",
+      "actions/download-artifact",
+      "Import the signing certificate into a temporary keychain",
+      "Re-sign with the Developer ID identity, hardened runtime and a timestamp",
+      "The designated requirement names the team and the identifier",
+      "Notarize and require Accepted",
+      "Regenerate the checksum and the notes' hashes from the signed bytes",
+      "actions/upload-artifact",
+      "Remove the keychain and every decoded credential file",
+    ],
+  );
+  // No `shell:`, `working-directory`, `continue-on-error` or stray env key.
+  expect(steps.map((step) => Object.keys(step).sort())).toEqual([
+    ["uses", "with"],
+    ["uses", "with"],
+    ["env", "name", "run"],
+    ["env", "name", "run"],
+    ["env", "name", "run"],
+    ["env", "name", "run"],
+    ["name", "run"],
+    ["uses", "with"],
+    ["if", "name", "run"],
+  ]);
+  expect(JSON.stringify(steps)).not.toMatch(/curl|wget|\| *bash|\| *sh\b/);
+});
+
+test("sign checks the order: sign, requirement, notarize, metadata, upload, and cleanup last and always", () => {
+  const names = jobSteps("sign").map((s) => String(s.name ?? s.uses ?? ""));
+  const at = (needle: string) => names.findIndex((n) => n.includes(needle));
+  expect(at("Import the signing certificate")).toBeLessThan(at("Re-sign"));
+  expect(at("Re-sign")).toBeLessThan(at("designated requirement"));
+  expect(at("designated requirement")).toBeLessThan(at("Notarize"));
+  expect(at("Notarize")).toBeLessThan(at("Regenerate the checksum"));
+  expect(at("Regenerate the checksum")).toBeLessThan(
+    at("actions/upload-artifact"),
+  );
+  const last = jobSteps("sign").at(-1) ?? {};
+  expect(last.if).toBe("always()");
+  expect(runOf(last)).toBe("bash scripts/signing-keychain.sh cleanup");
+  const upload = jobSteps("sign").find((s) =>
+    String(s.uses ?? "").startsWith("actions/upload-artifact@"),
+  );
+  expect(upload?.with).toEqual({
+    name: "ward-darwin-arm64-signed",
+    path: "out/ward-darwin-arm64\nout/ward-darwin-arm64.sha256\nout/release-notes.md\n",
+    "if-no-files-found": "error",
+  });
+});
+
+test("verify, attest and release all take the signed artifact, and the attest job's key set is exact", () => {
+  for (const name of ["verify", "attest", "release"]) {
+    const downloads = jobSteps(name).filter((s) =>
+      String(s.uses ?? "").startsWith("actions/download-artifact@"),
+    );
+    expect(downloads).toHaveLength(1);
+    expect((downloads[0]?.with as { name: string } | undefined)?.name).toBe(
+      "ward-darwin-arm64-signed",
+    );
+  }
+  expect(Object.keys(parseWorkflow().jobs.attest ?? {}).sort()).toEqual([
+    "if",
+    "name",
+    "needs",
+    "permissions",
+    "runs-on",
+    "steps",
+    "timeout-minutes",
+  ]);
+  expect(parseWorkflow().jobs.release?.if).toBe(
+    "github.event_name == 'push' && github.ref_type == 'tag'",
+  );
+});
+
+// The keychain helper, run against a fake `security` that records its argv.
+const keychainHelper = join(root, "scripts", "signing-keychain.sh");
+
+function runKeychain(
+  command: string,
+  env: Record<string, string> = {},
+  failOn = "",
+) {
+  const temp = createTempRoot("ward-keychain-");
+  const bin = join(temp, "bin");
+  const runner = join(temp, "runner");
+  spawnSync("mkdir", ["-p", bin, runner]);
+  const log = join(temp, "security.log");
+  writeFileSync(
+    join(bin, "security"),
+    `#!/bin/bash\necho "$@" >> "${log}"\necho "1 identity imported."\nif [ "$1" = "${failOn}" ]; then exit 1; fi\nexit 0\n`,
+    { mode: 0o755 },
+  );
+  const result = spawnSync("bash", [keychainHelper, command], {
+    encoding: "utf8",
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      RUNNER_TEMP: runner,
+      ...env,
+    },
+  });
+  return { ...result, runner, log };
+}
+
+const secretEnv = {
+  APPLE_CERT_P12_BASE64: Buffer.from("synthetic-p12-bytes").toString("base64"),
+  APPLE_CERT_PASSWORD: "synthetic-p12-password",
+};
+
+test("the keychain helper imports into a throwaway keychain, prints only the path, and leaves no decoded file", () => {
+  const r = runKeychain("import", secretEnv);
+  expect(r.status).toBe(0);
+  expect(r.stdout.trim()).toBe(
+    `KEYCHAIN_PATH=${r.runner}/ward-signing.keychain-db`,
+  );
+  expect(r.stdout + r.stderr).not.toContain("synthetic-p12");
+  expect(r.stdout + r.stderr).not.toContain(secretEnv.APPLE_CERT_P12_BASE64);
+  // `security` prints progress on stdout; none of it may reach the caller's
+  // GITHUB_ENV, where a line that is not NAME=value fails the step (N1).
+  expect(r.stdout).not.toContain("1 identity imported");
+  expect(readFileSync(keychainHelper, "utf8")).not.toMatch(
+    /set -[a-z]*x|xtrace/,
+  );
+  const log = readFileSync(r.log, "utf8");
+  expect(log).toContain("create-keychain");
+  expect(log).toContain("-T /usr/bin/codesign");
+  expect(log).toContain("set-key-partition-list");
+  expect(existsSync(join(r.runner, "ward-signing-cert.p12"))).toBe(false);
+});
+
+test("the keychain helper refuses without its credential variables and refuses an unknown command", () => {
+  const missing = runKeychain("import", {});
+  expect(missing.status).not.toBe(0);
+  const unknown = runKeychain("sign", secretEnv);
+  expect(unknown.status).toBe(2);
+});
+
+test("cleanup removes every decoded file and the keychain even after a failed import, and is safe when nothing ran", () => {
+  // An import that fails after the .p12 was decoded leaves it behind...
+  const failed = runKeychain("import", secretEnv, "import");
+  expect(failed.status).not.toBe(0);
+  expect(existsSync(join(failed.runner, "ward-signing-cert.p12"))).toBe(true);
+  writeFileSync(join(failed.runner, "ward-notary-key.p8"), "x");
+  writeFileSync(join(failed.runner, "ward-notary.zip"), "x");
+  // ...and cleanup, run against the same runner directory, removes it all.
+  const bin = join(failed.runner, "..", "bin");
+  const cleanup = spawnSync("bash", [keychainHelper, "cleanup"], {
+    encoding: "utf8",
+    env: { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: failed.runner },
+  });
+  expect(cleanup.status).toBe(0);
+  for (const file of [
+    "ward-signing-cert.p12",
+    "ward-notary-key.p8",
+    "ward-notary.zip",
+  ])
+    expect(existsSync(join(failed.runner, file))).toBe(false);
+  expect(readFileSync(failed.log, "utf8")).toContain("delete-keychain");
+  // Nothing ran at all: still exit 0.
+  expect(runKeychain("cleanup").status).toBe(0);
 });

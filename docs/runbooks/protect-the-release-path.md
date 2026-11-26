@@ -127,20 +127,34 @@ that on v0.1.0 and v0.1.1 themselves after enabling; it is not measured.
    `update` already refuses moving a tag, so no `non_fast_forward` rule is added: it is a branch
    rule, and a tag ruleset carrying it may be refused with HTTP 422.
 
-3. **Create the `release` environment limited to `v*` tags.** The release job names it. Without this
-   step GitHub creates it unprotected on first use, so do this before the next release.
-   **Add a required reviewer (recommended).** It is the one environment setting that puts a person
-   in front of a release: add `"reviewers": [{ "type": "User", "id": <your numeric id> }]` (from
-   `gh api users/<login> --jq .id`) to the first command's body. The environment binds only a job
+3. **Create the `release` environment limited to `v*` tags and the `main` branch.** The `sign` and
+   release jobs name it. Without this step GitHub creates it unprotected on first use, so do this
+   before the next release. DEC-301 (a3): one environment, targets `v*` and `main` (`main` is for
+   the signing rehearsal, a manual run that publishes nothing), required reviewer the operator,
+   administrator bypass off. The first command's body below carries
+   `can_admins_bypass: false` and the reviewer (the numeric id is the operator's own, from
+   `gh api user --jq .id`); run the read-back after it. The environment binds only a job
    that names it, which the workflow at the tagged commit decides, so it adds a click for the
    operator and is not a defence against someone who can edit the workflow.
 
    ```sh
-   gh api repos/opum-ai/ward-cli/environments/release --method PUT --input - <<'JSON'
-   { "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
+   reviewer_id="$(gh api user --jq .id)"
+   gh api repos/opum-ai/ward-cli/environments/release --method PUT --input - <<JSON
+   {
+     "can_admins_bypass": false,
+     "reviewers": [ { "type": "User", "id": ${reviewer_id} } ],
+     "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true }
+   }
    JSON
    gh api repos/opum-ai/ward-cli/environments/release/deployment-branch-policies \
      --method POST -f name='v*' -f type=tag
+   gh api repos/opum-ai/ward-cli/environments/release/deployment-branch-policies \
+     --method POST -f name=main -f type=branch
+   # Read back. This must print false and a required_reviewers rule naming the
+   # operator; anything else means the environment is not protected.
+   gh api repos/opum-ai/ward-cli/environments/release --jq '.can_admins_bypass, .protection_rules'
+   # And the targets: this must list v* (tag) and main (branch).
+   gh api repos/opum-ai/ward-cli/environments/release/deployment-branch-policies --jq '.branch_policies[]|{name,type}'
    ```
 
 4. **Immutable releases (decision).** Recommended: enable. The publish script already creates a

@@ -78,3 +78,38 @@ after publish, so `gh release edit --notes-file` (steps 4 and 6) should still
 work. That was read from GitHub's documentation, not measured on this
 repository's release; confirm it on the first immutable release before relying
 on it.
+
+## Developer ID signing and the rehearsal (WCLI-185)
+
+The release workflow's `sign` job re-signs the build job's ad-hoc artifact with the
+Developer ID identity (identifier `ai.opum.ward`), notarizes it and uploads
+`ward-darwin-arm64-signed`; verify, attest and release act on that artifact. It
+needs the operator's steps first (the certificate, the notarization key, the
+`release` environment and its secrets: the signing-path reference lists all nine).
+
+- **Rehearsal:** `gh workflow run release.yml --ref main`, then approve the
+  `release` deployment when the reviewer prompt appears. It signs and notarizes,
+  uploads the signed binary as a public run artifact, and publishes nothing.
+  Read the run before any tag: notarization `Accepted`, the designated
+  requirement names the team and `ai.opum.ward`, and the smoke step in the
+  `verify` job (the signed binary prints a version) passed without entitlements.
+  A dispatch from any other branch builds only: signing is main-only.
+  A passing `--version` is necessary but not sufficient: it never reaches JIT
+  tier-up, so a binary can pass it without `allow-jit` and still crash on a real
+  command under the hardened runtime. The operator's Mac run exercises real
+  commands (a synthetic vault, `ward --help` and an actual operation) before the
+  first tag.
+- **Certificate expiry date:** not recorded yet. The operator adds it here when
+  the certificate exists (operator step 2); a renewal is expected to keep the
+  team id and identifier, unmeasured.
+- **Release notes wording:** the notes' cdhash line and closing sentence still
+  say ad hoc. That is deliberately unchanged until the operator's Mac shows the
+  Keychain behaviour of a Developer ID build, and must be reworded (the notes
+  template, `scripts/release-metadata.mjs` and its tests) before the first
+  Developer ID release is described to users.
+  **Blocker on the first Developer ID tag:** nothing yet stops a tag from
+  publishing notes that say "ad-hoc signature" for a Developer ID binary (the
+  `CDHASH_LINE` pattern in `scripts/release-metadata.mjs` ties the wording). Do
+  not cut that tag until the wording is changed.
+  The README's keychain paragraph ("The binary is ad-hoc signed ... a new build
+  is a new identity") also becomes false at that tag; reword it with the notes.
