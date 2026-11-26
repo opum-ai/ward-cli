@@ -6,13 +6,20 @@
 //   <asset>     the Mac-signed ward-darwin-arm64 (after codesign --verify --strict)
 //   <notes-in>  the published notes body, e.g. from `gh release view <tag> --json body -q .body`
 //   <out-dir>   must exist; receives release-notes.md and ward-darwin-arm64.sha256
+// The signing wording is derived from `codesign -dvvv <asset>`: ad hoc keeps the
+// notes' ad-hoc line, a Developer ID signature rewrites it, and an unrecognised
+// signature or a notes/signature disagreement exits 1 (WCLI-186).
 // Exit 0 printing the two new values; exit 1 naming what was wrong.
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checksumFile, rewriteNotes } from "./release-metadata.mjs";
+import {
+  checksumFile,
+  rewriteNotes,
+  signatureFromCodesign,
+} from "./release-metadata.mjs";
 
 function fail(message) {
   console.error(`regenerate-release-metadata: ${message}`);
@@ -35,12 +42,19 @@ const cdhash = spawnSync("node", [join(here, "macho-cdhash.mjs"), asset], {
 });
 if (cdhash.status !== 0) fail(`macho-cdhash failed: ${cdhash.stderr.trim()}`);
 
+// The notes' signing wording comes from the signed file's own codesign output
+// (WCLI-186), so it cannot disagree with the signature it describes.
+const codesign = spawnSync("codesign", ["-dvvv", asset], { encoding: "utf8" });
+if (codesign.status !== 0)
+  fail(`codesign -dvvv failed: ${(codesign.stderr ?? "").trim()}`);
+
 let notes;
 try {
   notes = rewriteNotes(
     readFileSync(notesIn, "utf8"),
     sha256,
     cdhash.stdout.trim(),
+    signatureFromCodesign(`${codesign.stdout}\n${codesign.stderr}`),
   );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

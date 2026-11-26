@@ -91,8 +91,13 @@ needs the operator's steps first (the certificate, the notarization key, the
   `release` deployment when the reviewer prompt appears. It signs and notarizes,
   uploads the signed binary as a public run artifact, and publishes nothing.
   Read the run before any tag: notarization `Accepted`, the designated
-  requirement names the team and `ai.opum.ward`, and the smoke step in the
-  `verify` job (the signed binary prints a version) passed without entitlements.
+  requirement names the team and `ai.opum.ward` (and shows the Developer ID leaf
+  marker `certificate leaf[field.1.2.840.113635.100.6.1.13]`, which the check
+  does not pin because its position is unmeasured, so read it in the log), the
+  signed artifact's `release-notes.md` reads "Developer ID signature, team
+  ID, identifier ai.opum.ward" with no "ad-hoc" anywhere, and the smoke step
+  in the `verify` job (the signed binary prints a version) passed without
+  entitlements.
   A dispatch from any other branch builds only: signing is main-only.
   A passing `--version` is necessary but not sufficient: it never reaches JIT
   tier-up, so a binary can pass it without `allow-jit` and still crash on a real
@@ -102,14 +107,26 @@ needs the operator's steps first (the certificate, the notarization key, the
 - **Certificate expiry date:** not recorded yet. The operator adds it here when
   the certificate exists (operator step 2); a renewal is expected to keep the
   team id and identifier, unmeasured.
-- **Release notes wording:** the notes' cdhash line and closing sentence still
-  say ad hoc. That is deliberately unchanged until the operator's Mac shows the
-  Keychain behaviour of a Developer ID build, and must be reworded (the notes
-  template, `scripts/release-metadata.mjs` and its tests) before the first
-  Developer ID release is described to users.
-  **Blocker on the first Developer ID tag:** nothing yet stops a tag from
-  publishing notes that say "ad-hoc signature" for a Developer ID binary (the
-  `CDHASH_LINE` pattern in `scripts/release-metadata.mjs` ties the wording). Do
-  not cut that tag until the wording is changed.
-  The README's keychain paragraph ("The binary is ad-hoc signed ... a new build
-  is a new identity") also becomes false at that tag; reword it with the notes.
+- **Release notes wording (WCLI-186):** the sign job derives the notes' cdhash
+  line and closing sentence from the signed file's own `codesign -dvvv` output
+  (`scripts/regenerate-release-metadata.mjs`). A Developer ID signature words the
+  line "Developer ID signature, team ID, identifier ai.opum.ward" and drops the
+  "ad-hoc" sentence; a notes and signature disagreement, or a signature that is
+  neither ad hoc nor Developer ID, fails the sign job and so the tag. The
+  Keychain re-approval sentence is deliberately not claimed for a Developer ID
+  build until the operator's Mac measures it. **Still open before the first
+  Developer ID release is described to users:** the README's keychain paragraph
+  ("The binary is ad-hoc signed ... a new build is a new identity") becomes false
+  and is reworded with that measurement. `scripts/verify-published-release.sh`
+  accepts either cdhash wording and compares the cdhash and bytes; it does not
+  compare the wording with the signature (the sign job does).
+- **More things the rehearsal's log must show** (each unmeasured; each of these
+  fails closed and burns the rehearsal if wrong): real `codesign -d -r-` may
+  print the requirement with a leading `# designated => ` rather than
+  `designated => `, and the step reads only the latter. The behavioural test of
+  the requirement step runs in the C locale (its environment carries no `LANG`
+  or `LC_*`); the macOS runner's locale is not exercised, so read the step's log
+  rather than trusting the test for locale-dependent output. A failure of the
+  keychain helper's `set-key-partition-list` call stops the job with the message
+  "set-key-partition-list failed" and none of the command's own output, which is
+  silenced because it dumps key attributes.

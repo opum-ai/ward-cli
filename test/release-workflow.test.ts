@@ -1225,6 +1225,9 @@ test("sign signs with the identifier ai.opum.ward, hardened runtime and a timest
   expect(notarize).not.toContain("out/ward-notary");
 });
 
+// This runs in the C locale (the env below carries no LANG or LC_*); the macOS
+// runner's own locale is not exercised here (WCLI-186, N7), so the rehearsal
+// reads the step's log.
 // The requirement step's own script, run with a fake `codesign` (WCLI-185
 // review round 2): every verdict below comes from the shell, not a substring.
 const TEAM = "ABCDE12345";
@@ -1256,47 +1259,112 @@ function runRequirementStep(requirement: string, team: string | undefined) {
 test("the requirement step accepts exactly the team's Developer ID requirement and nothing looser", () => {
   const ok = (req: string, team: string | undefined = TEAM) =>
     runRequirementStep(req, team).status === 0;
-  // Positive controls: bare and quoted forms of the right team pass.
+  const DIGIT_TEAM = "1BCDE2345X";
+  // Positive controls: bare and quoted forms, and a digit-leading team in
+  // quotes, the way codesign prints it.
   expect(ok(goodRequirement(TEAM))).toBe(true);
   expect(ok(goodRequirement(`"${TEAM}"`))).toBe(true);
-  // Rejections.
-  expect(ok(goodRequirement("ZZZZZ99999"))).toBe(false);
-  expect(ok(goodRequirement(`${TEAM}XX`))).toBe(false);
-  expect(ok(goodRequirement(`"${TEAM}"*`))).toBe(false);
-  expect(ok(goodRequirement(`${TEAM} and anchor apple`))).toBe(false);
-  expect(
-    ok(goodRequirement(TEAM).replace(" and anchor apple generic", "")),
-  ).toBe(false);
-  expect(
-    ok(goodRequirement(TEAM).replace(idClause, 'identifier "other"')),
-  ).toBe(false);
+  expect(ok(goodRequirement(`"${DIGIT_TEAM}"`), DIGIT_TEAM)).toBe(true);
+  // Every rejection, in the bare form and again in the quoted form, so a loose
+  // alternative in either arm turns this red (WCLI-186, N1).
+  for (const wrap of [(t: string) => t, (t: string) => `"${t}"`]) {
+    const req = (ou: string) => goodRequirement(wrap(ou));
+    expect(ok(req("ZZZZZ99999"))).toBe(false);
+    expect(ok(req(`${TEAM}XX`))).toBe(false);
+    expect(ok(`${req(TEAM)}*`)).toBe(false);
+    expect(ok(`${req(TEAM)} and anchor apple`)).toBe(false);
+    expect(ok(req(TEAM).replace(" and anchor apple generic", ""))).toBe(false);
+    expect(ok(req(TEAM).replace(idClause, 'identifier "other"'))).toBe(false);
+    // A requirement that contains a cdhash clause but otherwise passes the
+    // first case reaches the second block alone (N2).
+    const cdhashed = req(TEAM).replace(
+      " and anchor apple generic",
+      ' and anchor apple generic and cdhash H"abc"',
+    );
+    const r = runRequirementStep(cdhashed, TEAM);
+    expect(r.status).toBe(1);
+    expect(r.stdout + r.stderr).toContain("bare cdhash");
+  }
   expect(ok(`cdhash H"abc"`)).toBe(false);
-  expect(ok(`${goodRequirement(TEAM)} and cdhash H"abc"`)).toBe(false);
   // The team id itself: unset, empty, short, long, lowercase, multi-line.
-  expect(ok(goodRequirement(""), undefined)).toBe(false);
   expect(ok(goodRequirement(""), "")).toBe(false);
-  for (const bad of ["ABCDE1234", "ABCDE123456", "abcde12345", `${TEAM}\n::x`])
-    expect(ok(goodRequirement(bad), bad)).toBe(false);
+  for (const bad of [
+    "ABCDE1234",
+    "ABCDE123456",
+    "abcde12345",
+    `${TEAM}\n::x`,
+  ]) {
+    const r = runRequirementStep(goodRequirement(bad), bad);
+    expect(r.status).not.toBe(0);
+    // Nothing a variable carried may become a workflow command of its own.
+    for (const line of (r.stdout + r.stderr).split("\n"))
+      if (line.startsWith("::"))
+        expect(line.startsWith("::error::")).toBe(true);
+  }
 });
 
-test("the requirement step's case pattern and shape check are pinned verbatim", () => {
+test("the requirement step's case pattern is one exact line and its shape block is pinned verbatim", () => {
   const script = runOf(
     stepWith("The designated requirement names the team and the identifier") ??
       {},
   );
-  expect(script).toContain(
+  // Line-exact, not a substring: an arm added above it, or a loose alternative
+  // prepended to it, changes the line (N1).
+  const lines = script.split("\n").map((l) => l.trim());
+  expect(
+    lines.filter((l) => l.endsWith(") ;;") && l.includes("subject.OU")),
+  ).toEqual([
     `*'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \${APPLE_TEAM_ID}" | *'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \\"\${APPLE_TEAM_ID}\\"") ;;`,
-  );
+  ]);
+  // No other case arm exists in the step: the arms are these three, in order.
+  expect(
+    lines
+      .filter((l) => l.startsWith("*") && /\)( ;;)?$/.test(l))
+      .map((l) => (l.includes("subject.OU") ? "team" : l)),
+  ).toEqual(["team", "*)", "*cdhash*)"]);
   expect(script).toContain(
     'if ! [[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]; then\n  echo "::error::APPLE_TEAM_ID is not a 10-character team id"\n  exit 1\nfi',
   );
 });
 
+test("the regenerate step's run text is pinned", () => {
+  expect(
+    runOf(
+      stepWith(
+        "Regenerate the checksum and the notes' hashes from the signed bytes",
+      ) ?? {},
+    ),
+  ).toBe(`set -euo pipefail
+signed="$(codesign -dvvv out/ward-darwin-arm64 2>&1 | sed -n 's/^CDHash=//p')"
+computed="$(node scripts/macho-cdhash.mjs out/ward-darwin-arm64)"
+echo "codesign CDHash=\${signed} macho-cdhash=\${computed}"
+if [ -z "$signed" ] || [ "$signed" != "$computed" ]; then
+  echo "::error::codesign and scripts/macho-cdhash.mjs disagree on the cdhash"
+  exit 1
+fi
+node scripts/regenerate-release-metadata.mjs out/ward-darwin-arm64 in/release-notes.md out
+`);
+});
+
 test("no sign step traces, and the import step is exactly the helper call", () => {
   for (const step of jobSteps("sign")) {
-    expect(runOf(step)).not.toMatch(/set -[a-z]*x|xtrace|bash -[a-z]*x/);
-    expect(String(step.shell ?? "")).not.toMatch(/-[a-z]*x/);
+    expect(runOf(step)).not.toMatch(
+      /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/,
+    );
+    expect(String(step.shell ?? "")).not.toMatch(/-[A-Za-z]*x/);
   }
+  // Positive controls: the scans catch the spellings they exist for.
+  const traceScan =
+    /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/;
+  for (const traced of [
+    "set -Eux",
+    "set -o pipefail -x",
+    "set -euxo pipefail",
+    "bash -x scripts/signing-keychain.sh import",
+  ])
+    expect(traceScan.test(traced)).toBe(true);
+  expect(/-[A-Za-z]*x/.test("-Eux")).toBe(true);
+  expect(traceScan.test("set -euo pipefail")).toBe(false);
   expect(
     runOf(
       stepWith("Import the signing certificate into a temporary keychain") ??
@@ -1407,7 +1475,7 @@ function runKeychain(
   const log = join(temp, "security.log");
   writeFileSync(
     join(bin, "security"),
-    `#!/bin/bash\necho "$@" >> "${log}"\necho "1 identity imported."\nif [ "$1" = "${failOn}" ]; then exit 1; fi\nexit 0\n`,
+    `#!/bin/bash\necho "$@" >> "${log}"\necho "1 identity imported."\nif [ "$1" = "set-key-partition-list" ]; then echo "PARTITION-DUMP"; echo "PARTITION-DUMP" >&2; fi\nif [ "$1" = "${failOn}" ]; then exit 1; fi\nexit 0\n`,
     { mode: 0o755 },
   );
   const result = spawnSync("bash", [keychainHelper, command], {
@@ -1437,14 +1505,23 @@ test("the keychain helper imports into a throwaway keychain, prints only the pat
   // `security` prints progress on stdout; none of it may reach the caller's
   // GITHUB_ENV, where a line that is not NAME=value fails the step (N1).
   expect(r.stdout).not.toContain("1 identity imported");
+  // The key-attribute dump of set-key-partition-list reaches neither stream (N4).
+  expect(r.stdout + r.stderr).not.toContain("PARTITION-DUMP");
   expect(readFileSync(keychainHelper, "utf8")).not.toMatch(
-    /set -[a-z]*x|xtrace/,
+    /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b)|xtrace|bash\s+-[A-Za-z]*x/,
   );
   const log = readFileSync(r.log, "utf8");
   expect(log).toContain("create-keychain");
   expect(log).toContain("-T /usr/bin/codesign");
   expect(log).toContain("set-key-partition-list");
   expect(existsSync(join(r.runner, "ward-signing-cert.p12"))).toBe(false);
+});
+
+test("a failed set-key-partition-list stops the import with a diagnostic and none of its own output", () => {
+  const r = runKeychain("import", secretEnv, "set-key-partition-list");
+  expect(r.status).not.toBe(0);
+  expect(r.stderr).toContain("set-key-partition-list failed");
+  expect(r.stdout + r.stderr).not.toContain("PARTITION-DUMP");
 });
 
 test("the keychain helper refuses without its credential variables and refuses an unknown command", () => {
