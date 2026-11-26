@@ -8,10 +8,61 @@
 // the notes.
 
 const SHA256_LINE = /^- sha256 ward-darwin-arm64: [0-9a-f]{64}$/;
+// The cdhash line names how the bytes are signed, and the wording must agree
+// with the file's own signature (WCLI-186, DEC-301 (a4) item 2). Ad-hoc is the
+// build job's wording; the sign job rewrites it to Developer ID.
+const ADHOC_LABEL = "ad-hoc signature, macOS keychain trust follows it";
 const CDHASH_LINE =
-  /^- cdhash \(ad-hoc signature, macOS keychain trust follows it\): [0-9a-f]{40}$/;
+  /^- cdhash \((?:ad-hoc signature, macOS keychain trust follows it|Developer ID signature, team [A-Z0-9]{10}, identifier ai\.opum\.ward)\): [0-9a-f]{40}$/;
+export const REAPPROVAL_LINE =
+  "Expect one keychain re-approval per upgrade; the binary is ad-hoc signed.";
 
-export function rewriteNotes(notes, sha256, cdhash) {
+// Reads `codesign -dvvv` output (it goes to stderr) and names the signature:
+// { kind: "adhoc" } or { kind: "developer-id", team }. Anything else throws, so
+// an unrecognised signature can never pick a wording.
+export function signatureFromCodesign(output) {
+  if (/^Signature=adhoc$/m.test(output)) return { kind: "adhoc" };
+  const team = /^TeamIdentifier=([A-Z0-9]{10})$/m.exec(output)?.[1];
+  if (
+    team !== undefined &&
+    /^Authority=Developer ID Application: .+/m.test(output) &&
+    /^Identifier=ai\.opum\.ward$/m.test(output)
+  )
+    return { kind: "developer-id", team };
+  throw new Error(
+    "the signature is neither ad hoc nor a Developer ID signature with identifier ai.opum.ward",
+  );
+}
+
+function cdhashLine(signature, cdhash) {
+  const label =
+    signature.kind === "adhoc"
+      ? ADHOC_LABEL
+      : `Developer ID signature, team ${signature.team}, identifier ai.opum.ward`;
+  return `- cdhash (${label}): ${cdhash}`;
+}
+
+// Fails when the notes' signing wording disagrees with the signature: a
+// Developer ID binary must never be described as ad hoc, nor the reverse.
+export function assertNotesMatchSignature(notes, signature) {
+  const adhoc = /ad[- ]hoc/i.test(notes);
+  const developerId = /Developer ID/.test(notes);
+  if (signature.kind === "developer-id" && (adhoc || !developerId))
+    throw new Error(
+      "the release notes and the signature disagree: the binary is Developer ID signed but the notes say otherwise",
+    );
+  if (signature.kind === "adhoc" && developerId)
+    throw new Error(
+      "the release notes and the signature disagree: the binary is ad-hoc signed but the notes say Developer ID",
+    );
+}
+
+export function rewriteNotes(notes, sha256, cdhash, signature) {
+  if (
+    signature === undefined ||
+    !["adhoc", "developer-id"].includes(signature.kind)
+  )
+    throw new Error("a signature is required to word the notes");
   if (!/^[0-9a-f]{64}$/.test(sha256))
     throw new Error("sha256 is not 64 hex digits");
   if (!/^[0-9a-f]{40}$/.test(cdhash))
@@ -25,8 +76,13 @@ export function rewriteNotes(notes, sha256, cdhash) {
     }
     if (CDHASH_LINE.test(line)) {
       seen.cdhash++;
-      return `- cdhash (ad-hoc signature, macOS keychain trust follows it): ${cdhash}`;
+      return cdhashLine(signature, cdhash);
     }
+    // The re-approval claim is held until the operator's Mac measures it
+    // (DEC-301 (a4)); for a Developer ID build only the false "ad hoc" fact
+    // goes, and nothing is claimed about the Keychain.
+    if (line === REAPPROVAL_LINE && signature.kind === "developer-id")
+      return `This build is signed with a Developer ID certificate (team ${signature.team}); how the keychain treats it across builds is not yet measured.`;
     return line;
   });
   if (seen.sha256 !== 1 || seen.cdhash !== 1) {
@@ -34,7 +90,9 @@ export function rewriteNotes(notes, sha256, cdhash) {
       `expected exactly one sha256 line and one cdhash line in the notes, found ${seen.sha256} and ${seen.cdhash}`,
     );
   }
-  return out.join("\n");
+  const result = out.join("\n");
+  assertNotesMatchSignature(result, signature);
+  return result;
 }
 
 export function checksumFile(sha256, name) {

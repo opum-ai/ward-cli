@@ -40,7 +40,7 @@ body="$(gh release view "$tag" -R "$repo" --json body -q .body)" ||
 # Exactly one line of each, with the exact prefix and hex length the workflow
 # writes. Anything else, including a CRLF or stray space, refuses.
 sha_pattern='^- sha256 ward-darwin-arm64: [0-9a-f]{64}$'
-cdhash_pattern='^- cdhash \(ad-hoc signature, macOS keychain trust follows it\): [0-9a-f]{40}$'
+cdhash_pattern='^- cdhash \((ad-hoc signature, macOS keychain trust follows it|Developer ID signature, team [A-Z0-9]{10}, identifier ai\.opum\.ward)\): [0-9a-f]{40}$'
 [ "$(printf '%s\n' "$body" | grep -cE "$sha_pattern")" = "1" ] ||
   die "the published notes do not carry exactly one sha256 line"
 [ "$(printf '%s\n' "$body" | grep -cE "$cdhash_pattern")" = "1" ] ||

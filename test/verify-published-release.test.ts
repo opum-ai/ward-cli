@@ -185,6 +185,24 @@ test("an empty checksum file fails", () => {
   );
 });
 
+test("a Developer ID cdhash line passes, and an unknown label still fails (WCLI-186)", () => {
+  const withLabel = (label: string) => (s: string, h: string) =>
+    [`- sha256 ward-darwin-arm64: ${s}`, `- cdhash (${label}): ${h}`].join(
+      "\n",
+    );
+  expect(
+    run({
+      body: withLabel(
+        "Developer ID signature, team ABCDE12345, identifier ai.opum.ward",
+      ),
+    }).status,
+  ).toBe(0);
+  expectFail(
+    run({ body: withLabel("Developer ID signature, team abcde12345") }),
+    "exactly one cdhash line",
+  );
+});
+
 test("notes whose sha256 line is stale fail even when asset and checksum agree", () => {
   expectFail(
     run({

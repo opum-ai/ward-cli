@@ -11,7 +11,13 @@ import {
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
-import { checksumFile, rewriteNotes } from "../scripts/release-metadata.mjs";
+import {
+  assertNotesMatchSignature,
+  checksumFile,
+  REAPPROVAL_LINE,
+  rewriteNotes,
+  signatureFromCodesign,
+} from "../scripts/release-metadata.mjs";
 import { createTempRoot } from "./support/temp-root.ts";
 
 const root = join(import.meta.dir, "..");
@@ -21,6 +27,9 @@ const OLD_SHA = "a".repeat(64);
 const OLD_CDHASH = "b".repeat(40);
 const NEW_SHA = "c".repeat(64);
 const NEW_CDHASH = "d".repeat(40);
+
+const ADHOC = { kind: "adhoc" };
+const DEVID = { kind: "developer-id", team: "ABCDE12345" };
 
 const notes = [
   "Ward v0.1.1, local developer preview, macOS on Apple silicon.",
@@ -33,7 +42,7 @@ const notes = [
 ].join("\n");
 
 test("both byte-naming lines are rewritten and nothing else changes", () => {
-  const out = rewriteNotes(notes, NEW_SHA, NEW_CDHASH);
+  const out = rewriteNotes(notes, NEW_SHA, NEW_CDHASH, ADHOC);
   expect(out).toBe(
     notes.replace(OLD_SHA, NEW_SHA).replace(OLD_CDHASH, NEW_CDHASH),
   );
@@ -43,19 +52,23 @@ test("both byte-naming lines are rewritten and nothing else changes", () => {
 
 test("a notes body without exactly one of each line is refused", () => {
   const noSha = notes.replace(`- sha256 ward-darwin-arm64: ${OLD_SHA}\n`, "");
-  expect(() => rewriteNotes(noSha, NEW_SHA, NEW_CDHASH)).toThrow(
+  expect(() => rewriteNotes(noSha, NEW_SHA, NEW_CDHASH, ADHOC)).toThrow(
     "found 0 and 1",
   );
   const twice = `${notes}\n- sha256 ward-darwin-arm64: ${OLD_SHA}`;
-  expect(() => rewriteNotes(twice, NEW_SHA, NEW_CDHASH)).toThrow(
+  expect(() => rewriteNotes(twice, NEW_SHA, NEW_CDHASH, ADHOC)).toThrow(
     "found 2 and 1",
   );
-  expect(() => rewriteNotes("", NEW_SHA, NEW_CDHASH)).toThrow("found 0 and 0");
+  expect(() => rewriteNotes("", NEW_SHA, NEW_CDHASH, ADHOC)).toThrow(
+    "found 0 and 0",
+  );
 });
 
 test("a value that is not the right length of hex is refused", () => {
-  expect(() => rewriteNotes(notes, "short", NEW_CDHASH)).toThrow("sha256");
-  expect(() => rewriteNotes(notes, NEW_SHA, NEW_SHA)).toThrow("cdhash");
+  expect(() => rewriteNotes(notes, "short", NEW_CDHASH, ADHOC)).toThrow(
+    "sha256",
+  );
+  expect(() => rewriteNotes(notes, NEW_SHA, NEW_SHA, ADHOC)).toThrow("cdhash");
 });
 
 test("the checksum file is the sha256sum format the workflow writes", () => {
@@ -193,3 +206,126 @@ test("an asset under another name is refused before anything is written", () => 
   expect(r.stderr).toContain("must be named ward-darwin-arm64");
   expect(existsSync(join(out, "release-notes.md"))).toBe(false);
 });
+
+// WCLI-186 (DEC-301 (a4) item 2): the notes' signing wording follows the signed
+// file's own codesign output, and a disagreement fails the tag.
+const ADHOC_OUTPUT =
+  "Identifier=ward-darwin-arm64\nSignature=adhoc\nTeamIdentifier=not set\n";
+const DEVID_OUTPUT =
+  "Identifier=ai.opum.ward\nAuthority=Developer ID Application: Someone (ABCDE12345)\nAuthority=Developer ID Certification Authority\nTeamIdentifier=ABCDE12345\n";
+const closing =
+  "Expect one keychain re-approval per upgrade; the binary is ad-hoc signed.";
+const fullNotes = `${notes}\n${closing}`;
+
+test("the build job's closing sentence is the one the rewrite replaces", () => {
+  const workflow = readFileSync(
+    join(root, ".github", "workflows", "release.yml"),
+    "utf8",
+  );
+  expect(workflow).toContain(`echo "${REAPPROVAL_LINE}"`);
+});
+
+test("codesign output names the signature, and anything else is refused", () => {
+  expect(signatureFromCodesign(ADHOC_OUTPUT)).toEqual(ADHOC);
+  expect(signatureFromCodesign(DEVID_OUTPUT)).toEqual(DEVID);
+  for (const bad of [
+    "",
+    "Signature=adhoc2\n",
+    DEVID_OUTPUT.replace("ai.opum.ward", "other"),
+    DEVID_OUTPUT.replace("ABCDE12345\n", "abcde12345\n"),
+    DEVID_OUTPUT.replace("Developer ID Application", "Apple Development"),
+  ])
+    expect(() => signatureFromCodesign(bad)).toThrow("neither ad hoc");
+});
+
+test("a Developer ID signature rewrites the cdhash line and the ad-hoc closing sentence, an ad-hoc one keeps both", () => {
+  const dev = rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH, DEVID);
+  expect(dev).toContain(
+    `- cdhash (Developer ID signature, team ABCDE12345, identifier ai.opum.ward): ${NEW_CDHASH}`,
+  );
+  expect(dev).not.toMatch(/ad[- ]hoc/i);
+  // The Keychain re-approval claim is held: nothing is asserted about it.
+  expect(dev).not.toContain("re-approval");
+  const adhoc = rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH, ADHOC);
+  expect(adhoc).toContain(closing);
+  expect(adhoc).not.toContain("Developer ID");
+});
+
+test("the guard fails on a notes and signature disagreement, both ways", () => {
+  expect(() => assertNotesMatchSignature(fullNotes, DEVID)).toThrow("disagree");
+  expect(() =>
+    assertNotesMatchSignature("a Developer ID signature line", ADHOC),
+  ).toThrow("disagree");
+  // A stray ad-hoc claim the rewrite does not know still fails a Developer ID tag.
+  const stray = `${fullNotes}\nThe binary is ad hoc.`;
+  expect(() => rewriteNotes(stray, NEW_SHA, NEW_CDHASH, DEVID)).toThrow(
+    "disagree",
+  );
+  // Positive controls.
+  expect(() =>
+    assertNotesMatchSignature(
+      rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH, DEVID),
+      DEVID,
+    ),
+  ).not.toThrow();
+  expect(() => assertNotesMatchSignature(fullNotes, ADHOC)).not.toThrow();
+  expect(() => rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH)).toThrow(
+    "signature is required",
+  );
+});
+
+test.skipIf(process.platform !== "darwin")(
+  "the script takes its wording from the codesign output it is given, and refuses a mismatch",
+  () => {
+    const work = join(dir, "devid");
+    const bin = join(work, "bin");
+    mkdirSync(bin, { recursive: true });
+    const entry = join(work, "hello.ts");
+    const asset = join(work, "ward-darwin-arm64");
+    writeFileSync(entry, "console.log('devid');\n");
+    expect(
+      spawnSync("bun", ["build", "--compile", entry, "--outfile", asset])
+        .status,
+    ).toBe(0);
+    const fake = (output: string) =>
+      writeFileSync(
+        join(bin, "codesign"),
+        `#!/bin/bash\ncat >&2 <<'EOF'\n${output}EOF\n`,
+        { mode: 0o755 },
+      );
+    const run = (name: string, text: string) => {
+      const notesIn = join(work, `${name}.md`);
+      writeFileSync(notesIn, text);
+      const out = join(work, name);
+      mkdirSync(out);
+      const r = spawnSync(
+        "node",
+        [
+          join(root, "scripts", "regenerate-release-metadata.mjs"),
+          asset,
+          notesIn,
+          out,
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        },
+      );
+      return { r, out };
+    };
+    fake(DEVID_OUTPUT);
+    const ok = run("ok", fullNotes);
+    expect(ok.r.status).toBe(0);
+    const written = readFileSync(join(ok.out, "release-notes.md"), "utf8");
+    expect(written).toContain("Developer ID signature, team ABCDE12345");
+    expect(written).not.toMatch(/ad[- ]hoc/i);
+    const stray = run("stray", `${fullNotes}\nbuilt ad hoc`);
+    expect(stray.r.status).toBe(1);
+    expect(stray.r.stderr).toContain("disagree");
+    expect(existsSync(join(stray.out, "release-notes.md"))).toBe(false);
+    fake("Identifier=x\nSignature=unknown\n");
+    const unknown = run("unknown", fullNotes);
+    expect(unknown.r.status).toBe(1);
+    expect(existsSync(join(unknown.out, "release-notes.md"))).toBe(false);
+  },
+);
