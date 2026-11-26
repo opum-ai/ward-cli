@@ -111,3 +111,5 @@ needs the operator's steps first (the certificate, the notarization key, the
   publishing notes that say "ad-hoc signature" for a Developer ID binary (the
   `CDHASH_LINE` pattern in `scripts/release-metadata.mjs` ties the wording). Do
   not cut that tag until the wording is changed.
+  The README's keychain paragraph ("The binary is ad-hoc signed ... a new build
+  is a new identity") also becomes false at that tag; reword it with the notes.

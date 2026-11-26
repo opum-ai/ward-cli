@@ -275,7 +275,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${APPLE_TEAM_ID:?the APPLE_TEAM_ID environment variable is not set}"
-          if ! printf '%s' "$APPLE_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$'; then
+          if ! [[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]; then
             echo "::error::APPLE_TEAM_ID is not a 10-character team id"
             exit 1
           fi
@@ -433,13 +433,13 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
-    # The operator can attach a deployment-tag policy limited to v* and a
-    # required reviewer to this environment
+    # DEC-301 (a3): one environment, deployment targets v* and main, the
+    # operator as required reviewer, administrator bypass off
     # (docs/runbooks/protect-the-release-path.md). It binds only a job that
     # names it, and this file is the tagged commit's own, so it is a second
-    # lock for the operator's click, not a defence against a writer. The job
-    # still runs without one, because GitHub creates an unprotected
-    # environment on first use.
+    # lock for the operator's click, not a defence against a writer. Until the
+    # operator creates it with that protection, GitHub creates an unprotected
+    # environment on first use, so create it before the first tag.
     environment: release
     # The only write permission in this workflow: it creates the Release.
     permissions:

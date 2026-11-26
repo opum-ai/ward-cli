@@ -1206,7 +1206,7 @@ test("sign signs with the identifier ai.opum.ward, hardened runtime and a timest
   // The team id is required, shaped, and matched whole as the last clause
   // (WCLI-185 review R1): an unset variable must not pass any team.
   expect(requirement).toContain('"${APPLE_TEAM_ID:?');
-  expect(requirement).toContain("grep -Eq '^[A-Z0-9]{10}$'");
+  expect(requirement).toContain("[[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]");
   expect(requirement).toContain("'anchor apple generic'");
   expect(requirement).toContain(
     '"certificate leaf[subject.OU] = ${APPLE_TEAM_ID}" |',
@@ -1223,6 +1223,86 @@ test("sign signs with the identifier ai.opum.ward, hardened runtime and a timest
   // The credential files live under RUNNER_TEMP, never in the upload path.
   expect(notarize).toContain("${RUNNER_TEMP}/ward-notary-key.p8");
   expect(notarize).not.toContain("out/ward-notary");
+});
+
+// The requirement step's own script, run with a fake `codesign` (WCLI-185
+// review round 2): every verdict below comes from the shell, not a substring.
+const TEAM = "ABCDE12345";
+const idClause = 'identifier "ai.opum.ward"';
+const goodRequirement = (ou: string) =>
+  `${idClause} and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = ${ou}`;
+function runRequirementStep(requirement: string, team: string | undefined) {
+  const temp = createTempRoot("ward-requirement-");
+  const bin = join(temp, "bin");
+  spawnSync("mkdir", ["-p", bin, join(temp, "out")]);
+  writeFileSync(
+    join(bin, "codesign"),
+    `#!/bin/bash\necho 'designated => ${requirement.replace(/'/g, "'\\''")}' >&2\n`,
+    { mode: 0o755 },
+  );
+  const script = runOf(
+    stepWith("The designated requirement names the team and the identifier") ??
+      {},
+  );
+  const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}` };
+  if (team !== undefined) env.APPLE_TEAM_ID = team;
+  return spawnSync("bash", ["-c", script], {
+    encoding: "utf8",
+    env,
+    cwd: temp,
+  });
+}
+
+test("the requirement step accepts exactly the team's Developer ID requirement and nothing looser", () => {
+  const ok = (req: string, team: string | undefined = TEAM) =>
+    runRequirementStep(req, team).status === 0;
+  // Positive controls: bare and quoted forms of the right team pass.
+  expect(ok(goodRequirement(TEAM))).toBe(true);
+  expect(ok(goodRequirement(`"${TEAM}"`))).toBe(true);
+  // Rejections.
+  expect(ok(goodRequirement("ZZZZZ99999"))).toBe(false);
+  expect(ok(goodRequirement(`${TEAM}XX`))).toBe(false);
+  expect(ok(goodRequirement(`"${TEAM}"*`))).toBe(false);
+  expect(ok(goodRequirement(`${TEAM} and anchor apple`))).toBe(false);
+  expect(
+    ok(goodRequirement(TEAM).replace(" and anchor apple generic", "")),
+  ).toBe(false);
+  expect(
+    ok(goodRequirement(TEAM).replace(idClause, 'identifier "other"')),
+  ).toBe(false);
+  expect(ok(`cdhash H"abc"`)).toBe(false);
+  expect(ok(`${goodRequirement(TEAM)} and cdhash H"abc"`)).toBe(false);
+  // The team id itself: unset, empty, short, long, lowercase, multi-line.
+  expect(ok(goodRequirement(""), undefined)).toBe(false);
+  expect(ok(goodRequirement(""), "")).toBe(false);
+  for (const bad of ["ABCDE1234", "ABCDE123456", "abcde12345", `${TEAM}\n::x`])
+    expect(ok(goodRequirement(bad), bad)).toBe(false);
+});
+
+test("the requirement step's case pattern and shape check are pinned verbatim", () => {
+  const script = runOf(
+    stepWith("The designated requirement names the team and the identifier") ??
+      {},
+  );
+  expect(script).toContain(
+    `*'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \${APPLE_TEAM_ID}" | *'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \\"\${APPLE_TEAM_ID}\\"") ;;`,
+  );
+  expect(script).toContain(
+    'if ! [[ $APPLE_TEAM_ID =~ ^[A-Z0-9]{10}$ ]]; then\n  echo "::error::APPLE_TEAM_ID is not a 10-character team id"\n  exit 1\nfi',
+  );
+});
+
+test("no sign step traces, and the import step is exactly the helper call", () => {
+  for (const step of jobSteps("sign")) {
+    expect(runOf(step)).not.toMatch(/set -[a-z]*x|xtrace|bash -[a-z]*x/);
+    expect(String(step.shell ?? "")).not.toMatch(/-[a-z]*x/);
+  }
+  expect(
+    runOf(
+      stepWith("Import the signing certificate into a temporary keychain") ??
+        {},
+    ).trim(),
+  ).toBe('bash scripts/signing-keychain.sh import >> "$GITHUB_ENV"');
 });
 
 test("sign's job key set, step names and each step's key set are exact", () => {
