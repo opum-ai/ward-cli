@@ -17,6 +17,12 @@
 # import APPLE_CERT_P12_BASE64 and APPLE_CERT_PASSWORD. Nothing here sets -x.
 set -euo pipefail
 
+# The caller appends this script's stdout to GITHUB_ENV, where any line that is
+# not NAME=value fails the step. `security` prints progress ("1 identity
+# imported."), so every call sends its stdout to stderr; only the one KEYCHAIN_PATH
+# line below reaches stdout.
+security() { command security "$@" >&2; }
+
 : "${RUNNER_TEMP:?RUNNER_TEMP must name a directory outside the upload paths}"
 keychain="${RUNNER_TEMP}/ward-signing.keychain-db"
 p12="${RUNNER_TEMP}/ward-signing-cert.p12"
@@ -31,7 +37,7 @@ case "${1:-}" in
     security set-keychain-settings -lut 3600 "$keychain"
     security unlock-keychain -p "$password" "$keychain"
     security import "$p12" -k "$keychain" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
-    security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+    security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
     # codesign finds the identity through the search list.
     security list-keychains -d user -s "$keychain" login.keychain-db
     rm -f "$p12"

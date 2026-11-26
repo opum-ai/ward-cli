@@ -274,12 +274,19 @@ jobs:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          : "${APPLE_TEAM_ID:?the APPLE_TEAM_ID environment variable is not set}"
+          if ! printf '%s' "$APPLE_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$'; then
+            echo "::error::APPLE_TEAM_ID is not a 10-character team id"
+            exit 1
+          fi
           requirement="$(codesign -d -r- out/ward-darwin-arm64 2>&1 | sed -n 's/^designated => //p')"
           echo "designated requirement: ${requirement}"
+          # The team id is the last clause and is matched whole, bare or quoted
+          # (codesign quotes a value that starts with a digit).
           case "$requirement" in
-            *'identifier "ai.opum.ward"'*"certificate leaf[subject.OU] = ${APPLE_TEAM_ID}"*) ;;
+            *'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = ${APPLE_TEAM_ID}" | *'identifier "ai.opum.ward"'*'anchor apple generic'*"certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"") ;;
             *)
-              echo "::error::the designated requirement does not name identifier ai.opum.ward and team ${APPLE_TEAM_ID}"
+              echo "::error::the designated requirement does not name identifier ai.opum.ward, anchor apple generic and team ${APPLE_TEAM_ID} as its last clause"
               exit 1
               ;;
           esac
@@ -299,13 +306,16 @@ jobs:
           key="${RUNNER_TEMP}/ward-notary-key.p8"
           (umask 077; printf '%s' "$ASC_API_KEY_P8" > "$key")
           ditto -c -k out/ward-darwin-arm64 "${RUNNER_TEMP}/ward-notary.zip"
-          xcrun notarytool submit "${RUNNER_TEMP}/ward-notary.zip" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --output-format json > "${RUNNER_TEMP}/notary.json"
-          status="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status" "${RUNNER_TEMP}/notary.json")"
-          id="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id" "${RUNNER_TEMP}/notary.json")"
+          # A non-zero exit on an Invalid submission must not end the step before
+          # the log is kept, so capture the exit code and decide from the status.
+          submit_rc=0
+          xcrun notarytool submit "${RUNNER_TEMP}/ward-notary.zip" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --output-format json > "${RUNNER_TEMP}/notary.json" || submit_rc=$?
+          status="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status" "${RUNNER_TEMP}/notary.json" || echo unknown)"
+          id="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id" "${RUNNER_TEMP}/notary.json" || echo unknown)"
           echo "notarization ${id}: ${status}"
-          if [ "$status" != "Accepted" ]; then
+          if [ "$status" != "Accepted" ] || [ "$submit_rc" -ne 0 ]; then
             xcrun notarytool log "$id" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
-            echo "::error::notarization ended ${status}, not Accepted"
+            echo "::error::notarization ended ${status} (notarytool exit ${submit_rc}), not Accepted"
             exit 1
           fi
       - name: Regenerate the checksum and the notes' hashes from the signed bytes
@@ -339,8 +349,8 @@ jobs:
   # publish, on a GitHub-hosted macOS runner (a self-hosted one is not used for
   # a repository that is public), and the release job needs it, so a signature
   # that does not verify cannot be published. It runs on a release tag and on a
-  # manual dry run (DEC-253 (a1)); only the release job is tag-only, so a dry
-  # run can never publish.
+  # dispatch from main (the signing rehearsal, DEC-253 (a1), DEC-301 (a3)); only
+  # the release job is tag-only, so a rehearsal can never publish.
   #
   # While the repository is private (DEC-253 (a2), WCLI-120) this job runs on the
   # self-hosted Linux runner and only logs why the hosted re-check is skipped,

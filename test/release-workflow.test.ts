@@ -1203,6 +1203,18 @@ test("sign signs with the identifier ai.opum.ward, hardened runtime and a timest
   );
   expect(requirement).toContain('identifier "ai.opum.ward"');
   expect(requirement).toContain("certificate leaf[subject.OU]");
+  // The team id is required, shaped, and matched whole as the last clause
+  // (WCLI-185 review R1): an unset variable must not pass any team.
+  expect(requirement).toContain('"${APPLE_TEAM_ID:?');
+  expect(requirement).toContain("grep -Eq '^[A-Z0-9]{10}$'");
+  expect(requirement).toContain("'anchor apple generic'");
+  expect(requirement).toContain(
+    '"certificate leaf[subject.OU] = ${APPLE_TEAM_ID}" |',
+  );
+  expect(requirement).toContain(
+    '"certificate leaf[subject.OU] = \\"${APPLE_TEAM_ID}\\""',
+  );
+  expect(requirement).not.toMatch(/\[subject\.OU\] = \$\{APPLE_TEAM_ID\}"\*/);
   expect(requirement).toContain("*cdhash*");
   const notarize = runOf(stepWith("Notarize and require Accepted") ?? {});
   expect(notarize).toContain("--wait");
@@ -1211,6 +1223,46 @@ test("sign signs with the identifier ai.opum.ward, hardened runtime and a timest
   // The credential files live under RUNNER_TEMP, never in the upload path.
   expect(notarize).toContain("${RUNNER_TEMP}/ward-notary-key.p8");
   expect(notarize).not.toContain("out/ward-notary");
+});
+
+test("sign's job key set, step names and each step's key set are exact", () => {
+  expect(Object.keys(signJob()).sort()).toEqual([
+    "environment",
+    "if",
+    "name",
+    "needs",
+    "permissions",
+    "runs-on",
+    "steps",
+    "timeout-minutes",
+  ]);
+  const steps = jobSteps("sign");
+  expect(steps.map((s) => String(s.name ?? s.uses).replace(/@.*/, ""))).toEqual(
+    [
+      "actions/checkout",
+      "actions/download-artifact",
+      "Import the signing certificate into a temporary keychain",
+      "Re-sign with the Developer ID identity, hardened runtime and a timestamp",
+      "The designated requirement names the team and the identifier",
+      "Notarize and require Accepted",
+      "Regenerate the checksum and the notes' hashes from the signed bytes",
+      "actions/upload-artifact",
+      "Remove the keychain and every decoded credential file",
+    ],
+  );
+  // No `shell:`, `working-directory`, `continue-on-error` or stray env key.
+  expect(steps.map((step) => Object.keys(step).sort())).toEqual([
+    ["uses", "with"],
+    ["uses", "with"],
+    ["env", "name", "run"],
+    ["env", "name", "run"],
+    ["env", "name", "run"],
+    ["env", "name", "run"],
+    ["name", "run"],
+    ["uses", "with"],
+    ["if", "name", "run"],
+  ]);
+  expect(JSON.stringify(steps)).not.toMatch(/curl|wget|\| *bash|\| *sh\b/);
 });
 
 test("sign checks the order: sign, requirement, notarize, metadata, upload, and cleanup last and always", () => {
@@ -1275,7 +1327,7 @@ function runKeychain(
   const log = join(temp, "security.log");
   writeFileSync(
     join(bin, "security"),
-    `#!/bin/bash\necho "$@" >> "${log}"\nif [ "$1" = "${failOn}" ]; then exit 1; fi\nexit 0\n`,
+    `#!/bin/bash\necho "$@" >> "${log}"\necho "1 identity imported."\nif [ "$1" = "${failOn}" ]; then exit 1; fi\nexit 0\n`,
     { mode: 0o755 },
   );
   const result = spawnSync("bash", [keychainHelper, command], {
@@ -1301,6 +1353,13 @@ test("the keychain helper imports into a throwaway keychain, prints only the pat
     `KEYCHAIN_PATH=${r.runner}/ward-signing.keychain-db`,
   );
   expect(r.stdout + r.stderr).not.toContain("synthetic-p12");
+  expect(r.stdout + r.stderr).not.toContain(secretEnv.APPLE_CERT_P12_BASE64);
+  // `security` prints progress on stdout; none of it may reach the caller's
+  // GITHUB_ENV, where a line that is not NAME=value fails the step (N1).
+  expect(r.stdout).not.toContain("1 identity imported");
+  expect(readFileSync(keychainHelper, "utf8")).not.toMatch(
+    /set -[a-z]*x|xtrace/,
+  );
   const log = readFileSync(r.log, "utf8");
   expect(log).toContain("create-keychain");
   expect(log).toContain("-T /usr/bin/codesign");

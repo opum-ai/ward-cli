@@ -94,6 +94,11 @@ needs the operator's steps first (the certificate, the notarization key, the
   requirement names the team and `ai.opum.ward`, and the smoke step in the
   `verify` job (the signed binary prints a version) passed without entitlements.
   A dispatch from any other branch builds only: signing is main-only.
+  A passing `--version` is necessary but not sufficient: it never reaches JIT
+  tier-up, so a binary can pass it without `allow-jit` and still crash on a real
+  command under the hardened runtime. The operator's Mac run exercises real
+  commands (a synthetic vault, `ward --help` and an actual operation) before the
+  first tag.
 - **Certificate expiry date:** not recorded yet. The operator adds it here when
   the certificate exists (operator step 2); a renewal is expected to keep the
   team id and identifier, unmeasured.
@@ -102,3 +107,7 @@ needs the operator's steps first (the certificate, the notarization key, the
   Keychain behaviour of a Developer ID build, and must be reworded (the notes
   template, `scripts/release-metadata.mjs` and its tests) before the first
   Developer ID release is described to users.
+  **Blocker on the first Developer ID tag:** nothing yet stops a tag from
+  publishing notes that say "ad-hoc signature" for a Developer ID binary (the
+  `CDHASH_LINE` pattern in `scripts/release-metadata.mjs` ties the wording). Do
+  not cut that tag until the wording is changed.
