@@ -6,12 +6,12 @@ tags:
   - release
   - security
   - signing
-summary: "Ward's accepted Developer ID signing and notarization path (DEC-301 (a3), WCLI-183): design, operator steps in order, decided choices; not built yet."
+summary: "Ward's accepted Developer ID signing and notarization path (DEC-301 (a3), WCLI-183): design, operator steps in order, decided choices; built by WCLI-185 (opum-ai/ward-cli#420)."
 ---
 
 # Developer ID signing and notarization path
 
-**Status: accepted by opum-doc as the build design (DEC-301 (a3)); nothing is built.** This is WCLI-183,
+**Status: accepted under DEC-301 (a3); built by WCLI-185 (opum-ai/ward-cli#420).** This is WCLI-183,
 step 1 of DEC-301 item 1, written before any signing code, workflow edit, secret or install exists.
 The open choices are decided below, in the sections they were open in. It
 records the accepted path, what is measured and what is not, every operator step in order, and the
