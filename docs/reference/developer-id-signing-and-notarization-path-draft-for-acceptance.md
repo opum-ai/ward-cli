@@ -37,8 +37,10 @@ a new program to Keychain and each upgrade needs a manual re-approval
 requirement "this identifier, signed by this Apple team", so a later build signed by the same team
 with the same identifier should keep Keychain access. *Unmeasured:* that the legacy file-based
 login keychain item Ward uses (measured under WCLI-5) honours the new requirement without a
-prompt. The rehearsal measures it. The first Developer ID build still needs one re-approval,
-because the existing item trusts the old cdhash.
+prompt. A hosted runner has no Ward Keychain item, so the rehearsal below cannot measure this; it
+is measured on the operator's Mac, or by a session using a synthetic store and a key-provider
+namespace of its own, never a real `~/.ward` item. *Expected, not measured:* the first Developer
+ID build still needs one re-approval, because the existing item trusts the old cdhash.
 
 The Keychain ACL is still not a security boundary while `BUN_BE_BUN` and `BUN_OPTIONS` reach the
 executable (WCLI-19); signing is the precondition ADR 0001 names, not the whole fix.
@@ -49,41 +51,56 @@ executable (WCLI-19); signing is the precondition ADR 0001 names, not the whole 
 dependencies, builds, signs ad hoc and uploads. If that job also held a Developer ID key, every
 package install script it runs would sit beside the key. So:
 
-- `build` (no environment, no secrets): unchanged apart from producing an unsigned, ad-hoc-signed
-  artifact, as now.
+- `build` (no environment, no secrets): unchanged, producing the ad-hoc-signed artifact it does
+  today.
 - `sign` (new, `environment: release`, hosted macOS runner): downloads that artifact, runs no
-  package manager and no third-party code except pinned actions and Apple's own tools, signs with
-  the Developer ID identity, submits for notarization, verifies, uploads the signed artifact. It is
-  the only job that can read the signing secrets.
-- `verify`, `attest` (WCLI-109) and `release` then follow `sign` and act on the signed bytes.
+  package manager and no third-party code except pinned actions, Apple's own tools, the runner's
+  `node` and this repository's first-party scripts. It re-signs with the Developer ID identity,
+  submits for notarization, verifies, regenerates the `.sha256` and `release-notes.md` from the
+  re-signed bytes, and uploads the signed artifact. It is the only job that **references** the
+  signing secrets. It is not the only job entitled to them: under the decided single environment
+  the existing `release` job also names `environment: release`, so it can read the same secrets,
+  but it runs only a checkout and first-party `node` and references none. The build task's test
+  should assert that no other job references `secrets.APPLE_*`. Consequence: the required reviewer
+  is asked for both `sign` and `release` on every tag, and for `sign` on every rehearsal
+  (*unmeasured*).
+- `verify`, `attest` (WCLI-109) and `release` then follow `sign` and act on the signed bytes:
+  `verify` re-checks the signed asset, `attest` attests it, `release` publishes it.
 
 Inside `sign`, on a macOS runner:
 
-1. Create a temporary keychain, import the `.p12` into it, allow `codesign` to use the key without
-   a prompt (`security set-key-partition-list`), and delete the keychain in a final step that
-   always runs.
-2. `codesign --force --options runtime --timestamp --identifier <identifier> --sign "<Developer ID
+1. Create a temporary keychain with a random password, import the `.p12` into it, allow `codesign`
+   to use the key without a prompt (`security set-key-partition-list`), and delete the keychain in
+   a final step that always runs.
+2. `codesign --force --options runtime --timestamp --identifier ai.opum.ward --sign "<Developer ID
    Application identity>" ward-darwin-arm64`. Hardened runtime is required for notarization.
 3. *Unmeasured, the largest technical unknown:* a `bun build --compile` executable embeds a
    JavaScript engine and may need hardened-runtime entitlements (JIT and executable memory) to run
-   at all once hardened. The rehearsal must run the signed binary's own smoke test; the
+   at all once hardened. The rehearsal must run the signed binary's own smoke test.
    **Decided (DEC-301 (a3)): no entitlements by default.** `allow-jit` and/or
-   `allow-unsigned-executable-memory` may be added only if the rehearsal's smoke test fails without
-   them, with the fewest that pass and both runs cited. Anything else comes to opum-doc first,
-   and above all `allow-dyld-environment-variables` and `disable-library-validation`, because of
-   the `BUN_` exposure (WCLI-19). A plist, if any, is passed with `--entitlements`.
+   `allow-unsigned-executable-memory` may be added only if the smoke test fails without them, with
+   the fewest that pass and both runs cited. Anything else comes to opum-doc first, and above all
+   `allow-dyld-environment-variables` and `disable-library-validation`, because of the `BUN_`
+   exposure (WCLI-19). A plist, if any, is passed with `--entitlements`.
 4. Zip the binary, `xcrun notarytool submit --wait` with the API-key credential, require status
    `Accepted`, and keep the log. A bare command-line executable cannot be stapled, so the ticket
    lives with Apple and Gatekeeper reads it online; *unmeasured:* how a first run of a
-   curl-downloaded, un-quarantined binary behaves offline. The released asset stays the bare
-   `ward-darwin-arm64` so the install runbook and checksum flow do not change.
+   curl-downloaded, un-quarantined binary behaves offline (measured on the operator's Mac, as
+   above). The released asset stays the bare `ward-darwin-arm64` so the install runbook and
+   checksum flow do not change.
 5. `codesign --verify --strict`, then check the designated requirement names the team and
    identifier (`codesign -d -r-`), then the existing cdhash agreement check, all before upload.
-   `spctl --assess` is not used: it rejects a bare executable that is correctly signed.
+   `spctl --assess` is not used: it is expected to reject a bare executable even when it is
+   correctly signed (*unmeasured* here).
+
+Secret hygiene in `sign`: decode the `.p12` and `.p8` under `$RUNNER_TEMP`, outside any upload
+path; upload explicit filenames, as `build` does at `release.yml`'s upload step; pass each secret
+through the `env` of only the step that needs it; no `set -x`; remove the decoded files in the same
+always-run cleanup that deletes the keychain.
 
 The existing gates keep their meaning: verify re-checks the downloaded asset, attestation covers
 the signed bytes, and the notes' sha256 and cdhash come from the signed file. The "expect one
-keychain re-approval per upgrade" line in the notes changes only after the rehearsal shows it.
+keychain re-approval per upgrade" line in the notes changes only after the operator's Mac shows it.
 
 ### Credentials, and why an App Store Connect API key
 
@@ -94,15 +111,17 @@ it suits CI better than an Apple ID with an app-specific password. Both are oper
 ## The rehearsal (how the first real tag avoids being the first test)
 
 A tag is frozen once the tag ruleset exists, so a failed first signing run on a real tag would burn
-a version
-([protect the release path](../runbooks/protect-the-release-path.md)). The `release` environment
-therefore allows two deployment targets, decided as one environment (DEC-301 (a3)): tags matching
-`v*` and the branch `main`. The publish job stays tag-only. A
-`workflow_dispatch` run from `main` signs and notarizes, runs the smoke test and publishes
-nothing; the Release job stays tag-only. `main` is the gated ref, so no unreviewed branch reaches
-the secrets. The rehearsal measures: entitlements needed, notarization acceptance, the designated
-requirement text, Keychain behaviour across two builds from the same identity, and the offline
-first-run question.
+a version ([protect the release path](../runbooks/protect-the-release-path.md)). The `release`
+environment therefore allows two deployment targets, decided as one environment (DEC-301 (a3)):
+tags matching `v*` and the branch `main`. A `workflow_dispatch` run from `main` signs and
+notarizes, runs the smoke test and publishes nothing; the Release job stays tag-only. The run does
+upload the signed binary as a public run artifact (it is not a secret).
+
+`main` is the gated ref only after operator step 5 applies the `main` ruleset; `main` has no rules
+today. So step 5 before any rehearsal is load-bearing: without it, anyone who can push to `main`
+can reach the secrets by a dispatch run. The rehearsal measures: entitlements needed, notarization
+acceptance, and the designated requirement text. It does not measure Keychain behaviour or the
+offline first run (see above).
 
 ## Operator steps, in order (one batch for opum-doc to put to the operator)
 
@@ -111,8 +130,8 @@ first-run question.
    certificate.
 2. On a Mac the operator controls, create a certificate signing request in Keychain Access, then in
    the developer portal (Certificates, IDs & Profiles) create a **Developer ID Application**
-   certificate from it and install the download. The private key never leaves that Mac except in
-   step 3.
+   certificate from it and install the download. Note the certificate's expiry date for the
+   publish runbook. The private key never leaves that Mac except in step 3.
 3. Export the certificate and its private key as a `.p12` with a strong password, kept out of
    every session's reach and out of the repository.
 4. In App Store Connect (Users and Access, Integrations) create a team API key whose role is
@@ -129,13 +148,16 @@ first-run question.
    and `gh secret set APPLE_CERT_PASSWORD --env release --repo opum-ai/ward-cli` (prompts for the
    value). Two non-secret values, the signing identity string and the team id, go in as
    environment variables.
-7. Read the decided choices below; nothing is left open for this step except any the rehearsal
-   raises.
-8. Accept this draft's build step (opum-doc), after which a separate task edits `release.yml` with
-   its own dispatch-floor read and Opus review. Then run the rehearsal from `main` and read its
-   result before cutting any tag.
-9. Cut the first Developer ID release. Expect one Keychain re-approval on that upgrade; after it,
-   expect silence on the next, and confirm it.
+7. Once the build task has landed (a separate release-path change with its own review), run the
+   rehearsal: trigger the release workflow by `workflow_dispatch` from `main` and **approve the
+   `release` deployment** when the reviewer prompt appears.
+8. Read the rehearsal's result before any tag: notarization `Accepted`, the designated requirement
+   names the team and `ai.opum.ward`, and the smoke test passes without entitlements (or with the
+   fewest the draft allows, both runs cited). Then, on the operator's Mac, install the signed
+   binary over an ad-hoc build with a synthetic vault and check the Keychain behaviour and the
+   offline first run, which the rehearsal cannot show.
+9. Cut the first Developer ID release and approve its `sign` and `release` deployments. Expect one
+   Keychain re-approval on that upgrade; after it, expect silence on the next, and confirm it.
 
 No step has a session read, print, store or send a credential value.
 
@@ -147,8 +169,10 @@ No step has a session read, print, store or send a credential value.
 - **Entitlements: none by default**, as in the build steps above.
 - **Required reviewer: the operator, administrator bypass off.** See operator step 5 for what that
   does not cover until WCLI-182 lands.
-- **Certificate expiry.** The certificate's expiry date goes in Ward's publish runbook when it is
-  created. A renewal keeps the team id and the identifier, so the requirement survives it.
+- **Certificate expiry.** The expiry date goes in the new publish-and-signing section the build
+  task adds to `publish-a-mac-signed-ward-release-asset.md` (that runbook exists today and has no
+  such section). *Expected, not measured:* a renewal keeps the team id and the identifier, so the
+  requirement survives it.
 - **Individual or organization** is settled by the enrolment; operator step 1 reads which. An
   individual account puts the operator's legal name in the signing identity shown for every
   release; an organization shows its name. The requirement is pinned to the team id, so the name
