@@ -1286,7 +1286,7 @@ test("the requirement step accepts exactly the team's Developer ID requirement a
     expect(r.stdout + r.stderr).toContain("bare cdhash");
   }
   expect(ok(`cdhash H"abc"`)).toBe(false);
-  // The team id itself: unset, empty, short, long, lowercase, multi-line.
+  // The team id itself: empty, short, long, lowercase, multi-line.
   expect(ok(goodRequirement(""), "")).toBe(false);
   for (const bad of [
     "ABCDE1234",
@@ -1346,25 +1346,27 @@ node scripts/regenerate-release-metadata.mjs out/ward-darwin-arm64 in/release-no
 `);
 });
 
+// One scan for every trace spelling: `set -x`, `set -Eux`, `set -o pipefail -x`,
+// `set -o xtrace` and `bash -x`. The assertions and their positive controls use
+// this same constant.
+const TRACE_SCAN =
+  /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/;
+
 test("no sign step traces, and the import step is exactly the helper call", () => {
   for (const step of jobSteps("sign")) {
-    expect(runOf(step)).not.toMatch(
-      /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/,
-    );
+    expect(runOf(step)).not.toMatch(TRACE_SCAN);
     expect(String(step.shell ?? "")).not.toMatch(/-[A-Za-z]*x/);
   }
   // Positive controls: the scans catch the spellings they exist for.
-  const traceScan =
-    /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b|.*-o\s+xtrace)|xtrace|bash\s+-[A-Za-z]*x/;
   for (const traced of [
     "set -Eux",
     "set -o pipefail -x",
     "set -euxo pipefail",
     "bash -x scripts/signing-keychain.sh import",
   ])
-    expect(traceScan.test(traced)).toBe(true);
+    expect(TRACE_SCAN.test(traced)).toBe(true);
   expect(/-[A-Za-z]*x/.test("-Eux")).toBe(true);
-  expect(traceScan.test("set -euo pipefail")).toBe(false);
+  expect(TRACE_SCAN.test("set -euo pipefail")).toBe(false);
   expect(
     runOf(
       stepWith("Import the signing certificate into a temporary keychain") ??
@@ -1507,9 +1509,7 @@ test("the keychain helper imports into a throwaway keychain, prints only the pat
   expect(r.stdout).not.toContain("1 identity imported");
   // The key-attribute dump of set-key-partition-list reaches neither stream (N4).
   expect(r.stdout + r.stderr).not.toContain("PARTITION-DUMP");
-  expect(readFileSync(keychainHelper, "utf8")).not.toMatch(
-    /set\s+(-[A-Za-z]*x|.*\s-[A-Za-z]*x\b)|xtrace|bash\s+-[A-Za-z]*x/,
-  );
+  expect(readFileSync(keychainHelper, "utf8")).not.toMatch(TRACE_SCAN);
   const log = readFileSync(r.log, "utf8");
   expect(log).toContain("create-keychain");
   expect(log).toContain("-T /usr/bin/codesign");

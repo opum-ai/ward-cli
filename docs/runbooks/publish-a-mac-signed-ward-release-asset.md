@@ -126,7 +126,8 @@ needs the operator's steps first (the certificate, the notarization key, the
   `designated => `, and the step reads only the latter. The behavioural test of
   the requirement step runs in the C locale (its environment carries no `LANG`
   or `LC_*`); the macOS runner's locale is not exercised, so read the step's log
-  rather than trusting the test for locale-dependent output. A failure of the
-  keychain helper's `set-key-partition-list` call stops the job with the message
+  rather than trusting the test for locale-dependent output.
+- **Failure signature, not a green-log item:** if the keychain helper's
+  `set-key-partition-list` call fails, the sign job stops with the message
   "set-key-partition-list failed" and none of the command's own output, which is
-  silenced because it dumps key attributes.
+  silenced because it dumps key attributes. A green rehearsal never shows it.
