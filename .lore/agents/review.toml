@@ -12,9 +12,10 @@ sources = [
   "adr/0004-committed-platform-target",
   "index",
   "adr/0005-project-binding-identity#decision",
-  "adr/0006-backup-container-and-restore-authority",
-  "adr/0007-status-and-doctor-reporting",
+  "adr/0006-backup-container-and-restore-authority#decision",
+  "adr/0007-status-and-doctor-reporting#decision",
   "adr/0009-hand-rolled-status-only-https-transport",
   "adr/0010-refuse-a-vault-state-document-from-another-format",
   "adr/0020-cross-project-grants-are-alias-bound-and-restore-clears-them",
+  "reference/developer-id-signing-and-notarization-path-draft-for-acceptance#recommended-path",
 ]
