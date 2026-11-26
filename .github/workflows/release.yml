@@ -259,9 +259,39 @@ jobs:
         if: github.event.repository.private != true
         run: codesign --verify --strict --verbose=2 out/ward-darwin-arm64
 
+  attest:
+    # WCLI-109 (W-15, ruling W-36): build provenance for the artifact the Release
+    # publishes. The sha256 and cdhash in the notes come from the same release as
+    # the binary, so anything that can replace one can replace all three; a signed
+    # attestation made by this workflow's identity, checked with
+    # `gh attestation verify`, is the proof that does not live beside the file. It
+    # is its own job so the job that holds contents: write never holds id-token,
+    # and the only job that can mint an attestation (id-token and attestations:
+    # write) can write nothing else. It attests the exact artifact the verify job
+    # re-checked and the release job publishes, and release needs it, so a
+    # release cannot publish without one. The real attestation exists only when
+    # the operator runs a release: a manual dry run does not reach this job.
+    name: Attest the build provenance
+    needs: [build, verify]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ward-darwin-arm64
+          path: out
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/ward-darwin-arm64
+
   release:
     name: Create the GitHub Release
-    needs: [build, verify]
+    needs: [build, verify, attest]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
