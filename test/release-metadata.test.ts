@@ -17,6 +17,7 @@ import {
   REAPPROVAL_LINE,
   rewriteNotes,
   signatureFromCodesign,
+  type Signature,
 } from "../scripts/release-metadata.mjs";
 import { createTempRoot } from "./support/temp-root.ts";
 
@@ -28,8 +29,8 @@ const OLD_CDHASH = "b".repeat(40);
 const NEW_SHA = "c".repeat(64);
 const NEW_CDHASH = "d".repeat(40);
 
-const ADHOC = { kind: "adhoc" };
-const DEVID = { kind: "developer-id", team: "ABCDE12345" };
+const ADHOC: Signature = { kind: "adhoc" };
+const DEVID: Signature = { kind: "developer-id", team: "ABCDE12345" };
 
 const notes = [
   "Ward v0.1.1, local developer preview, macOS on Apple silicon.",
@@ -269,9 +270,9 @@ test("the guard fails on a notes and signature disagreement, both ways", () => {
     ),
   ).not.toThrow();
   expect(() => assertNotesMatchSignature(fullNotes, ADHOC)).not.toThrow();
-  expect(() => rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH)).toThrow(
-    "signature is required",
-  );
+  expect(() =>
+    rewriteNotes(fullNotes, NEW_SHA, NEW_CDHASH, undefined as never),
+  ).toThrow("signature is required");
 });
 
 test.skipIf(process.platform !== "darwin")(
