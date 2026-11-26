@@ -235,7 +235,9 @@ jobs:
   # reviewer, deployment targets v* and main); the job runs on a tag push and on a
   # manual run from main, which publishes nothing because release is tag-only.
   # Entitlements: none (DEC-301 (a3)); one is added only on a cited failing
-  # rehearsal. The identifier ai.opum.ward never changes.
+  # rehearsal. The identifier ai.opum.ward never changes. The smoke test of the
+  # signed binary runs in verify, never here: this job holds the signing key until
+  # its cleanup, and a compiled binary carries dependency code.
   sign:
     name: Sign and notarize on macOS
     needs: build
@@ -370,6 +372,20 @@ jobs:
       - name: codesign verifies the signature strictly
         if: github.event.repository.private != true
         run: codesign --verify --strict --verbose=2 out/ward-darwin-arm64
+      - name: The signed binary starts and reports a version
+        if: github.event.repository.private != true
+        run: |
+          set -euo pipefail
+          chmod +x out/ward-darwin-arm64
+          version="$(out/ward-darwin-arm64 --version)"
+          echo "ward --version: ${version}"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::the signed binary did not print a version"
+              exit 1
+              ;;
+          esac
 
   attest:
     # WCLI-109 (W-15, ruling W-36): build provenance for the artifact the Release

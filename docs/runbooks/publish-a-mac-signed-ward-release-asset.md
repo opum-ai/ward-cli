@@ -91,7 +91,9 @@ needs the operator's steps first (the certificate, the notarization key, the
   `release` deployment when the reviewer prompt appears. It signs and notarizes,
   uploads the signed binary as a public run artifact, and publishes nothing.
   Read the run before any tag: notarization `Accepted`, the designated
-  requirement names the team and `ai.opum.ward`.
+  requirement names the team and `ai.opum.ward`, and the smoke step in the
+  `verify` job (the signed binary prints a version) passed without entitlements.
+  A dispatch from any other branch builds only: signing is main-only.
 - **Certificate expiry date:** not recorded yet. The operator adds it here when
   the certificate exists (operator step 2); a renewal is expected to keep the
   team id and identifier, unmeasured.

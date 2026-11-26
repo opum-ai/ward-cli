@@ -431,9 +431,9 @@ test("a repository payload without its visibility fails closed to the verifying 
   expect(evaluate(runsOn, { private: null })).toBe("macos-15");
 });
 
-test("the verify job has exactly the notice, the download and the codesign step, in that order", () => {
+test("the verify job has exactly the notice, the download, the codesign step and the smoke test, in that order", () => {
   const steps = verifySteps();
-  expect(steps).toHaveLength(3);
+  expect(steps).toHaveLength(4);
   // Each step is one full shape anchored at both ends, so a key inserted
   // between its own lines (a `shell:` between the name and the if, say) is red,
   // and so is a tab after the dash that merges it into a neighbour.
@@ -448,8 +448,17 @@ test("the verify job has exactly the notice, the download and the codesign step,
   expect(steps[2]).toMatch(
     /^ {6}- name: codesign verifies the signature strictly\n {8}if: github\.event\.repository\.private != true\n {8}run: codesign --verify --strict --verbose=2 out\/ward-darwin-arm64\n*$/,
   );
-  // One command per step: nothing re-signs or rewrites the artifact before the check.
-  expect(steps.join("").match(/\brun:/g)).toHaveLength(2);
+  // The smoke test of the signed binary (WCLI-185) runs here, in the job with no
+  // environment and no secrets, and only after the strict signature check.
+  expect(steps[3]).toContain(
+    "- name: The signed binary starts and reports a version",
+  );
+  expect(steps[3]).toContain("if: github.event.repository.private != true");
+  expect(steps[3]).toContain('version="$(out/ward-darwin-arm64 --version)"');
+  expect(steps[3]).not.toMatch(/codesign|--force|secrets\./);
+  // One command per step: nothing re-signs or rewrites the artifact before the
+  // check, and only the smoke step runs the binary.
+  expect(steps.join("").match(/\brun:/g)).toHaveLength(3);
 });
 
 // The text helpers above (jobText) take the first `verify:` they find, so a
@@ -469,12 +478,15 @@ test("the parsed verify job is exactly the known job, with the real codesign com
   ]);
   const verify = parsed.jobs.verify as ParsedJob;
   const steps = verify.steps as Record<string, unknown>[];
-  expect(steps).toHaveLength(3);
-  const [notice, download, codesign] = steps as [
+  expect(steps).toHaveLength(4);
+  const [notice, download, codesign, smoke] = steps as [
+    Record<string, unknown>,
     Record<string, unknown>,
     Record<string, unknown>,
     Record<string, unknown>,
   ];
+  expect(Object.keys(smoke ?? {}).sort()).toEqual(["if", "name", "run"]);
+  expect(smoke?.if).toBe("github.event.repository.private != true");
   expect(notice?.run as string).toMatch(
     /^echo "::notice::codesign --verify --strict is skipped here[^\n"]*"\n$/,
   );
@@ -540,6 +552,7 @@ test("the workflow, the verify job and each verify step carry exactly the keys t
     ["if", "name", "run"],
     ["if", "uses", "with"],
     ["if", "name", "run"],
+    ["if", "name", "run"],
   ]);
   expect(Object.keys(steps[1]?.with as object).sort()).toEqual([
     "name",
@@ -577,8 +590,9 @@ test("the verifying steps are skipped while private, run once public, and the sk
     "github.event.repository.private == true",
     "github.event.repository.private != true",
     "github.event.repository.private != true",
+    "github.event.repository.private != true",
   ]);
-  const [notice, download, codesign] = ifs;
+  const [notice, download, codesign, smoke] = ifs;
   for (const [repository, notices, verifies] of [
     [{ private: true }, true, false],
     [{ private: false }, false, true],
@@ -587,6 +601,7 @@ test("the verifying steps are skipped while private, run once public, and the sk
     expect(evaluate(notice ?? "", repository)).toBe(notices);
     expect(evaluate(download ?? "", repository)).toBe(verifies);
     expect(evaluate(codesign ?? "", repository)).toBe(verifies);
+    expect(evaluate(smoke ?? "", repository)).toBe(verifies);
   }
   expect(verify).toMatch(
     /::notice::codesign --verify --strict is skipped here/,
