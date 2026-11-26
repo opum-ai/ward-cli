@@ -16,7 +16,7 @@ step 1 of DEC-301 item 1, written before any signing code, workflow edit, secret
 The open choices are decided below, in the sections they were open in. It
 records the accepted path, what is measured and what is not, every operator step in order, and the
 choices that are not Ward's to make. Anything marked *unmeasured* is a claim to test in the
-rehearsal below, not a fact.
+rehearsal or on the operator's Mac (both below), not a fact.
 
 ## What is fixed in advance (opum-doc, DEC-301 (a2))
 
@@ -60,7 +60,8 @@ package install script it runs would sit beside the key. So:
   re-signed bytes, and uploads the signed artifact. It is the only job that **references** the
   signing secrets. It is not the only job entitled to them: under the decided single environment
   the existing `release` job also names `environment: release`, so it can read the same secrets,
-  but it runs only a checkout and first-party `node` and references none. The build task's test
+  but it runs only a checkout, a pinned artifact download, `sha256sum` and first-party `node`, and
+  references none. The build task's test
   should assert that no other job references `secrets.APPLE_*`. Consequence: the required reviewer
   is asked for both `sign` and `release` on every tag, and for `sign` on every rehearsal
   (*unmeasured*).
@@ -76,7 +77,11 @@ Inside `sign`, on a macOS runner:
    Application identity>" ward-darwin-arm64`. Hardened runtime is required for notarization.
 3. *Unmeasured, the largest technical unknown:* a `bun build --compile` executable embeds a
    JavaScript engine and may need hardened-runtime entitlements (JIT and executable memory) to run
-   at all once hardened. The rehearsal must run the signed binary's own smoke test.
+   at all once hardened. The signed binary's own smoke test decides it. **The smoke test runs in `verify`** (no
+   environment, no secrets) against the signed artifact, never in `sign`: a compiled binary carries
+   the Bun runtime and every bundled dependency, and `sign` holds the private key and the decoded
+   credential files until its final cleanup, so running it there would put dependency code beside
+   the key. The build task adds the smoke step to `verify`.
    **Decided (DEC-301 (a3)): no entitlements by default.** `allow-jit` and/or
    `allow-unsigned-executable-memory` may be added only if the smoke test fails without them, with
    the fewest that pass and both runs cited. Anything else comes to opum-doc first, and above all
@@ -114,8 +119,14 @@ A tag is frozen once the tag ruleset exists, so a failed first signing run on a 
 a version ([protect the release path](../runbooks/protect-the-release-path.md)). The `release`
 environment therefore allows two deployment targets, decided as one environment (DEC-301 (a3)):
 tags matching `v*` and the branch `main`. A `workflow_dispatch` run from `main` signs and
-notarizes, runs the smoke test and publishes nothing; the Release job stays tag-only. The run does
+notarizes, runs the smoke test (in `verify`) and publishes nothing; the Release job stays tag-only. The run does
 upload the signed binary as a public run artifact (it is not a secret).
+
+A behaviour change the build task owns: today a `workflow_dispatch` from any branch is a full dry
+run. Under this design signing is gated on a tag or on `main`, because the environment's branch
+policy would refuse `sign` on any other branch; a dispatch from another branch therefore builds
+only, and `verify`, `attest` and `release` are skipped with it. The dry run for signing becomes
+main-only.
 
 `main` is the gated ref only after operator step 5 applies the `main` ruleset; `main` has no rules
 today. So step 5 before any rehearsal is load-bearing: without it, anyone who can push to `main`
@@ -141,7 +152,12 @@ offline first run (see above).
    environment, the immutable-releases decision), and add `main` to the environment's deployment
    targets beside `v*`. The environment's required reviewer is the operator, with administrator
    bypass off (`"can_admins_bypass": false` in the environment's PUT body). Until WCLI-182 lands,
-   this protection assumes no session acts as an administrator; it does not hold against one.
+   this protection assumes no session acts as an administrator; it does not hold against one. The
+   protect runbook is updated with these additions by the build task (WCLI-185); until it lands,
+   run, after the runbook's step 3 commands:
+   `gh api repos/opum-ai/ward-cli/environments/release/deployment-branch-policies --method POST
+   -f name=main -f type=branch`, and add `"can_admins_bypass": false` and the operator's
+   `"reviewers": [{ "type": "User", "id": <numeric id> }]` to the environment's PUT body.
 6. Store five values as **environment secrets** on `release`, from files and never typed into a
    session: the base64 `.p12`, its password, the `.p8`, the key id and the issuer id. For example
    `base64 < cert.p12 | gh secret set APPLE_CERT_P12_BASE64 --env release --repo opum-ai/ward-cli`
@@ -153,7 +169,7 @@ offline first run (see above).
    `release` deployment** when the reviewer prompt appears.
 8. Read the rehearsal's result before any tag: notarization `Accepted`, the designated requirement
    names the team and `ai.opum.ward`, and the smoke test passes without entitlements (or with the
-   fewest the draft allows, both runs cited). Then, on the operator's Mac, install the signed
+   fewest entitlements the decided rule allows, both runs cited). Then, on the operator's Mac, install the signed
    binary over an ad-hoc build with a synthetic vault and check the Keychain behaviour and the
    offline first run, which the rehearsal cannot show.
 9. Cut the first Developer ID release and approve its `sign` and `release` deployments. Expect one
