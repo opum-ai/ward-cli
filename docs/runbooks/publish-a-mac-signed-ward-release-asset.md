@@ -78,3 +78,25 @@ after publish, so `gh release edit --notes-file` (steps 4 and 6) should still
 work. That was read from GitHub's documentation, not measured on this
 repository's release; confirm it on the first immutable release before relying
 on it.
+
+## Developer ID signing and the rehearsal (WCLI-185)
+
+The release workflow's `sign` job re-signs the build job's ad-hoc artifact with the
+Developer ID identity (identifier `ai.opum.ward`), notarizes it and uploads
+`ward-darwin-arm64-signed`; verify, attest and release act on that artifact. It
+needs the operator's steps first (the certificate, the notarization key, the
+`release` environment and its secrets: the signing-path reference lists all nine).
+
+- **Rehearsal:** `gh workflow run release.yml --ref main`, then approve the
+  `release` deployment when the reviewer prompt appears. It signs and notarizes,
+  uploads the signed binary as a public run artifact, and publishes nothing.
+  Read the run before any tag: notarization `Accepted`, the designated
+  requirement names the team and `ai.opum.ward`.
+- **Certificate expiry date:** not recorded yet. The operator adds it here when
+  the certificate exists (operator step 2); a renewal is expected to keep the
+  team id and identifier, unmeasured.
+- **Release notes wording:** the notes' cdhash line and closing sentence still
+  say ad hoc. That is deliberately unchanged until the operator's Mac shows the
+  Keychain behaviour of a Developer ID build, and must be reworded (the notes
+  template, `scripts/release-metadata.mjs` and its tests) before the first
+  Developer ID release is described to users.

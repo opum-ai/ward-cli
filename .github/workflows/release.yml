@@ -13,11 +13,16 @@
 # bytes. The signing recipe is the DEC-255 (1) sitting's, recorded in
 # docs/runbooks/publish-a-mac-signed-ward-release-asset.md.
 #
-# workflow_dispatch is a dry run: it builds, signs, verifies, hashes and uploads
-# the artifact to the run, and creates no Release. The Release is created by one
-# job, the only one that holds contents: write.
+# The build job's artifact is ad hoc signed. The sign job (WCLI-185, DEC-301 item
+# 1) re-signs it with the Developer ID identity, notarizes it and uploads
+# ward-darwin-arm64-signed; verify, attest and release act on that artifact.
 #
-# The verify job below re-downloads the uploaded artifact and runs
+# workflow_dispatch is a dry run: from a branch it builds and uploads the
+# ad-hoc artifact to the run; from main it also signs and notarizes (the
+# rehearsal); it never creates a Release. The Release is created by one job, the
+# only one that holds contents: write.
+#
+# The verify job below re-downloads the signed artifact and runs
 # codesign --verify --strict again, and the release job needs it, so a signature
 # that does not verify cannot publish. While the repository was private the
 # verify job only logged that it skipped (DEC-253 (a2), WCLI-120).
@@ -217,6 +222,113 @@ jobs:
             out/release-notes.md
           if-no-files-found: error
 
+  # WCLI-185 (DEC-301 item 1, the design in docs/reference/developer-id-signing-
+  # and-notarization-path-draft-for-acceptance.md): the Developer ID signature
+  # and Apple's notarization. This is the only job that references the signing
+  # secrets, and the only one that runs nothing but pinned actions, Apple's
+  # tools, the runner's node and this repository's own scripts: no package
+  # manager, so no dependency install script runs beside the key. It re-signs the
+  # build job's ad-hoc artifact, notarizes it, checks the designated requirement,
+  # regenerates the checksum and the notes' hashes from the re-signed bytes and
+  # uploads them as ward-darwin-arm64-signed; verify, attest and release act on
+  # that artifact only. The environment is the operator's protection (required
+  # reviewer, deployment targets v* and main); the job runs on a tag push and on a
+  # manual run from main, which publishes nothing because release is tag-only.
+  # Entitlements: none (DEC-301 (a3)); one is added only on a cited failing
+  # rehearsal. The identifier ai.opum.ward never changes.
+  sign:
+    name: Sign and notarize on macOS
+    needs: build
+    if: (github.event_name == 'push' && github.ref_type == 'tag') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ward-darwin-arm64
+          path: in
+      - name: Import the signing certificate into a temporary keychain
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: bash scripts/signing-keychain.sh import >> "$GITHUB_ENV"
+      - name: Re-sign with the Developer ID identity, hardened runtime and a timestamp
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          mkdir out
+          cp in/ward-darwin-arm64 out/ward-darwin-arm64
+          codesign --force --options runtime --timestamp --identifier ai.opum.ward --keychain "$KEYCHAIN_PATH" --sign "$APPLE_SIGNING_IDENTITY" out/ward-darwin-arm64
+          codesign --verify --strict --verbose=2 out/ward-darwin-arm64
+      - name: The designated requirement names the team and the identifier
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          requirement="$(codesign -d -r- out/ward-darwin-arm64 2>&1 | sed -n 's/^designated => //p')"
+          echo "designated requirement: ${requirement}"
+          case "$requirement" in
+            *'identifier "ai.opum.ward"'*"certificate leaf[subject.OU] = ${APPLE_TEAM_ID}"*) ;;
+            *)
+              echo "::error::the designated requirement does not name identifier ai.opum.ward and team ${APPLE_TEAM_ID}"
+              exit 1
+              ;;
+          esac
+          case "$requirement" in
+            *cdhash*)
+              echo "::error::the designated requirement is a bare cdhash: the binary was not signed with the Developer ID identity"
+              exit 1
+              ;;
+          esac
+      - name: Notarize and require Accepted
+        env:
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/ward-notary-key.p8"
+          (umask 077; printf '%s' "$ASC_API_KEY_P8" > "$key")
+          ditto -c -k out/ward-darwin-arm64 "${RUNNER_TEMP}/ward-notary.zip"
+          xcrun notarytool submit "${RUNNER_TEMP}/ward-notary.zip" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --output-format json > "${RUNNER_TEMP}/notary.json"
+          status="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).status" "${RUNNER_TEMP}/notary.json")"
+          id="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).id" "${RUNNER_TEMP}/notary.json")"
+          echo "notarization ${id}: ${status}"
+          if [ "$status" != "Accepted" ]; then
+            xcrun notarytool log "$id" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            echo "::error::notarization ended ${status}, not Accepted"
+            exit 1
+          fi
+      - name: Regenerate the checksum and the notes' hashes from the signed bytes
+        run: |
+          set -euo pipefail
+          signed="$(codesign -dvvv out/ward-darwin-arm64 2>&1 | sed -n 's/^CDHash=//p')"
+          computed="$(node scripts/macho-cdhash.mjs out/ward-darwin-arm64)"
+          echo "codesign CDHash=${signed} macho-cdhash=${computed}"
+          if [ -z "$signed" ] || [ "$signed" != "$computed" ]; then
+            echo "::error::codesign and scripts/macho-cdhash.mjs disagree on the cdhash"
+            exit 1
+          fi
+          node scripts/regenerate-release-metadata.mjs out/ward-darwin-arm64 in/release-notes.md out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ward-darwin-arm64-signed
+          path: |
+            out/ward-darwin-arm64
+            out/ward-darwin-arm64.sha256
+            out/release-notes.md
+          if-no-files-found: error
+      - name: Remove the keychain and every decoded credential file
+        if: always()
+        run: bash scripts/signing-keychain.sh cleanup
+
   # WCLI-96 (W-1, DEC-253): the release is gated on macOS's own verdict on the
   # signature. The build job signs and checks the asset itself (WCLI-123); this
   # job is the independent re-check, because a published v0.1.0 whose sha256
@@ -240,7 +352,7 @@ jobs:
   # expression resolves to macos-15 with no edit.
   verify:
     name: Verify the code signature on macOS
-    needs: build
+    needs: [build, sign]
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_type == 'tag')
     runs-on: ${{ github.event.repository.private == true && fromJSON('["self-hosted","Linux","ARM64"]') || 'macos-15' }}
     timeout-minutes: 10
@@ -253,7 +365,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: github.event.repository.private != true
         with:
-          name: ward-darwin-arm64
+          name: ward-darwin-arm64-signed
           path: out
       - name: codesign verifies the signature strictly
         if: github.event.repository.private != true
@@ -272,7 +384,7 @@ jobs:
     # release cannot publish without one. The real attestation exists only when
     # the operator runs a release: a manual dry run does not reach this job.
     name: Attest the build provenance
-    needs: [build, verify]
+    needs: [build, sign, verify]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
@@ -283,7 +395,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ward-darwin-arm64
+          name: ward-darwin-arm64-signed
           path: out
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -291,7 +403,7 @@ jobs:
 
   release:
     name: Create the GitHub Release
-    needs: [build, verify, attest]
+    needs: [build, sign, verify, attest]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
@@ -313,7 +425,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ward-darwin-arm64
+          name: ward-darwin-arm64-signed
           path: out
       - name: Create the Release
         env:

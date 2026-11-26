@@ -78,6 +78,10 @@ These measurements were taken on 2026-09-28 with bun 1.3.14 on macOS arm64:
   identifier plus bundle identifier. That is an operator account and release decision, held on
   the operator's list as opum-agent OPAG-672 rather than decided here. It is the precondition for any claim that the
   Keychain ACL protects anything, and until it exists no Ward document may make that claim.
+  Update (DEC-301 (a3), WCLI-185): the release workflow now has a `sign` job that implements it,
+  per [ADR 0029](0029-ward-ships-as-a-compiled-signed-program-with-a-verifiable-protected-release-path.md)
+  and the signing-path reference. No Developer ID release has been cut, the rehearsal has not been
+  run, and the sentence above holds until one is.
 - **WCLI-19 is accepted as a stated P0 limitation.** `BUN_OPTIONS` and `BUN_BE_BUN` reaching the
   packaged executable will be revisited together with signing.
 - **Measured under WCLI-5: the item lives in the legacy file-based login keychain.** The
