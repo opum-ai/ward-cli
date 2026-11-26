@@ -69,6 +69,10 @@ test("contents: write sits on the release job only, and id-token on the attest j
   // WCLI-109: the one job that can mint an attestation is not the one that
   // can write the Release, and neither permission is anywhere else.
   expect(workflow.match(/^\s+id-token: write$/gm)?.length).toBe(1);
+  // The workflow-level default is pinned by parse: a job that omitted its own
+  // permissions block (a future sign job) would inherit exactly this, so
+  // neither id-token nor attestations may ever appear here.
+  expect(parseWorkflow().permissions).toEqual({ contents: "read" });
   const attest = parseWorkflow().jobs.attest ?? {};
   expect(attest.permissions).toEqual({
     contents: "read",
@@ -618,11 +622,18 @@ test("the attest job attests the verified artifact, on a tag only, and the relea
     "subject-path": "out/ward-darwin-arm64",
   });
   expect((attest.steps ?? []).length).toBe(2);
+  // Exact key sets, so `if: false`, `continue-on-error` or an env on either
+  // step turns this red.
+  expect((attest.steps ?? []).map((step) => Object.keys(step).sort())).toEqual([
+    ["uses", "with"],
+    ["uses", "with"],
+  ]);
   expect(JSON.stringify(attest)).not.toContain("continue-on-error");
 });
 
 test("the install docs tell the reader to run gh attestation verify, and say which releases carry one", () => {
-  const command = "gh attestation verify ward-darwin-arm64 -R opum-ai/ward-cli";
+  const command =
+    "gh attestation verify ward-darwin-arm64 -R opum-ai/ward-cli --signer-workflow opum-ai/ward-cli/.github/workflows/release.yml --deny-self-hosted-runners";
   for (const file of [
     ["README.md"],
     ["docs", "runbooks", "install-and-upgrade-ward-from-a-release.md"],

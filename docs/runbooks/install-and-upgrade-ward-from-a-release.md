@@ -51,8 +51,13 @@ Status: the v0.1.0 asset fails step 3; install v0.1.1 or later.
    (`https://github.com/opum-ai/ward-cli/releases/tag/v0.1.1`). On a mismatch,
    do not install it.
    Then verify the build provenance: `gh attestation verify ward-darwin-arm64
-   -R opum-ai/ward-cli` must exit 0 and name this repository's `release.yml` at
-   the tag's commit (WCLI-109). It proves the file came from the release
+   -R opum-ai/ward-cli --signer-workflow
+   opum-ai/ward-cli/.github/workflows/release.yml --deny-self-hosted-runners`
+   must exit 0 and name this repository's `release.yml` at the tag's commit
+   (WCLI-109; add `--source-ref refs/tags/TAG` to pin the tag). Keep the
+   `--signer-workflow` flag: with `-R` alone, `gh` accepts an attestation made by
+   any workflow in the repository, and gh's own help says to validate the workflow
+   path as well. It proves the file came from the release
    workflow, which the checksum beside the file cannot. Stop on any other exit.
    v0.1.1 and earlier carry no attestation, so it fails on those; a release
    that should carry one and fails is not to be installed. `gh` may ask you to
